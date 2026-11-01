@@ -12,7 +12,7 @@ PostgreSQL; a stage that changes semantics updates the design and the scenarios 
 | 5. Calendars, chains, monitoring | Date sets, calendar planning, chains and groups, expectations and incidents, telemetry. | CAL-1–CAL-7, K-1–K-17, M-1–M-5, H-3 | Done |
 | 6. Integration packages | `StartMode.Manual`, application isolation, `InMemory`, `EntityFrameworkCore`, Native AOT smoke application. | H-1, H-2, H-4–H-7 | Done |
 | 7. Signals | The signals layer of [signals](signals.md): the signals layer, the PostgreSQL and in-memory transports, framework topics, the EF Core send. | S-1–S-8 (S-6, S-7 as PostgreSQL tests) | Done |
-| 8. First public release | Package metadata, SourceLink and symbol packages, CI and release workflows, package readme, public documentation pass; the owner makes the repository public and publishes. | — | In progress |
+| 8. First public release | Package metadata, SourceLink and symbol packages, CI and release workflows, package readme, public documentation pass; the owner makes the repository public and publishes. | — | Done |
 
 The lease, reconciliation, job and process registry scenarios run as `Corfedo.Work.Conformance` tests against
 PostgreSQL 18.6 in `tests/Corfedo.Work.PostgreSql.Tests`, and against the in-memory provider in
@@ -199,4 +199,4 @@ The first public version is 0.1.0, with every package in `src/`.
 | 8a | Package metadata in `src/Directory.Build.props`: repository and project URLs, tags, SourceLink, `.snupkg` symbols, deterministic CI builds; exact versions between the packages; a package readme. | Done |
 | 8b | `.github/workflows/ci.yml` (build, tests with Docker, AOT smoke) and `release.yml` (on a `v*` tag matching `Version.props`: build, test, pack, push to GitHub Packages and to nuget.org through Trusted Publishing, GitHub release). | Done |
 | 8c | Public documentation pass: the README status, measurement notes that name internal hosts. | Done |
-| 8d | The owner makes the repository public, adds the nuget.org Trusted Publishing policy, publishes `dev` and tags the release. | In progress |
+| 8d | The owner makes the repository public, adds the nuget.org Trusted Publishing policy, publishes `dev` and tags the release. | Done |
