@@ -17,7 +17,7 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     /// Requests a job in the caller's transaction, due by <paramref name="schedule"/> or now; it is signalled to claimers
     /// on commit (R1, J1, J3).
     /// </summary>
-    public async ValueTask<JobRequestResult> RequestAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, TArgs args, Schedule? schedule = null, JobRequestOptions? options = null, CancellationToken cancellationToken = default)
+    public async ValueTask<JobRequestResult> RequestAsync<TArgs>(WorkTransaction transaction, JobDefinition<TArgs> definition, TArgs args, Schedule? schedule = null, JobRequestOptions? options = null, CancellationToken cancellationToken = default)
     {
         var registration = registry.Find(definition);
         var request = Data(registry.Args(definition), definition, args, schedule ?? Schedule.Now, options ?? JobRequestOptions.Default);
@@ -37,7 +37,7 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     }
 
     /// <summary>Requests one job per item in the caller's transaction, due by <paramref name="schedule"/> or now: all commit or none do (J9).</summary>
-    public async ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, IEnumerable<JobRequestItem<TArgs>> items, Schedule? schedule = null, CancellationToken cancellationToken = default)
+    public async ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync<TArgs>(WorkTransaction transaction, JobDefinition<TArgs> definition, IEnumerable<JobRequestItem<TArgs>> items, Schedule? schedule = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(items);
         var registration = registry.Find(definition);
@@ -51,14 +51,14 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     /// recurrence, in the caller's transaction: a scheduled one ends cancelled with its outcome hook; a running one is
     /// cancelled through its lease and ends cancelled (J7, D2).
     /// </summary>
-    public ValueTask<int> CancelAsync(IWorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default)
+    public ValueTask<int> CancelAsync(WorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(subject);
         return CancelAsync(transaction, definition, subject, null, cancellationToken);
     }
 
     /// <summary>Cancels the definition's outstanding job with <paramref name="mergeKey"/> in the caller's transaction.</summary>
-    public ValueTask<int> CancelAsync(IWorkTransaction transaction, JobDefinition definition, string mergeKey, CancellationToken cancellationToken = default)
+    public ValueTask<int> CancelAsync(WorkTransaction transaction, JobDefinition definition, string mergeKey, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(mergeKey);
         return CancelAsync(transaction, definition, null, mergeKey, cancellationToken);
@@ -68,13 +68,13 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     /// Cancels the outstanding jobs of every definition acting on <paramref name="subject"/> in the caller's
     /// transaction; refused when one belongs to a definition this process does not register.
     /// </summary>
-    public async ValueTask<int> CancelAllAsync(IWorkTransaction transaction, Subject subject, CancellationToken cancellationToken = default)
+    public async ValueTask<int> CancelAllAsync(WorkTransaction transaction, Subject subject, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(subject);
         return await Store.CancelAllAsync(transaction, subject, await DefinitionsAsync(cancellationToken), cancellationToken);
     }
 
-    private async ValueTask<int> CancelAsync(IWorkTransaction transaction, JobDefinition definition, Subject? subject, string? mergeKey, CancellationToken cancellationToken)
+    private async ValueTask<int> CancelAsync(WorkTransaction transaction, JobDefinition definition, Subject? subject, string? mergeKey, CancellationToken cancellationToken)
     {
         var registration = registry.Find(definition);
         return await Store.CancelAsync(transaction, await registration.SourceAsync(store, cancellationToken), subject, mergeKey, registry.Ended(registration), cancellationToken);
@@ -87,7 +87,7 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     /// Recurrence operations need the store's read-committed isolation where it has one, and refuse other levels with
     /// <see cref="InvalidOperationException"/> before changing anything.
     /// </summary>
-    public async ValueTask<RecurrenceOutcome> ScheduleAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, TArgs args, Schedule schedule, RecurrenceOptions options, CancellationToken cancellationToken = default)
+    public async ValueTask<RecurrenceOutcome> ScheduleAsync<TArgs>(WorkTransaction transaction, JobDefinition<TArgs> definition, TArgs args, Schedule schedule, RecurrenceOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
         var registration = registry.Find(definition);
@@ -99,18 +99,18 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     /// Cancels the current occurrences of the subject's recurrence and deletes it, in the caller's transaction; false
     /// when there is none.
     /// </summary>
-    public ValueTask<bool> RemoveAsync(IWorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
+    public ValueTask<bool> RemoveAsync(WorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
         RemoveIdentityAsync(transaction, definition, Identity(definition, subject, null), cancellationToken);
 
     /// <summary>Cancels the current occurrences of the merge key's recurrence and deletes it; false when there is none.</summary>
-    public ValueTask<bool> RemoveAsync(IWorkTransaction transaction, JobDefinition definition, string mergeKey, CancellationToken cancellationToken = default) =>
+    public ValueTask<bool> RemoveAsync(WorkTransaction transaction, JobDefinition definition, string mergeKey, CancellationToken cancellationToken = default) =>
         RemoveIdentityAsync(transaction, definition, Identity(definition, null, mergeKey), cancellationToken);
 
     /// <summary>
     /// Removes the definition's code-defined recurrence, which no process declares any longer; false when there is none.
     /// A process that still declares it stores it again at its next start.
     /// </summary>
-    public ValueTask<bool> RemoveAsync(IWorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
+    public ValueTask<bool> RemoveAsync(WorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
         RemoveIdentityAsync(transaction, definition, JobRequestData.DefinitionIdentity, cancellationToken);
 
     /// <summary>
@@ -120,76 +120,76 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     /// <see cref="RunNowOutcome.AlreadyRunning"/> under <see cref="Overlap.Skip"/>. Work it starts or makes due with a
     /// calendar is planned at the next allowed instant.
     /// </summary>
-    public ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
+    public ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
         TriggerIdentityAsync(transaction, definition, Identity(definition, subject, null), JobActionOptions.None, cancellationToken);
 
     /// <summary>
-    /// Triggers the subject's recurrence as <see cref="TriggerAsync(IWorkTransaction, JobDefinition, Subject, CancellationToken)"/>
+    /// Triggers the subject's recurrence as <see cref="TriggerAsync(WorkTransaction, JobDefinition, Subject, CancellationToken)"/>
     /// does; with <see cref="JobActionOptions.IgnoreCalendar"/> the occurrence it starts or makes due is due now.
     /// </summary>
-    public ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, JobDefinition definition, Subject subject, JobActionOptions options, CancellationToken cancellationToken = default) =>
+    public ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, JobDefinition definition, Subject subject, JobActionOptions options, CancellationToken cancellationToken = default) =>
         TriggerIdentityAsync(transaction, definition, Identity(definition, subject, null), options, cancellationToken);
 
     /// <summary>Triggers the merge key's recurrence without moving it.</summary>
-    public ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, JobDefinition definition, string mergeKey, CancellationToken cancellationToken = default) =>
+    public ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, JobDefinition definition, string mergeKey, CancellationToken cancellationToken = default) =>
         TriggerIdentityAsync(transaction, definition, Identity(definition, null, mergeKey), JobActionOptions.None, cancellationToken);
 
     /// <summary>Triggers the merge key's recurrence without moving it, ignoring its calendar with <see cref="JobActionOptions.IgnoreCalendar"/>.</summary>
-    public ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, JobDefinition definition, string mergeKey, JobActionOptions options, CancellationToken cancellationToken = default) =>
+    public ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, JobDefinition definition, string mergeKey, JobActionOptions options, CancellationToken cancellationToken = default) =>
         TriggerIdentityAsync(transaction, definition, Identity(definition, null, mergeKey), options, cancellationToken);
 
     /// <summary>Triggers the definition's code-defined recurrence without moving it.</summary>
-    public ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
+    public ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
         TriggerIdentityAsync(transaction, definition, JobRequestData.DefinitionIdentity, JobActionOptions.None, cancellationToken);
 
     /// <summary>Triggers the definition's code-defined recurrence without moving it, ignoring its calendar with <see cref="JobActionOptions.IgnoreCalendar"/>.</summary>
-    public ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, JobDefinition definition, JobActionOptions options, CancellationToken cancellationToken = default) =>
+    public ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, JobDefinition definition, JobActionOptions options, CancellationToken cancellationToken = default) =>
         TriggerIdentityAsync(transaction, definition, JobRequestData.DefinitionIdentity, options, cancellationToken);
 
     /// <summary>
     /// Stops claiming the definition's jobs and planning its recurrences, in the caller's transaction (J8); claims in
     /// flight finish first. Running jobs continue.
     /// </summary>
-    public ValueTask PauseAsync(IWorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
+    public ValueTask PauseAsync(WorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
         PauseDefinitionAsync(transaction, definition, true, cancellationToken);
 
     /// <summary>
     /// Restarts claiming and planning of the definition. Instants that passed while it was paused follow the missed
     /// rule; jobs that became due follow their <see cref="Late"/> policy at their claim.
     /// </summary>
-    public ValueTask ResumeAsync(IWorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
+    public ValueTask ResumeAsync(WorkTransaction transaction, JobDefinition definition, CancellationToken cancellationToken = default) =>
         PauseDefinitionAsync(transaction, definition, false, cancellationToken);
 
     /// <summary>
     /// Stops claiming the subject's jobs of the definition, including jobs requested and occurrences planned while it is
     /// paused, and planning its recurrence, in the caller's transaction (J8, D2). Running jobs continue.
     /// </summary>
-    public ValueTask PauseAsync(IWorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
+    public ValueTask PauseAsync(WorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
         PauseSubjectAsync(transaction, definition, subject, true, cancellationToken);
 
     /// <summary>Restarts claiming and planning for the subject, under the missed and late policies as for a definition.</summary>
-    public ValueTask ResumeAsync(IWorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
+    public ValueTask ResumeAsync(WorkTransaction transaction, JobDefinition definition, Subject subject, CancellationToken cancellationToken = default) =>
         PauseSubjectAsync(transaction, definition, subject, false, cancellationToken);
 
-    private async ValueTask<bool> RemoveIdentityAsync(IWorkTransaction transaction, JobDefinition definition, string identity, CancellationToken cancellationToken)
+    private async ValueTask<bool> RemoveIdentityAsync(WorkTransaction transaction, JobDefinition definition, string identity, CancellationToken cancellationToken)
     {
         var registration = registry.Find(definition);
         return await Store.RemoveAsync(transaction, await registration.SourceAsync(store, cancellationToken), identity, registry.Ended(registration), await DefinitionsAsync(cancellationToken), cancellationToken);
     }
 
-    private async ValueTask<RunNowResult> TriggerIdentityAsync(IWorkTransaction transaction, JobDefinition definition, string identity, JobActionOptions options, CancellationToken cancellationToken)
+    private async ValueTask<RunNowResult> TriggerIdentityAsync(WorkTransaction transaction, JobDefinition definition, string identity, JobActionOptions options, CancellationToken cancellationToken)
     {
         var registration = registry.Find(definition);
         return await Store.TriggerAsync(transaction, await registration.SourceAsync(store, cancellationToken), identity, (options & JobActionOptions.IgnoreCalendar) != 0, cancellationToken);
     }
 
-    private async ValueTask PauseDefinitionAsync(IWorkTransaction transaction, JobDefinition definition, bool paused, CancellationToken cancellationToken)
+    private async ValueTask PauseDefinitionAsync(WorkTransaction transaction, JobDefinition definition, bool paused, CancellationToken cancellationToken)
     {
         var registration = registry.Find(definition);
         await Store.PauseDefinitionAsync(transaction, await registration.SourceAsync(store, cancellationToken), paused, cancellationToken);
     }
 
-    private async ValueTask PauseSubjectAsync(IWorkTransaction transaction, JobDefinition definition, Subject subject, bool paused, CancellationToken cancellationToken)
+    private async ValueTask PauseSubjectAsync(WorkTransaction transaction, JobDefinition definition, Subject subject, bool paused, CancellationToken cancellationToken)
     {
         Identity(definition, subject, null);
         var registration = registry.Find(definition);

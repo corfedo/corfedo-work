@@ -6,7 +6,7 @@ namespace Corfedo.Work.InMemory.Jobs;
 internal sealed partial class InMemoryJobStore
 {
     /// <summary>Stores the pause state that every later claim and planning pass reads. Resuming signals claimers and planners.</summary>
-    public ValueTask PauseDefinitionAsync(IWorkTransaction transaction, LeaseSource<JobId> source, bool paused, CancellationToken cancellationToken)
+    public ValueTask PauseDefinitionAsync(WorkTransaction transaction, LeaseSource<JobId> source, bool paused, CancellationToken cancellationToken)
     {
         var work = Join(transaction);
         var definition = Rules(source).Job!.Definition;
@@ -27,7 +27,7 @@ internal sealed partial class InMemoryJobStore
     /// subject's recurrences and outstanding jobs; when a recurrence's flag changes, the key is queued for the monitoring
     /// loop.
     /// </summary>
-    public ValueTask PauseSubjectAsync(IWorkTransaction transaction, LeaseSource<JobId> source, Subject subject, bool paused, CancellationToken cancellationToken)
+    public ValueTask PauseSubjectAsync(WorkTransaction transaction, LeaseSource<JobId> source, Subject subject, bool paused, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
         var work = Join(transaction);

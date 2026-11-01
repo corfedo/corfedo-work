@@ -17,7 +17,7 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
     /// result to schedule the follow-up; on superseding sources the request instead gives the run's lease back, and
     /// the holder's process is signalled to renew and observe it.
     /// </summary>
-    public async ValueTask<bool> RequestAsync<TKey>(IWorkTransaction transaction, ReconcileSource<TKey> source, TKey key, ReconcileRequest request, CancellationToken cancellationToken)
+    public async ValueTask<bool> RequestAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, TKey key, ReconcileRequest request, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = PostgreSqlTransaction.From(transaction);
@@ -75,7 +75,7 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
         return found;
     }
 
-    public async ValueTask CompleteAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)
+    public async ValueTask CompleteAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = PostgreSqlTransaction.From(transaction);
@@ -168,7 +168,7 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
     /// Takes the shared generation fences of the superseding sources among <paramref name="sources"/> in the
     /// caller's transaction, in their fixed order, in one statement.
     /// </summary>
-    public async ValueTask FenceAsync(IWorkTransaction transaction, IReadOnlyCollection<IReconcileSource> sources, CancellationToken cancellationToken)
+    public async ValueTask FenceAsync(WorkTransaction transaction, IReadOnlyCollection<IReconcileSource> sources, CancellationToken cancellationToken)
     {
         var work = PostgreSqlTransaction.From(transaction);
         var keys = sources.Where(s => s.Policy.Requests == RequestPolicy.Supersede).Select(s => LeaseSql.GenerationLockKey(leases.Schema, s.Name)).ToArray();
@@ -188,7 +188,7 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
     /// superseding sources it first takes the generation lock exclusively, waiting for open guarded transactions,
     /// which hold it shared; guarded transactions that start meanwhile wait for the invalidation to end.
     /// </summary>
-    public async ValueTask<long> InvalidateAllAsync<TKey>(IWorkTransaction transaction, ReconcileSource<TKey> source, CancellationToken cancellationToken)
+    public async ValueTask<long> InvalidateAllAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = PostgreSqlTransaction.From(transaction);

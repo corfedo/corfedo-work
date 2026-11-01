@@ -39,7 +39,7 @@ public interface IJobHandler<TArgs, TResult>
     /// <summary>
     /// Runs one attempt. Returns a result value, which completes the job with it stored, or a <see cref="JobResult"/>
     /// for the dispatcher to apply (<see cref="JobResult.Completed"/> completes without a result), or
-    /// <see cref="JobRun.Completed"/> after completing with <see cref="JobRun{TResult}.CompleteAsync(IWorkTransaction, TResult, CancellationToken)"/>
+    /// <see cref="JobRun.Completed"/> after completing with <see cref="JobRun{TResult}.CompleteAsync(WorkTransaction, TResult, CancellationToken)"/>
     /// in the domain's transaction. A thrown exception is <c>Retry(0, "handler_failed")</c>.
     /// </summary>
     ValueTask<JobDisposition<TResult>> RunAsync(TArgs args, JobRun<TResult> run, CancellationToken cancellationToken);
@@ -81,7 +81,7 @@ public sealed class JobDisposition<TResult>
 /// <summary>Runs inside every terminal transition of a definition's jobs, whoever causes it. No external calls.</summary>
 public interface IJobEnded
 {
-    ValueTask EndedAsync(JobEnd end, IWorkTransaction transaction, CancellationToken cancellationToken);
+    ValueTask EndedAsync(JobEnd end, WorkTransaction transaction, CancellationToken cancellationToken);
 }
 
 /// <summary>One attempt of a claimed job.</summary>
@@ -172,7 +172,7 @@ public partial class JobRun
     }
 
     /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}"/>
-    public ValueTask GuardAsync(IWorkTransaction transaction, CancellationToken cancellationToken = default) =>
+    public ValueTask GuardAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>
         Lease.GuardAsync(transaction, cancellationToken);
 
     /// <summary>
@@ -181,7 +181,7 @@ public partial class JobRun
     /// returns <see cref="Completed"/> without a committed completion is retried as <c>uncompleted</c>.
     /// </summary>
     /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
-    public ValueTask CompleteAsync(IWorkTransaction transaction, JobResult result, CancellationToken cancellationToken = default)
+    public ValueTask CompleteAsync(WorkTransaction transaction, JobResult result, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(result);
         return CompleteAsync(transaction, JobTransition.From(result), cancellationToken);
@@ -194,7 +194,7 @@ public partial class JobRun
     /// Applies a transition in the domain's transaction with the definition's outcome hook, as a
     /// <c>corfedo.work.complete</c> span.
     /// </summary>
-    private protected async ValueTask CompleteAsync(IWorkTransaction transaction, JobTransition transition, CancellationToken cancellationToken)
+    private protected async ValueTask CompleteAsync(WorkTransaction transaction, JobTransition transition, CancellationToken cancellationToken)
     {
         using var span = JobSpans.StartComplete(Lease, transition);
         try
@@ -224,6 +224,6 @@ public sealed class JobRun<TResult> : JobRun
     /// </summary>
     /// <exception cref="ArgumentException">The serialized result exceeds <see cref="JobResults.MaximumBytes"/>; nothing is written.</exception>
     /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
-    public ValueTask CompleteAsync(IWorkTransaction transaction, TResult result, CancellationToken cancellationToken = default) =>
+    public ValueTask CompleteAsync(WorkTransaction transaction, TResult result, CancellationToken cancellationToken = default) =>
         CompleteAsync(transaction, JobTransition.Complete(Results.Write(result), Results.Version), cancellationToken);
 }

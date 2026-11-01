@@ -9,7 +9,7 @@ namespace Corfedo.Work.InMemory.Signals;
 /// </summary>
 internal sealed class InMemorySignalTransport(InMemoryWorkDatabase database, ApplicationState application) : ISignalTransport
 {
-    public ValueTask SendAsync(IWorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
+    public ValueTask SendAsync(WorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
     {
         if (transaction is null)
         {

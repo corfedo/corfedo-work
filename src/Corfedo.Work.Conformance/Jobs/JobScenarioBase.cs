@@ -44,12 +44,12 @@ public sealed class EndedScript
 {
     public ConcurrentQueue<JobEnd> Calls { get; } = new();
 
-    public Func<JobEnd, IWorkTransaction, CancellationToken, ValueTask> Ended { get; set; } = (_, _, _) => ValueTask.CompletedTask;
+    public Func<JobEnd, WorkTransaction, CancellationToken, ValueTask> Ended { get; set; } = (_, _, _) => ValueTask.CompletedTask;
 }
 
 public sealed class ScriptedJobEnded(EndedScript script) : IJobEnded
 {
-    public async ValueTask EndedAsync(JobEnd end, IWorkTransaction transaction, CancellationToken cancellationToken)
+    public async ValueTask EndedAsync(JobEnd end, WorkTransaction transaction, CancellationToken cancellationToken)
     {
         script.Calls.Enqueue(end);
         await script.Ended(end, transaction, cancellationToken);
@@ -162,7 +162,7 @@ public abstract class JobScenarioBase(IJobConformanceProvider provider) : LeaseS
     }
 
     /// <summary>Runs <paramref name="operation"/> in a transaction of its own, committed.</summary>
-    protected async Task<T> InTransactionAsync<T>(Func<IWorkTransaction, ValueTask<T>> operation)
+    protected async Task<T> InTransactionAsync<T>(Func<WorkTransaction, ValueTask<T>> operation)
     {
         await using var transaction = await Provider.BeginAsync(Cancel);
         var result = await operation(transaction.Work);
@@ -171,7 +171,7 @@ public abstract class JobScenarioBase(IJobConformanceProvider provider) : LeaseS
     }
 
     /// <summary>Runs <paramref name="operation"/> in a transaction of its own, committed.</summary>
-    protected async Task InTransactionAsync(Func<IWorkTransaction, ValueTask> operation)
+    protected async Task InTransactionAsync(Func<WorkTransaction, ValueTask> operation)
     {
         await using var transaction = await Provider.BeginAsync(Cancel);
         await operation(transaction.Work);

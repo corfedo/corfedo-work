@@ -33,7 +33,7 @@ public sealed class GenerationFenceIsolationTests(PostgreSqlDatabase database) :
         await SnapshotAsync(connection, transaction);
         await InvalidateAsync(source);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => WriteAsync(operation, transaction.WorkTransaction(), lease));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => WriteAsync(operation, transaction, lease));
         // The refusal aborts the transaction, so output written and committed after ignoring it does not commit.
         await Record.ExceptionAsync(async () =>
         {
@@ -61,7 +61,7 @@ public sealed class GenerationFenceIsolationTests(PostgreSqlDatabase database) :
         await SnapshotAsync(connection, transaction);
         await InvalidateAsync(source);
 
-        await Assert.ThrowsAsync<LeaseLostException>(() => WriteAsync(operation, transaction.WorkTransaction(), lease));
+        await Assert.ThrowsAsync<LeaseLostException>(() => WriteAsync(operation, transaction, lease));
     }
 
     public enum Operation
@@ -71,7 +71,7 @@ public sealed class GenerationFenceIsolationTests(PostgreSqlDatabase database) :
         End,
     }
 
-    private async Task WriteAsync(Operation operation, IWorkTransaction transaction, Lease<TestKey> lease)
+    private async Task WriteAsync(Operation operation, WorkTransaction transaction, Lease<TestKey> lease)
     {
         switch (operation)
         {
@@ -129,7 +129,7 @@ public sealed class GenerationFenceIsolationTests(PostgreSqlDatabase database) :
     {
         await using var connection = await database.DataSource.OpenConnectionAsync(Cancel);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, Cancel);
-        await Store.Reconcile.InvalidateAllAsync(transaction.WorkTransaction(), source, Cancel);
+        await Store.Reconcile.InvalidateAllAsync(transaction, source, Cancel);
         await transaction.CommitAsync(Cancel);
     }
 

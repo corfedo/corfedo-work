@@ -19,7 +19,7 @@ public sealed partial class JobOperations
     /// <summary>
     /// Code-defined recurrences that no live process declares any longer (J10), whatever revision it registers. They are
     /// kept and planned by processes that run the definition until removed with
-    /// <see cref="RemoveAsync(IWorkTransaction, JobDefinition, CancellationToken)"/>.
+    /// <see cref="RemoveAsync(WorkTransaction, JobDefinition, CancellationToken)"/>.
     /// </summary>
     public ValueTask<IReadOnlyList<UndeclaredRecurrence>> GetUndeclaredRecurrencesAsync(CancellationToken cancellationToken = default) =>
         Store.GetUndeclaredRecurrencesAsync(cancellationToken);

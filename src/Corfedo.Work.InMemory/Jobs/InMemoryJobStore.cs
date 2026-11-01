@@ -38,7 +38,7 @@ internal sealed partial class InMemoryJobStore(
         return leases.Rules(source);
     }
 
-    private InMemoryTransaction Join(IWorkTransaction transaction) => leases.Join(transaction);
+    private InMemoryTransaction Join(WorkTransaction transaction) => leases.Join(transaction);
 
     private static RowKey Key(Guid job) => new([job]);
 

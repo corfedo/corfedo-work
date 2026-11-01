@@ -267,7 +267,7 @@ internal sealed partial class InMemoryJobStore
     /// after refusing the cancellation when one belongs to a definition <paramref name="definitions"/> does not resolve.
     /// Steps recorded to be skipped are left to finalization.
     /// </summary>
-    public async ValueTask<int> CancelChainAsync(IWorkTransaction transaction, ChainId chain, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
+    public async ValueTask<int> CancelChainAsync(WorkTransaction transaction, ChainId chain, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(definitions);
         return await CancelStepsAsync(Join(transaction), chain.Value, definitions, cancellationToken);

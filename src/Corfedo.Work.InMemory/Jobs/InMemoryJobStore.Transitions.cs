@@ -5,7 +5,7 @@ namespace Corfedo.Work.InMemory.Jobs;
 
 internal sealed partial class InMemoryJobStore
 {
-    public async ValueTask CompleteAsync(IWorkTransaction transaction, Lease<JobId> lease, JobTransition transition, JobEndedCallback? ended, CancellationToken cancellationToken)
+    public async ValueTask CompleteAsync(WorkTransaction transaction, Lease<JobId> lease, JobTransition transition, JobEndedCallback? ended, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(transition);

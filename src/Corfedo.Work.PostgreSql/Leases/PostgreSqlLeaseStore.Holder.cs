@@ -12,7 +12,7 @@ internal sealed partial class PostgreSqlLeaseStore
         return await RenewAsync(connection, null, lease, cancellationToken);
     }
 
-    public ValueTask<RenewResult> RenewAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+    public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = PostgreSqlTransaction.From(transaction);
@@ -105,7 +105,7 @@ internal sealed partial class PostgreSqlLeaseStore
         return batch.BatchCommands[update].RecordsAffected == 1;
     }
 
-    public async ValueTask<EndResult> EndAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
+    public async ValueTask<EndResult> EndAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = PostgreSqlTransaction.From(transaction);

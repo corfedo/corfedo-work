@@ -7,7 +7,7 @@ namespace Corfedo.Work;
 /// incident retention and expectation state no key needs, in bounded batches. It has no run history of its
 /// own; its own ended occurrences follow its retention like any job's. Process records are deleted by starting
 /// processes, see <see cref="ProcessRegistry.Retention"/>.
-/// Run it at once with <see cref="JobOperations.TriggerAsync(IWorkTransaction, JobDefinition, CancellationToken)"/>.
+/// Run it at once with <see cref="JobOperations.TriggerAsync(WorkTransaction, JobDefinition, CancellationToken)"/>.
 /// </summary>
 public static class WorkRetention
 {

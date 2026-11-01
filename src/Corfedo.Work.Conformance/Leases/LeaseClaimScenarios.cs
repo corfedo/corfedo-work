@@ -447,7 +447,7 @@ public abstract class LeaseClaimScenarios(ILeaseConformanceProvider provider) : 
         Assert.Equal(0, Volatile.Read(ref runs));
     }
 
-    private async Task ThrowAfterWriteAsync(IWorkTransaction transaction, StoreLocation table, CancellationToken cancellationToken)
+    private async Task ThrowAfterWriteAsync(WorkTransaction transaction, StoreLocation table, CancellationToken cancellationToken)
     {
         await Provider.JournalAsync(transaction, table, "written before failing", cancellationToken);
         throw new InvalidOperationException("The claim hook failed.");

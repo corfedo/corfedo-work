@@ -2,7 +2,7 @@ namespace Corfedo.Work.InMemory.Leases;
 
 internal sealed partial class InMemoryLeaseStore
 {
-    public ValueTask<bool> ScheduleAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution, CancellationToken cancellationToken)
+    public ValueTask<bool> ScheduleAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = Join(transaction);
@@ -26,7 +26,7 @@ internal sealed partial class InMemoryLeaseStore
     }
 
     /// <summary>Sets <c>CancelRequestedAt</c> and signals the process of the record's holder, if it is held.</summary>
-    public ValueTask<bool> RequestCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
+    public ValueTask<bool> RequestCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = Join(transaction);
@@ -44,7 +44,7 @@ internal sealed partial class InMemoryLeaseStore
         return ValueTask.FromResult(true);
     }
 
-    public ValueTask<bool> ClearCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
+    public ValueTask<bool> ClearCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = Join(transaction);

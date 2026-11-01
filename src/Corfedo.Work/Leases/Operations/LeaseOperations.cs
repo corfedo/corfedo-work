@@ -26,14 +26,14 @@ public sealed class LeaseOperations(IWorkStore store, WorkProcess process, Lease
     /// Inside the caller's transaction, claims up to <paramref name="limit"/> of the candidates that are claimable.
     /// The caller rechecks domain eligibility and reserves resources in the same transaction.
     /// </summary>
-    public ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken = default, OwnerId? owner = null)
+    public ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken = default, OwnerId? owner = null)
         where TKey : notnull => Store.ClaimAsync(transaction, NotJob(source), registry.Callbacks(source), owner ?? Owner, candidates, limit, cancellationToken);
 
     public ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, CancellationToken cancellationToken = default)
         where TKey : notnull => Store.RenewAsync(lease, cancellationToken);
 
     /// <summary>Renews inside the caller's transaction, so progress written in it commits with the renewal.</summary>
-    public ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, IWorkTransaction transaction, CancellationToken cancellationToken = default)
+    public ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, WorkTransaction transaction, CancellationToken cancellationToken = default)
         where TKey : notnull => Store.RenewAsync(transaction, lease, cancellationToken);
 
     /// <summary>
@@ -41,7 +41,7 @@ public sealed class LeaseOperations(IWorkStore store, WorkProcess process, Lease
     /// transaction ends. Every transaction that commits a holder's output calls it.
     /// </summary>
     /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
-    public async ValueTask GuardAsync<TKey>(Lease<TKey> lease, IWorkTransaction transaction, CancellationToken cancellationToken = default)
+    public async ValueTask GuardAsync<TKey>(Lease<TKey> lease, WorkTransaction transaction, CancellationToken cancellationToken = default)
         where TKey : notnull
     {
         if (!(await Store.RenewAsync(transaction, lease, cancellationToken)).Valid)
@@ -55,20 +55,20 @@ public sealed class LeaseOperations(IWorkStore store, WorkProcess process, Lease
         where TKey : notnull => Store.ReleaseAsync(NotOwned(lease), due, failed, cancellationToken);
 
     /// <inheritdoc cref="ILeaseStore.EndAsync{TKey}"/>
-    public ValueTask<EndResult> EndAsync<TKey>(Lease<TKey> lease, IWorkTransaction transaction, LeaseCompletion? completion = null, CancellationToken cancellationToken = default)
+    public ValueTask<EndResult> EndAsync<TKey>(Lease<TKey> lease, WorkTransaction transaction, LeaseCompletion? completion = null, CancellationToken cancellationToken = default)
         where TKey : notnull => Store.EndAsync(transaction, NotOwned(lease), completion, cancellationToken);
 
     /// <summary>
     /// Sets the due time in the caller's transaction and wakes claimers on commit. A new <paramref name="execution"/>
     /// marks a deliberate new execution; without one the current execution continues.
     /// </summary>
-    public ValueTask<bool> ScheduleAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution = null, CancellationToken cancellationToken = default)
+    public ValueTask<bool> ScheduleAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution = null, CancellationToken cancellationToken = default)
         where TKey : notnull => Store.ScheduleAsync(transaction, NotOwned(source), key, due, execution, cancellationToken);
 
-    public ValueTask<bool> RequestCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken = default)
+    public ValueTask<bool> RequestCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken = default)
         where TKey : notnull => Store.RequestCancelAsync(transaction, NotJob(source), key, cancellationToken);
 
-    public ValueTask<bool> ClearCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken = default)
+    public ValueTask<bool> ClearCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken = default)
         where TKey : notnull => Store.ClearCancelAsync(transaction, NotJob(source), key, cancellationToken);
 
     private static LeaseSource<TKey> NotJob<TKey>(LeaseSource<TKey> source)

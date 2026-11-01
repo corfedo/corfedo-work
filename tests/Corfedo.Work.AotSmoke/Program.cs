@@ -351,7 +351,7 @@ internal sealed class IncidentNotifier : IWorkIncidentHandler
 
 internal sealed class FeedSyncEnded : IJobEnded
 {
-    public ValueTask EndedAsync(JobEnd end, IWorkTransaction transaction, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask EndedAsync(JobEnd end, WorkTransaction transaction, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 
 internal sealed record InstanceKey(string TenantId, long Id)
@@ -394,12 +394,12 @@ internal sealed class PlacementReconciler : IReconciler<InstanceKey>
 
 internal sealed class InstanceClaimed : ILeaseClaimHook<InstanceKey>
 {
-    public ValueTask ClaimedAsync(LeaseClaim<InstanceKey> claim, IWorkTransaction transaction, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask ClaimedAsync(LeaseClaim<InstanceKey> claim, WorkTransaction transaction, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 
 internal sealed class InstanceExpired : ILeaseExpiryHandler<InstanceKey>
 {
-    public ValueTask ExpiredAsync(LeaseExpiry<InstanceKey> expiry, IWorkTransaction transaction, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask ExpiredAsync(LeaseExpiry<InstanceKey> expiry, WorkTransaction transaction, CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }
 
 internal sealed class FleetChanged : ISignalSubscriber

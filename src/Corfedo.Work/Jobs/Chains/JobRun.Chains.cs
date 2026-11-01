@@ -10,7 +10,7 @@ public partial class JobRun
     /// </summary>
     /// <exception cref="InvalidOperationException">The job is not a chain step.</exception>
     /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
-    public async ValueTask AddGroupAsync(IWorkTransaction transaction, Action<ChainGroupBuilder> branches, Action<ChainGroup>? after = null, CancellationToken cancellationToken = default)
+    public async ValueTask AddGroupAsync(WorkTransaction transaction, Action<ChainGroupBuilder> branches, Action<ChainGroup>? after = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(branches);
         var builder = new ChainBuilder(Registry, Schedule.Now);

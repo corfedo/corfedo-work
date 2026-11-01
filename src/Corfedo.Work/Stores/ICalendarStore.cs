@@ -41,7 +41,7 @@ public interface ICalendarStore
     /// plannable. False when a newer or equal revision is stored; nothing changed.
     /// </summary>
     /// <exception cref="CalendarConflictException">The stored revision is equal and its dates or coverage differ.</exception>
-    ValueTask<bool> PublishDatesAsync(IWorkTransaction transaction, CalendarDates dates, CancellationToken cancellationToken);
+    ValueTask<bool> PublishDatesAsync(WorkTransaction transaction, CalendarDates dates, CancellationToken cancellationToken);
 
     /// <summary>The newest published revision of every date set.</summary>
     ValueTask<IReadOnlyList<CalendarDates>> GetDateSetsAsync(CancellationToken cancellationToken);

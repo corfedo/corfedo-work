@@ -155,7 +155,7 @@ public abstract class JobCoverageScenarios(IJobConformanceProvider provider) : J
     /// Runs <paramref name="write"/> in a transaction that commits after <paramref name="subject"/>, paused before it,
     /// is resumed in another transaction, so the written row keeps a pause flag no stored pause backs.
     /// </summary>
-    private async Task RaceResumeAsync(TestProcess process, JobDefinition definition, Subject subject, Func<IWorkTransaction, Task> write)
+    private async Task RaceResumeAsync(TestProcess process, JobDefinition definition, Subject subject, Func<WorkTransaction, Task> write)
     {
         RequireConcurrentTransactions();
         await InTransactionAsync(t => Jobs(process).PauseAsync(t, definition, subject, Cancel));

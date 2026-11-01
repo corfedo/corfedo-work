@@ -10,7 +10,7 @@ internal sealed partial class InMemoryJobStore
     /// subject or merge key, standalone jobs and occurrences of the identity's recurrence; the recurrence continues.
     /// Occurrences to be skipped are left to finalization.
     /// </summary>
-    public async ValueTask<int> CancelAsync(IWorkTransaction transaction, LeaseSource<JobId> source, Subject? subject, string? mergeKey, JobEndedCallback? ended, CancellationToken cancellationToken)
+    public async ValueTask<int> CancelAsync(WorkTransaction transaction, LeaseSource<JobId> source, Subject? subject, string? mergeKey, JobEndedCallback? ended, CancellationToken cancellationToken)
     {
         if ((subject is null) == (mergeKey is null))
         {
@@ -38,7 +38,7 @@ internal sealed partial class InMemoryJobStore
     /// outstanding jobs belongs to a definition <paramref name="definitions"/> does not resolve, then cancels them per
     /// definition. Occurrences to be skipped are left to finalization.
     /// </summary>
-    public async ValueTask<int> CancelAllAsync(IWorkTransaction transaction, Subject subject, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
+    public async ValueTask<int> CancelAllAsync(WorkTransaction transaction, Subject subject, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
         ArgumentNullException.ThrowIfNull(definitions);

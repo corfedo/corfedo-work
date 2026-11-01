@@ -17,7 +17,7 @@ internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IRecon
     /// due time is recorded for the run's result to schedule the follow-up; on superseding sources the request instead
     /// gives the run's lease back, and the holder's process is signalled to renew and observe it.
     /// </summary>
-    public ValueTask<bool> RequestAsync<TKey>(IWorkTransaction transaction, ReconcileSource<TKey> source, TKey key, ReconcileRequest request, CancellationToken cancellationToken)
+    public ValueTask<bool> RequestAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, TKey key, ReconcileRequest request, CancellationToken cancellationToken)
         where TKey : notnull
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -74,7 +74,7 @@ internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IRecon
         return ValueTask.FromResult(true);
     }
 
-    public ValueTask CompleteAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)
+    public ValueTask CompleteAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)
         where TKey : notnull
     {
         if (!Complete(leases.Join(transaction), lease, result))
@@ -157,7 +157,7 @@ internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IRecon
     }
 
     /// <summary>Validates the transaction; serialized transactions need no fence.</summary>
-    public ValueTask FenceAsync(IWorkTransaction transaction, IReadOnlyCollection<IReconcileSource> sources, CancellationToken cancellationToken)
+    public ValueTask FenceAsync(WorkTransaction transaction, IReadOnlyCollection<IReconcileSource> sources, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(sources);
         leases.Join(transaction);
@@ -165,7 +165,7 @@ internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IRecon
     }
 
     /// <summary>Increments the source's generation in the caller's transaction and signals claimers on commit.</summary>
-    public ValueTask<long> InvalidateAllAsync<TKey>(IWorkTransaction transaction, ReconcileSource<TKey> source, CancellationToken cancellationToken)
+    public ValueTask<long> InvalidateAllAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = leases.Join(transaction);

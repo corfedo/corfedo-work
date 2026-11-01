@@ -150,7 +150,7 @@ A source can register a **claim hook** that runs inside the claim transaction, b
 ```csharp
 public sealed class InstanceClaimed : ILeaseClaimHook<InstanceKey>
 {
-    public ValueTask ClaimedAsync(LeaseClaim<InstanceKey> claim, IWorkTransaction tx, CancellationToken cancellationToken)
+    public ValueTask ClaimedAsync(LeaseClaim<InstanceKey> claim, WorkTransaction tx, CancellationToken cancellationToken)
     {
         // claim.Reason: Due, ByKey, Takeover; claim.PreviousOwner, claim.PreviousEpoch
         // Settle the interrupted attempt, start a new one, journal it. No external calls here.

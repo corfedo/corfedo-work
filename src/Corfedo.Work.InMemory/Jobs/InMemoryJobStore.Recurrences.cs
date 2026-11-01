@@ -6,7 +6,7 @@ namespace Corfedo.Work.InMemory.Jobs;
 
 internal sealed partial class InMemoryJobStore
 {
-    public ValueTask<RecurrenceOutcome> ScheduleAsync(IWorkTransaction transaction, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, CancellationToken cancellationToken)
+    public ValueTask<RecurrenceOutcome> ScheduleAsync(WorkTransaction transaction, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, CancellationToken cancellationToken)
     {
         Validate(recurrence, calculator);
         return ValueTask.FromResult(StoreRecurrence(Join(transaction), source, recurrence, calculator, null, null));
@@ -114,7 +114,7 @@ internal sealed partial class InMemoryJobStore
     /// Cancels the recurrence's outstanding occurrences, clears the unconsumed marks of its ended occurrences and deletes
     /// it, queueing its key for the monitoring loop. Occurrences to be skipped are left to finalization.
     /// </summary>
-    public async ValueTask<bool> RemoveAsync(IWorkTransaction transaction, LeaseSource<JobId> source, string identity, JobEndedCallback? ended, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
+    public async ValueTask<bool> RemoveAsync(WorkTransaction transaction, LeaseSource<JobId> source, string identity, JobEndedCallback? ended, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(definitions);
@@ -136,7 +136,7 @@ internal sealed partial class InMemoryJobStore
     }
 
     /// <summary>Triggers the identity's recurrence as <see cref="TriggerLocked"/> describes; its schedule does not move.</summary>
-    public ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, LeaseSource<JobId> source, string identity, bool ignoreCalendar, CancellationToken cancellationToken)
+    public ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, LeaseSource<JobId> source, string identity, bool ignoreCalendar, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(identity);
         var work = Join(transaction);

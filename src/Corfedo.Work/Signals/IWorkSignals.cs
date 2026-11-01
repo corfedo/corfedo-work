@@ -12,7 +12,7 @@ public interface IWorkSignals
 {
     /// <summary>Sends a signal on commit of <paramref name="transaction"/>.</summary>
     /// <exception cref="ArgumentException">The topic is <c>default</c> or the key is longer than <see cref="WorkSignals.MaximumKeyBytes"/>.</exception>
-    ValueTask SendAsync(IWorkTransaction transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
+    ValueTask SendAsync(WorkTransaction transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
 
     /// <summary>Sends a signal at once.</summary>
     /// <exception cref="ArgumentException">The topic is <c>default</c> or the key is longer than <see cref="WorkSignals.MaximumKeyBytes"/>.</exception>

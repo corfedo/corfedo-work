@@ -10,7 +10,7 @@ internal sealed partial class PostgreSqlJobStore
 {
     private const string ScheduleColumns = "schedule_kind, period, interval_kind, anchor, expression, time_zone";
 
-    public async ValueTask<RecurrenceOutcome> ScheduleAsync(IWorkTransaction transaction, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, CancellationToken cancellationToken)
+    public async ValueTask<RecurrenceOutcome> ScheduleAsync(WorkTransaction transaction, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, CancellationToken cancellationToken)
     {
         Validate(recurrence, calculator);
         return await StoreRecurrenceAsync(PostgreSqlTransaction.From(transaction), source, recurrence, calculator, null, null, cancellationToken);
@@ -173,7 +173,7 @@ internal sealed partial class PostgreSqlJobStore
     /// them, clears the unconsumed marks of its ended occurrences and deletes it, queueing its key for the monitoring
     /// loop and signalling it. Occurrences to be skipped are left to finalization.
     /// </summary>
-    public async ValueTask<bool> RemoveAsync(IWorkTransaction transaction, LeaseSource<JobId> source, string identity, JobEndedCallback? ended, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
+    public async ValueTask<bool> RemoveAsync(WorkTransaction transaction, LeaseSource<JobId> source, string identity, JobEndedCallback? ended, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(definitions);
@@ -205,7 +205,7 @@ internal sealed partial class PostgreSqlJobStore
     /// Requires READ COMMITTED, locks the recurrence, waiting, then its outstanding occurrences, and triggers it as
     /// <see cref="TriggerLockedAsync"/> describes. The recurrence's schedule does not move.
     /// </summary>
-    public async ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, LeaseSource<JobId> source, string identity, bool ignoreCalendar, CancellationToken cancellationToken)
+    public async ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, LeaseSource<JobId> source, string identity, bool ignoreCalendar, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(identity);
         var work = PostgreSqlTransaction.From(transaction);

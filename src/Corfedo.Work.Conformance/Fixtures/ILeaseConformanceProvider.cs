@@ -44,13 +44,13 @@ public interface ILeaseConformanceProvider
     Task<IConformanceTransaction> BeginAsync(CancellationToken cancellationToken);
 
     /// <summary>Appends a journal entry in a work transaction, as hooks and handlers write domain data.</summary>
-    Task JournalAsync(IWorkTransaction transaction, StoreLocation table, string entry, CancellationToken cancellationToken);
+    Task JournalAsync(WorkTransaction transaction, StoreLocation table, string entry, CancellationToken cancellationToken);
 
     /// <summary>
     /// Inserts a record in a work transaction, as domain writes do; a key that exists fails with the store's unique-key
     /// violation, whose details name the key.
     /// </summary>
-    Task InsertInTransactionAsync(IWorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken);
+    Task InsertInTransactionAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken);
 
     /// <summary>Committed journal entries in insertion order.</summary>
     Task<IReadOnlyList<string>> ReadJournalAsync(StoreLocation table, CancellationToken cancellationToken);
@@ -59,7 +59,7 @@ public interface ILeaseConformanceProvider
 /// <summary>An application transaction against the store.</summary>
 public interface IConformanceTransaction : IAsyncDisposable
 {
-    IWorkTransaction Work { get; }
+    WorkTransaction Work { get; }
 
     Task WriteProgressAsync(StoreLocation table, TestKey key, string progress, CancellationToken cancellationToken);
 

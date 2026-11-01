@@ -18,24 +18,24 @@ public sealed class ScriptedHandler(HandlerScript script) : ILeaseHandler<TestKe
 /// <summary>What a scenario's claim hook does.</summary>
 public sealed class ClaimHookScript
 {
-    public Func<LeaseClaim<TestKey>, IWorkTransaction, CancellationToken, ValueTask> Claimed { get; set; } = (_, _, _) => ValueTask.CompletedTask;
+    public Func<LeaseClaim<TestKey>, WorkTransaction, CancellationToken, ValueTask> Claimed { get; set; } = (_, _, _) => ValueTask.CompletedTask;
 }
 
 public sealed class ScriptedClaimHook(ClaimHookScript script) : ILeaseClaimHook<TestKey>
 {
-    public ValueTask ClaimedAsync(LeaseClaim<TestKey> claim, IWorkTransaction transaction, CancellationToken cancellationToken) =>
+    public ValueTask ClaimedAsync(LeaseClaim<TestKey> claim, WorkTransaction transaction, CancellationToken cancellationToken) =>
         script.Claimed(claim, transaction, cancellationToken);
 }
 
 /// <summary>What a scenario's expiry handler does.</summary>
 public sealed class ExpiryScript
 {
-    public Func<LeaseExpiry<TestKey>, IWorkTransaction, CancellationToken, ValueTask> Expired { get; set; } = (_, _, _) => ValueTask.CompletedTask;
+    public Func<LeaseExpiry<TestKey>, WorkTransaction, CancellationToken, ValueTask> Expired { get; set; } = (_, _, _) => ValueTask.CompletedTask;
 }
 
 public sealed class ScriptedExpiryHandler(ExpiryScript script) : ILeaseExpiryHandler<TestKey>
 {
-    public ValueTask ExpiredAsync(LeaseExpiry<TestKey> expiry, IWorkTransaction transaction, CancellationToken cancellationToken) =>
+    public ValueTask ExpiredAsync(LeaseExpiry<TestKey> expiry, WorkTransaction transaction, CancellationToken cancellationToken) =>
         script.Expired(expiry, transaction, cancellationToken);
 }
 

@@ -7,7 +7,7 @@ namespace Corfedo.Work.InMemory;
 /// read and write application tables through it; its writes, the framework's included, are visible to it at once and
 /// to everyone else when it commits. Disposing it without a commit rolls it back.
 /// </summary>
-public sealed class InMemoryTransaction : IWorkTransaction, IDisposable
+public sealed class InMemoryTransaction : WorkTransaction, IDisposable
 {
     private Dictionary<object, ITableChanges> changes = [];
     private List<(ApplicationState Application, SignalTopic Topic, string Key)> signals = [];
@@ -108,7 +108,7 @@ public sealed class InMemoryTransaction : IWorkTransaction, IDisposable
     }
 
     /// <summary>The transaction behind a handle of this provider that is still open.</summary>
-    internal static InMemoryTransaction From(IWorkTransaction transaction, InMemoryWorkDatabase database)
+    internal static InMemoryTransaction From(WorkTransaction transaction, InMemoryWorkDatabase database)
     {
         var found = transaction switch
         {
@@ -226,7 +226,7 @@ public sealed class InMemoryUniqueViolationException(StoreLocation table, string
 public static class InMemoryWork
 {
     /// <summary>The in-memory transaction behind a handle, for hooks and test doubles that bind their data access to it.</summary>
-    public static InMemoryTransaction InMemory(this IWorkTransaction transaction) => transaction switch
+    public static InMemoryTransaction InMemory(this WorkTransaction transaction) => transaction switch
     {
         InMemoryTransaction memory => memory,
         null => throw new ArgumentNullException(nameof(transaction)),

@@ -26,10 +26,10 @@ public interface IJobStore
     /// of its identity, and signals claimers on commit. Recurrences of the identity are not consulted.
     /// </summary>
     /// <exception cref="JobPartitionMismatchException">The outstanding job of the identity has another partition.</exception>
-    ValueTask<JobRequestResult> RequestAsync(IWorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken);
+    ValueTask<JobRequestResult> RequestAsync(WorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Applies a request as <see cref="RequestAsync(IWorkTransaction, LeaseSource{JobId}, JobRequestData, CancellationToken)"/>
+    /// Applies a request as <see cref="RequestAsync(WorkTransaction, LeaseSource{JobId}, JobRequestData, CancellationToken)"/>
     /// does, in the store's own transaction, at read committed isolation where the store has levels, and signals claimers
     /// on its commit.
     /// </summary>
@@ -38,11 +38,11 @@ public interface IJobStore
 
     /// <summary>In the caller's transaction, applies every request in order: all commit or none do.</summary>
     /// <exception cref="JobPartitionMismatchException">An outstanding job of an item's identity has another partition.</exception>
-    ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync(IWorkTransaction transaction, LeaseSource<JobId> source, IReadOnlyList<JobRequestData> requests, CancellationToken cancellationToken);
+    ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync(WorkTransaction transaction, LeaseSource<JobId> source, IReadOnlyList<JobRequestData> requests, CancellationToken cancellationToken);
 
     /// <summary>In the caller's transaction, applies a transition to a validly held job, guarded like every holder write.</summary>
     /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
-    ValueTask CompleteAsync(IWorkTransaction transaction, Lease<JobId> lease, JobTransition transition, JobEndedCallback? ended, CancellationToken cancellationToken);
+    ValueTask CompleteAsync(WorkTransaction transaction, Lease<JobId> lease, JobTransition transition, JobEndedCallback? ended, CancellationToken cancellationToken);
 
     /// <summary>Applies a transition to a validly held job in the store's own transaction; false if the lease was already lost.</summary>
     ValueTask<bool> CompleteAsync(Lease<JobId> lease, JobTransition transition, JobEndedCallback? ended, CancellationToken cancellationToken);
@@ -52,14 +52,14 @@ public interface IJobStore
     /// with <paramref name="mergeKey"/>, standalone jobs and the occurrences of the identity's recurrence: one that is
     /// not held ends cancelled; a held one gets a cancellation request and ends cancelled when its run observes it. Pending follow-ups are discarded. Returns how many it reached.
     /// </summary>
-    ValueTask<int> CancelAsync(IWorkTransaction transaction, LeaseSource<JobId> source, Subject? subject, string? mergeKey, JobEndedCallback? ended, CancellationToken cancellationToken);
+    ValueTask<int> CancelAsync(WorkTransaction transaction, LeaseSource<JobId> source, Subject? subject, string? mergeKey, JobEndedCallback? ended, CancellationToken cancellationToken);
 
     /// <summary>
     /// In the caller's transaction, cancels the outstanding jobs of every definition acting on <paramref name="subject"/>.
     /// <paramref name="definitions"/> resolves each definition's source and outcome callback by key.
     /// </summary>
     /// <exception cref="InvalidOperationException">A job of the subject belongs to a definition <paramref name="definitions"/> does not resolve.</exception>
-    ValueTask<int> CancelAllAsync(IWorkTransaction transaction, Subject subject, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken);
+    ValueTask<int> CancelAllAsync(WorkTransaction transaction, Subject subject, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken);
 
     /// <summary>
     /// Ends up to <paramref name="limit"/> outstanding jobs that are not held and whose argument version is below the
@@ -71,7 +71,7 @@ public interface IJobStore
     /// In the caller's transaction, pauses or resumes claiming of the definition: takes the definition fence
     /// exclusively, so claims in flight finish first and later claims read the new state after their fence.
     /// </summary>
-    ValueTask PauseDefinitionAsync(IWorkTransaction transaction, LeaseSource<JobId> source, bool paused, CancellationToken cancellationToken);
+    ValueTask PauseDefinitionAsync(WorkTransaction transaction, LeaseSource<JobId> source, bool paused, CancellationToken cancellationToken);
 
     /// <summary>
     /// In the caller's transaction, pauses or resumes one subject of the definition. The stored pause is the authority
@@ -79,7 +79,7 @@ public interface IJobStore
     /// in flight finishes first and a later claim sees the committed state. Jobs and occurrences created while the
     /// pause holds are not claimable.
     /// </summary>
-    ValueTask PauseSubjectAsync(IWorkTransaction transaction, LeaseSource<JobId> source, Subject subject, bool paused, CancellationToken cancellationToken);
+    ValueTask PauseSubjectAsync(WorkTransaction transaction, LeaseSource<JobId> source, Subject subject, bool paused, CancellationToken cancellationToken);
 
     /// <summary>
     /// In the caller's transaction, creates the recurrence of the request's identity or replaces its schedule, policies
@@ -89,7 +89,7 @@ public interface IJobStore
     /// <exception cref="JobPartitionMismatchException">The recurrence of the identity has another partition.</exception>
     /// <exception cref="ArgumentException">The schedule has no future occurrence.</exception>
     /// <exception cref="InvalidOperationException">The store has isolation levels and the transaction is not read-committed; nothing was changed.</exception>
-    ValueTask<RecurrenceOutcome> ScheduleAsync(IWorkTransaction transaction, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, CancellationToken cancellationToken);
+    ValueTask<RecurrenceOutcome> ScheduleAsync(WorkTransaction transaction, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, CancellationToken cancellationToken);
 
     /// <summary>
     /// Stores a code-defined recurrence of <paramref name="revision"/> in the store's own transaction: creates it, or
@@ -107,7 +107,7 @@ public interface IJobStore
     /// </summary>
     /// <exception cref="InvalidOperationException">A step of such a chain belongs to a definition <paramref name="definitions"/> does not resolve.</exception>
     /// <exception cref="InvalidOperationException">The store has isolation levels and the transaction is not read-committed; nothing was changed.</exception>
-    ValueTask<bool> RemoveAsync(IWorkTransaction transaction, LeaseSource<JobId> source, string identity, JobEndedCallback? ended, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken);
+    ValueTask<bool> RemoveAsync(WorkTransaction transaction, LeaseSource<JobId> source, string identity, JobEndedCallback? ended, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken);
 
     /// <summary>
     /// In the caller's transaction, triggers the identity's recurrence without moving it: starts a triggered occurrence
@@ -119,7 +119,7 @@ public interface IJobStore
     /// <paramref name="ignoreCalendar"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The identity has no recurrence, or the store has isolation levels and the transaction is not read-committed; nothing was changed.</exception>
-    ValueTask<RunNowResult> TriggerAsync(IWorkTransaction transaction, LeaseSource<JobId> source, string identity, bool ignoreCalendar, CancellationToken cancellationToken);
+    ValueTask<RunNowResult> TriggerAsync(WorkTransaction transaction, LeaseSource<JobId> source, string identity, bool ignoreCalendar, CancellationToken cancellationToken);
 
     /// <summary>
     /// In the store's own transaction, makes an outstanding job that is not held due now, keeping its attempts, and

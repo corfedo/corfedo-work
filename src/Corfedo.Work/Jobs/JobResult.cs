@@ -176,7 +176,7 @@ public sealed record JobEnd(
     string? Occurrence = null);
 
 /// <summary>Runs inside the transaction that makes a terminal transition; a failure rolls the transition back.</summary>
-public delegate ValueTask JobEndedCallback(JobEnd end, IWorkTransaction transaction, CancellationToken cancellationToken);
+public delegate ValueTask JobEndedCallback(JobEnd end, WorkTransaction transaction, CancellationToken cancellationToken);
 
 /// <summary>How a job claim found the job.</summary>
 public enum JobClaimKind

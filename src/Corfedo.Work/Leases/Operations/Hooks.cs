@@ -4,14 +4,14 @@ namespace Corfedo.Work;
 public interface ILeaseClaimHook<TKey>
     where TKey : notnull
 {
-    ValueTask ClaimedAsync(LeaseClaim<TKey> claim, IWorkTransaction transaction, CancellationToken cancellationToken);
+    ValueTask ClaimedAsync(LeaseClaim<TKey> claim, WorkTransaction transaction, CancellationToken cancellationToken);
 }
 
 /// <summary>Releases resources tied to an expired lease, inside the settlement transaction.</summary>
 public interface ILeaseExpiryHandler<TKey>
     where TKey : notnull
 {
-    ValueTask ExpiredAsync(LeaseExpiry<TKey> expiry, IWorkTransaction transaction, CancellationToken cancellationToken);
+    ValueTask ExpiredAsync(LeaseExpiry<TKey> expiry, WorkTransaction transaction, CancellationToken cancellationToken);
 }
 
 /// <summary>Runs claimed records of a source.</summary>

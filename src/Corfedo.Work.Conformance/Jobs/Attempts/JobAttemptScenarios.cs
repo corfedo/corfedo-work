@@ -228,7 +228,7 @@ public abstract class JobAttemptScenarios(IJobConformanceProvider provider) : Jo
         var (_, source) = await JobSourceAsync(client, definition, TimeSpan.FromSeconds(30));
         var operations = client.Operations;
         var parsed = source.ParseToken(claim.Lease.Token);
-        var refused = new List<Func<IWorkTransaction, Task>>
+        var refused = new List<Func<WorkTransaction, Task>>
         {
             _ => operations.ClaimDueAsync(source, 1, Cancel).AsTask(),
             _ => operations.ClaimAsync(source, job.Id, Cancel).AsTask(),

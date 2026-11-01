@@ -202,7 +202,7 @@ internal sealed class InMemoryCalendarStore(InMemoryWorkDatabase database, Appli
     /// time their calendar planned, not one an operator made due ignoring it, get it back as their calendar instant, and
     /// ones waiting for uncovered dates become plannable. Each definition with such jobs is signalled to plan on commit.
     /// </summary>
-    public ValueTask<bool> PublishDatesAsync(IWorkTransaction transaction, CalendarDates set, CancellationToken cancellationToken)
+    public ValueTask<bool> PublishDatesAsync(WorkTransaction transaction, CalendarDates set, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(set);
         ArgumentException.ThrowIfNullOrWhiteSpace(set.Name, nameof(set));

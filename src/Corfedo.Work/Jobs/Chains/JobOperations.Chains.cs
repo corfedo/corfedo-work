@@ -6,11 +6,11 @@ public sealed partial class JobOperations
     /// Requests a chain in the caller's transaction (K1): every step and group is created atomically, the root due now
     /// and every other step waiting for its parent. Every step's definition must be registered in this process.
     /// </summary>
-    public ValueTask<ChainId> RequestChainAsync(IWorkTransaction transaction, Action<ChainBuilder> chain, CancellationToken cancellationToken = default) =>
+    public ValueTask<ChainId> RequestChainAsync(WorkTransaction transaction, Action<ChainBuilder> chain, CancellationToken cancellationToken = default) =>
         RequestChainAsync(transaction, chain, Schedule.Now, cancellationToken);
 
     /// <summary>Requests a chain whose root is due by the one-shot <paramref name="schedule"/>, which may name a calendar.</summary>
-    public async ValueTask<ChainId> RequestChainAsync(IWorkTransaction transaction, Action<ChainBuilder> chain, Schedule schedule, CancellationToken cancellationToken = default)
+    public async ValueTask<ChainId> RequestChainAsync(WorkTransaction transaction, Action<ChainBuilder> chain, Schedule schedule, CancellationToken cancellationToken = default)
     {
         var data = await BuildChainAsync(store, registry, chain, schedule, cancellationToken);
         await store.Chains.RequestChainAsync(transaction, data, cancellationToken);
@@ -37,7 +37,7 @@ public sealed partial class JobOperations
     /// ones through their lease, and their children follow their conditions. Refused when a step belongs to a definition
     /// this process does not register.
     /// </summary>
-    public async ValueTask<int> CancelChainAsync(IWorkTransaction transaction, ChainId chain, CancellationToken cancellationToken = default) =>
+    public async ValueTask<int> CancelChainAsync(WorkTransaction transaction, ChainId chain, CancellationToken cancellationToken = default) =>
         await store.Chains.CancelChainAsync(transaction, chain, await DefinitionsAsync(cancellationToken), cancellationToken);
 
     /// <summary>

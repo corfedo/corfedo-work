@@ -121,7 +121,7 @@ internal sealed partial class PostgreSqlLeaseStore
         }
     }
 
-    public async ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken)
+    public async ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken)
         where TKey : notnull
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);

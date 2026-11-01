@@ -10,7 +10,7 @@ internal sealed partial class PostgreSqlJobStore
     /// Takes the definition fence exclusively, waiting for claims in flight, then stores the pause state that every
     /// later claim and planning pass reads after its fence. Resuming signals claimers and planners.
     /// </summary>
-    public async ValueTask PauseDefinitionAsync(IWorkTransaction transaction, LeaseSource<JobId> source, bool paused, CancellationToken cancellationToken)
+    public async ValueTask PauseDefinitionAsync(WorkTransaction transaction, LeaseSource<JobId> source, bool paused, CancellationToken cancellationToken)
     {
         var work = PostgreSqlTransaction.From(transaction);
         var definition = Sql(source).Job!.Definition;
@@ -36,7 +36,7 @@ internal sealed partial class PostgreSqlJobStore
     /// Requests and schedules take no pause lock: a row stored concurrently may carry a stale flag, which claims and
     /// planning ignore in favour of the stored pause and maintenance repairs.
     /// </summary>
-    public async ValueTask PauseSubjectAsync(IWorkTransaction transaction, LeaseSource<JobId> source, Subject subject, bool paused, CancellationToken cancellationToken)
+    public async ValueTask PauseSubjectAsync(WorkTransaction transaction, LeaseSource<JobId> source, Subject subject, bool paused, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(subject);
         var work = PostgreSqlTransaction.From(transaction);

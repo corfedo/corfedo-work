@@ -5,18 +5,19 @@ leaves no work behind, and a job never runs before its data is committed.
 
 ## Getting the handle
 
-Operations take an `IWorkTransaction`, a handle to your open transaction.
+Operations take a `WorkTransaction`, a handle to your open transaction. An ADO.NET transaction converts to it, so you
+pass your `NpgsqlTransaction` as it is.
 
 | You use | Handle |
 |---|---|
 | EF Core | `db.Database.WorkTransaction()`, after `db.Database.BeginTransactionAsync()` |
-| Npgsql | `npgsqlTransaction.WorkTransaction()` |
+| Npgsql | the `NpgsqlTransaction` itself |
 | Tests on the in-memory store | the transaction from `database.BeginAsync()` |
 
 ```csharp
 await using var transaction = await connection.BeginTransactionAsync(ct);
 // ... your own writes on the same connection ...
-await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.FeedSync, args, cancellationToken: ct);
+await jobs.RequestAsync(transaction, Jobs.FeedSync, args, cancellationToken: ct);
 await transaction.CommitAsync(ct);
 ```
 

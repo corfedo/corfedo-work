@@ -13,7 +13,7 @@ public interface IJobConformanceProvider : ILeaseConformanceProvider
     Task<bool> ReadRecurrencePausedAsync(string definition, Subject subject, CancellationToken cancellationToken);
 
     /// <summary>Locks the subject's recurrence of a definition and its outstanding jobs in the transaction, as a concurrent writer would.</summary>
-    Task LockSubjectAsync(IWorkTransaction transaction, string definition, Subject subject, CancellationToken cancellationToken);
+    Task LockSubjectAsync(WorkTransaction transaction, string definition, Subject subject, CancellationToken cancellationToken);
 
     /// <summary>The store's clock.</summary>
     Task<DateTimeOffset> NowAsync(CancellationToken cancellationToken);

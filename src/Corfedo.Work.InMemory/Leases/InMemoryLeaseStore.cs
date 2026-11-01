@@ -22,7 +22,7 @@ internal sealed partial class InMemoryLeaseStore(InMemoryWorkDatabase database, 
         where TKey : notnull =>
         (LeaseRules<TKey>)rules.GetOrAdd(source, static (s, store) => new LeaseRules<TKey>((LeaseSource<TKey>)s, store.Database, store.Application), this);
 
-    internal InMemoryTransaction Join(IWorkTransaction transaction) => InMemoryTransaction.From(transaction, database);
+    internal InMemoryTransaction Join(WorkTransaction transaction) => InMemoryTransaction.From(transaction, database);
 
     internal void Signal(InMemoryTransaction transaction, SignalTopic topic, string key) => transaction.Signal(application, topic, key);
 

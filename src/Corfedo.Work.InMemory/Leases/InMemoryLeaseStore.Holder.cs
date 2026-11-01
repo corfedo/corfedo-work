@@ -14,7 +14,7 @@ internal sealed partial class InMemoryLeaseStore
         return result;
     }
 
-    public ValueTask<RenewResult> RenewAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+    public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
         where TKey : notnull => ValueTask.FromResult(Renew(Join(transaction), lease));
 
     /// <summary>Extends the lease if it is still valid.</summary>
@@ -73,7 +73,7 @@ internal sealed partial class InMemoryLeaseStore
         return true;
     }
 
-    public ValueTask<EndResult> EndAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
+    public ValueTask<EndResult> EndAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = Join(transaction);

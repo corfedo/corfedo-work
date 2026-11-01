@@ -5,7 +5,7 @@ namespace Corfedo.Work.InMemory.Jobs;
 
 internal sealed partial class InMemoryJobStore
 {
-    public async ValueTask<JobRequestResult> RequestAsync(IWorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken)
+    public async ValueTask<JobRequestResult> RequestAsync(WorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         return (await RequestManyAsync(transaction, source, [request], cancellationToken))[0];
@@ -26,7 +26,7 @@ internal sealed partial class InMemoryJobStore
     /// and while no claim holds or held its lease and it is not to be skipped, it replaces the arguments, the calendar
     /// and its policies and merges the instant; otherwise it becomes the pending follow-up.
     /// </summary>
-    public ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync(IWorkTransaction transaction, LeaseSource<JobId> source, IReadOnlyList<JobRequestData> requests, CancellationToken cancellationToken)
+    public ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync(WorkTransaction transaction, LeaseSource<JobId> source, IReadOnlyList<JobRequestData> requests, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(requests);
         var work = Join(transaction);

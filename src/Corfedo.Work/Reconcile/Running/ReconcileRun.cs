@@ -85,11 +85,11 @@ public sealed class ReconcileRun<TKey>
     private ReconcileAttempt Attempt { get; }
 
     /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}"/>
-    public ValueTask GuardAsync(IWorkTransaction transaction, CancellationToken cancellationToken = default) =>
+    public ValueTask GuardAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>
         Lease.GuardAsync(transaction, cancellationToken);
 
     /// <summary>Renews in the caller's transaction, so progress written in it commits with the renewal.</summary>
-    public ValueTask<RenewResult> RenewAsync(IWorkTransaction transaction, CancellationToken cancellationToken = default) =>
+    public ValueTask<RenewResult> RenewAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>
         Lease.RenewAsync(transaction, cancellationToken);
 
     /// <summary>
@@ -98,6 +98,6 @@ public sealed class ReconcileRun<TKey>
     /// completion is applied as failed.
     /// </summary>
     /// <exception cref="LeaseLostException">The lease is no longer valid or was superseded; the transaction must not commit.</exception>
-    public ValueTask CompleteAsync(IWorkTransaction transaction, ReconcileResult result, CancellationToken cancellationToken = default) =>
+    public ValueTask CompleteAsync(WorkTransaction transaction, ReconcileResult result, CancellationToken cancellationToken = default) =>
         operations.CompleteAsync(Lease.Lease, transaction, result, cancellationToken);
 }

@@ -15,7 +15,7 @@ public sealed class CalendarOperations(IWorkStore store, CalendarCoverageOptions
     /// <param name="dates">The dates the set excludes, none after <paramref name="coversThrough"/>.</param>
     /// <param name="coversThrough">The last date the set covers; a date after it is unknown, so work that needs it waits.</param>
     /// <exception cref="CalendarConflictException">The stored revision is equal and its dates or coverage differ.</exception>
-    public ValueTask<bool> PublishDatesAsync(IWorkTransaction transaction, string name, long revision, IEnumerable<DateOnly> dates, DateOnly coversThrough, CancellationToken cancellationToken = default)
+    public ValueTask<bool> PublishDatesAsync(WorkTransaction transaction, string name, long revision, IEnumerable<DateOnly> dates, DateOnly coversThrough, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);

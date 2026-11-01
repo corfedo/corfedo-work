@@ -14,7 +14,7 @@ internal sealed partial class InMemoryJobStore
 {
     private readonly ConditionalWeakTable<IReadOnlyList<Guid>, ILookup<Guid, Guid>> childIndex = new();
 
-    public ValueTask RequestChainAsync(IWorkTransaction transaction, ChainData chain, CancellationToken cancellationToken)
+    public ValueTask RequestChainAsync(WorkTransaction transaction, ChainData chain, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(chain);
         var work = Join(transaction);
@@ -138,7 +138,7 @@ internal sealed partial class InMemoryJobStore
     /// chain's current generation, counts the new nodes of the step's own enclosing group into its pending count, and
     /// records the definitions of the new steps with the chain.
     /// </summary>
-    public ValueTask AddGroupAsync(IWorkTransaction transaction, Lease<JobId> lease, IReadOnlyList<ChainStepData> steps, IReadOnlyList<ChainGroupData> groups, CancellationToken cancellationToken)
+    public ValueTask AddGroupAsync(WorkTransaction transaction, Lease<JobId> lease, IReadOnlyList<ChainStepData> steps, IReadOnlyList<ChainGroupData> groups, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(steps);

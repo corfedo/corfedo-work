@@ -8,7 +8,7 @@ namespace Corfedo.Work.PostgreSql.Jobs;
 
 internal sealed partial class PostgreSqlJobStore
 {
-    public async ValueTask CompleteAsync(IWorkTransaction transaction, Lease<JobId> lease, JobTransition transition, JobEndedCallback? ended, CancellationToken cancellationToken)
+    public async ValueTask CompleteAsync(WorkTransaction transaction, Lease<JobId> lease, JobTransition transition, JobEndedCallback? ended, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(transition);

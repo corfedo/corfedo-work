@@ -10,7 +10,7 @@ internal sealed partial class PostgreSqlJobStore
     /// <summary>Rounds whose items all had to be retried before the request gives up; each retry follows a concurrent end.</summary>
     private const int RequestRetries = 3;
 
-    public async ValueTask<JobRequestResult> RequestAsync(IWorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken)
+    public async ValueTask<JobRequestResult> RequestAsync(WorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         return (await RequestManyAsync(transaction, source, [request], cancellationToken))[0];
@@ -33,7 +33,7 @@ internal sealed partial class PostgreSqlJobStore
     /// <c>clock_timestamp()</c>. Items the statement did not write met an outstanding job of another partition, which is
     /// refused, or under <c>IfAbsent</c> an existing one; an item whose conflicting job ended meanwhile is applied again.
     /// </summary>
-    public async ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync(IWorkTransaction transaction, LeaseSource<JobId> source, IReadOnlyList<JobRequestData> requests, CancellationToken cancellationToken)
+    public async ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync(WorkTransaction transaction, LeaseSource<JobId> source, IReadOnlyList<JobRequestData> requests, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(requests);
         var work = PostgreSqlTransaction.From(transaction);

@@ -11,7 +11,7 @@ public interface ISignalTransport
     /// <summary>
     /// Sends a signal on commit of <paramref name="transaction"/> and never after its rollback, or at once without one.
     /// </summary>
-    ValueTask SendAsync(IWorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
+    ValueTask SendAsync(WorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
 
     /// <summary>
     /// Listens until cancelled, calling <paramref name="received"/> for every signal of the application and

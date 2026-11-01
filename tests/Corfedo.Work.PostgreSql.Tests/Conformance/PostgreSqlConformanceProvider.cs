@@ -190,7 +190,7 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
         return new Transaction(connection, await connection.BeginTransactionAsync(cancellationToken));
     }
 
-    public async Task JournalAsync(IWorkTransaction transaction, StoreLocation table, string entry, CancellationToken cancellationToken)
+    public async Task JournalAsync(WorkTransaction transaction, StoreLocation table, string entry, CancellationToken cancellationToken)
     {
         var npgsql = transaction.Npgsql();
         await using var command = new NpgsqlCommand($"INSERT INTO {Name(table)}_journal (entry) VALUES ($1)", npgsql.Connection, npgsql);
@@ -198,7 +198,7 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task InsertInTransactionAsync(IWorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
+    public async Task InsertInTransactionAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
     {
         var npgsql = transaction.Npgsql();
         await using var command = new NpgsqlCommand($"INSERT INTO {Name(table)} (tenant, id) VALUES ($1, $2)", npgsql.Connection, npgsql);
@@ -296,7 +296,7 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
         return await command.ExecuteScalarAsync(cancellationToken) as bool? ?? throw new InvalidOperationException($"No recurrence of {definition} for {subject}.");
     }
 
-    public async Task LockSubjectAsync(IWorkTransaction transaction, string definition, Subject subject, CancellationToken cancellationToken)
+    public async Task LockSubjectAsync(WorkTransaction transaction, string definition, Subject subject, CancellationToken cancellationToken)
     {
         var npgsql = transaction.Npgsql();
         foreach (var table in new[] { "work.job_recurrences", "work.jobs" })
@@ -370,7 +370,7 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
 
     private sealed class Transaction(NpgsqlConnection connection, NpgsqlTransaction transaction) : IConformanceTransaction
     {
-        public IWorkTransaction Work { get; } = transaction.WorkTransaction();
+        public WorkTransaction Work { get; } = transaction;
 
         public async Task WriteProgressAsync(StoreLocation table, TestKey key, string progress, CancellationToken cancellationToken)
         {

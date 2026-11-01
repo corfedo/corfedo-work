@@ -84,7 +84,7 @@ work.AddJobDefinition(FeedSync, definition => definition.OnEnded<FeedSyncEnded>(
 
 public sealed class FeedSyncEnded : IJobEnded
 {
-    public ValueTask EndedAsync(JobEnd end, IWorkTransaction tx, CancellationToken cancellationToken)
+    public ValueTask EndedAsync(JobEnd end, WorkTransaction tx, CancellationToken cancellationToken)
     {
         // end.Subject, end.Partition, end.Occurrence, end.Outcome, end.Reason ("lease_lost", "args_version", ...)
         // Record the outcome on the feed through the domain's data access bound to tx.

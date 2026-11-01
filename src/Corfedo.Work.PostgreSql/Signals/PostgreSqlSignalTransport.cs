@@ -16,7 +16,7 @@ internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSou
     private static readonly TimeSpan Reconnect = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan Probe = TimeSpan.FromSeconds(30);
 
-    public async ValueTask SendAsync(IWorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
+    public async ValueTask SendAsync(WorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
     {
         if (transaction is not null)
         {

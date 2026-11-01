@@ -11,7 +11,7 @@ public interface IChainStore
     /// In the caller's transaction, creates the chain with every step and group: the root is due by its request's
     /// schedule, the other steps wait for their parents. Every definition must be stored.
     /// </summary>
-    ValueTask RequestChainAsync(IWorkTransaction transaction, ChainData chain, CancellationToken cancellationToken);
+    ValueTask RequestChainAsync(WorkTransaction transaction, ChainData chain, CancellationToken cancellationToken);
 
     /// <summary>
     /// In the store's own transaction, guarded by the lease of an occurrence that owns a recurring chain: creates the
@@ -27,7 +27,7 @@ public interface IChainStore
     /// </summary>
     /// <exception cref="InvalidOperationException">The job is not a chain step.</exception>
     /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
-    ValueTask AddGroupAsync(IWorkTransaction transaction, Lease<JobId> lease, IReadOnlyList<ChainStepData> steps, IReadOnlyList<ChainGroupData> groups, CancellationToken cancellationToken);
+    ValueTask AddGroupAsync(WorkTransaction transaction, Lease<JobId> lease, IReadOnlyList<ChainStepData> steps, IReadOnlyList<ChainGroupData> groups, CancellationToken cancellationToken);
 
     /// <summary>The latest ended execution of the step's parent step, or null when the parent is a group or of another definition.</summary>
     ValueTask<StoredJobOutcome?> GetParentOutcomeAsync(JobId step, string definition, CancellationToken cancellationToken);
@@ -54,7 +54,7 @@ public interface IChainStore
     /// <paramref name="definitions"/> resolves each definition's source and outcome callback by key.
     /// </summary>
     /// <exception cref="InvalidOperationException">A step belongs to a definition <paramref name="definitions"/> does not resolve.</exception>
-    ValueTask<int> CancelChainAsync(IWorkTransaction transaction, ChainId chain, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken);
+    ValueTask<int> CancelChainAsync(WorkTransaction transaction, ChainId chain, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken);
 
     /// <summary>
     /// In the store's own transaction, deletes a settled chain as a unit. One with unsettled steps is refused, or with

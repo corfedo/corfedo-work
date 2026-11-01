@@ -179,25 +179,25 @@ public sealed class LeaseHoldTests
         public ValueTask<LeaseClaim<TKey>?> ClaimAsync<TKey>(LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, TKey key, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
-        public ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken)
+        public ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
-        public ValueTask<RenewResult> RenewAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+        public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
         public ValueTask<bool> ReleaseAsync<TKey>(Lease<TKey> lease, Due due, bool failed, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
-        public ValueTask<EndResult> EndAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
+        public ValueTask<EndResult> EndAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
-        public ValueTask<bool> ScheduleAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution, CancellationToken cancellationToken)
+        public ValueTask<bool> ScheduleAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
-        public ValueTask<bool> RequestCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
+        public ValueTask<bool> RequestCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
-        public ValueTask<bool> ClearCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
+        public ValueTask<bool> ClearCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
 
         public ValueTask<int> SettleExpiredAsync<TKey>(LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, int limit, CancellationToken cancellationToken)

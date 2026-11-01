@@ -87,7 +87,7 @@ internal sealed partial class PostgreSqlLeaseStore
             await transaction.SaveAsync(savepoint, cancellationToken);
             try
             {
-                await handler(expiry, WorkTransaction.Of(transaction), cancellationToken);
+                await handler(expiry, DbWorkTransaction.Of(transaction), cancellationToken);
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {

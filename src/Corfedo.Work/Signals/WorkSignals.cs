@@ -45,7 +45,7 @@ public sealed partial class WorkSignals : IWorkSignals, IAsyncDisposable, IDispo
         logger = loggerFactory.CreateLogger("Corfedo.Work.Signals");
     }
 
-    public ValueTask SendAsync(IWorkTransaction transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
+    public ValueTask SendAsync(WorkTransaction transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(transaction);
         Validate(topic, key);

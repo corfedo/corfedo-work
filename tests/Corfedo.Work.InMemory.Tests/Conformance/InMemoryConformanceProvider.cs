@@ -152,13 +152,13 @@ public class InMemoryConformanceProvider : IReconcileConformanceProvider, IJobCo
     public async Task<IConformanceTransaction> BeginAsync(CancellationToken cancellationToken) =>
         new Transaction(await database.BeginAsync(cancellationToken));
 
-    public Task JournalAsync(IWorkTransaction transaction, StoreLocation table, string entry, CancellationToken cancellationToken)
+    public Task JournalAsync(WorkTransaction transaction, StoreLocation table, string entry, CancellationToken cancellationToken)
     {
         transaction.InMemory().Insert(Journal(table), new Dictionary<string, object?> { ["n"] = Interlocked.Increment(ref journal), ["entry"] = entry });
         return Task.CompletedTask;
     }
 
-    public Task InsertInTransactionAsync(IWorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
+    public Task InsertInTransactionAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
     {
         transaction.InMemory().Insert(table, new Dictionary<string, object?> { ["tenant"] = key.Tenant, ["id"] = key.Id });
         return Task.CompletedTask;
@@ -213,7 +213,7 @@ public class InMemoryConformanceProvider : IReconcileConformanceProvider, IJobCo
             ?? throw new InvalidOperationException($"No recurrence of {definition} for {subject}."));
 
     /// <summary>The transaction holds the whole store, so the subject's rows are locked already.</summary>
-    public Task LockSubjectAsync(IWorkTransaction transaction, string definition, Subject subject, CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task LockSubjectAsync(WorkTransaction transaction, string definition, Subject subject, CancellationToken cancellationToken) => Task.CompletedTask;
 
     public Task<DateTimeOffset> NowAsync(CancellationToken cancellationToken) => Task.FromResult(Now);
 
@@ -265,7 +265,7 @@ public class InMemoryConformanceProvider : IReconcileConformanceProvider, IJobCo
     {
         private InMemoryTransaction.Savepoint? savepoint;
 
-        public IWorkTransaction Work => transaction;
+        public WorkTransaction Work => transaction;
 
         public Task WriteProgressAsync(StoreLocation table, TestKey key, string progress, CancellationToken cancellationToken)
         {

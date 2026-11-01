@@ -159,7 +159,7 @@ public sealed class WorkSignalsTests
         public void Resync() => throw new InvalidOperationException("resync");
     }
 
-    private sealed class TestTransaction : IWorkTransaction;
+    private sealed class TestTransaction : WorkTransaction;
 
     private sealed record TestListen(Action<SignalTopic, string> Received, Action Connected, CancellationToken Stopped);
 
@@ -173,9 +173,9 @@ public sealed class WorkSignalsTests
 
         public int MostConcurrent { get; private set; }
 
-        public List<(IWorkTransaction?, string, string)> Sent { get; } = [];
+        public List<(WorkTransaction?, string, string)> Sent { get; } = [];
 
-        public ValueTask SendAsync(IWorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
+        public ValueTask SendAsync(WorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
         {
             Sent.Add((transaction, topic.Name, key));
             return ValueTask.CompletedTask;
@@ -196,6 +196,6 @@ public sealed class WorkSignalsTests
             }
         }
 
-        public IWorkTransaction Transaction(DbTransaction transaction) => throw new NotSupportedException();
+        public WorkTransaction Transaction(DbTransaction transaction) => throw new NotSupportedException();
     }
 }

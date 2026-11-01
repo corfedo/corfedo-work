@@ -11,7 +11,7 @@ public sealed partial class JobOperations
     /// (<see cref="RunNowOutcome.MadeDue"/>); a paused one is due once resumed (<see cref="RunNowOutcome.Paused"/>). A
     /// running job, one already due, an occurrence waiting to be recorded skipped and a terminal one are reported as
     /// found. An occurrence of a recurrence that has ended triggers the recurrence, with the outcomes of
-    /// <see cref="TriggerAsync(IWorkTransaction, JobDefinition, Subject, CancellationToken)"/>. A job with a calendar is
+    /// <see cref="TriggerAsync(WorkTransaction, JobDefinition, Subject, CancellationToken)"/>. A job with a calendar is
     /// planned at the next allowed instant.
     /// </summary>
     public ValueTask<RunNowResult> RunNowAsync(JobDefinition definition, JobId job, CancellationToken cancellationToken = default) =>

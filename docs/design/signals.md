@@ -75,10 +75,9 @@ public readonly record struct SignalTopic(string Name);           // validated o
 
 public interface IWorkSignals                                     // one per application in a process
 {
-    ValueTask SendAsync(IWorkTransaction transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
+    ValueTask SendAsync(WorkTransaction transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
     ValueTask SendAsync(SignalTopic topic, string key, CancellationToken cancellationToken);
     IDisposable Subscribe(SignalTopic topic, ISignalSubscriber subscriber);
-    IWorkTransaction Transaction(DbTransaction transaction);       // the transport's, for sends without a store
 }
 
 public interface ISignalSubscriber
@@ -98,16 +97,15 @@ connection gets it when the connection is established. The provider contract shr
 ```csharp
 public interface ISignalTransport
 {
-    ValueTask SendAsync(IWorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
+    ValueTask SendAsync(WorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken);
     Task ListenAsync(Action<SignalTopic, string> received, Action connected, CancellationToken cancellationToken);
-    IWorkTransaction Transaction(DbTransaction transaction);
 }
 ```
 
 `IWorkStore.Signals` returns the transport, or null as today. Registration adds the hub with the store
 (`AddPostgreSqlWorkStore`, `AddInMemoryWorkStore`); `AddPostgreSqlSignals(dataSource, application)` registers it alone,
-for applications that use signals and no other layer. Sends join `dbTransaction.WorkTransaction()` or, with EF Core,
-`DatabaseFacade.WorkTransaction()`, the same handle work operations take.
+for applications that use signals and no other layer. Sends join an ADO.NET transaction, converted to a `WorkTransaction`, or,
+with EF Core, `DatabaseFacade.WorkTransaction()`, the same handle work operations take.
 
 ### Framework topics
 

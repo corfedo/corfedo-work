@@ -17,7 +17,7 @@ internal sealed partial class PostgreSqlJobStore : IChainStore
     private readonly string chains = LeaseSql.Quote(schema) + ".job_chains";
     private readonly string chainGroups = LeaseSql.Quote(schema) + ".job_chain_groups";
 
-    public async ValueTask RequestChainAsync(IWorkTransaction transaction, ChainData chain, CancellationToken cancellationToken)
+    public async ValueTask RequestChainAsync(WorkTransaction transaction, ChainData chain, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(chain);
         var work = PostgreSqlTransaction.From(transaction);
@@ -182,7 +182,7 @@ internal sealed partial class PostgreSqlJobStore : IChainStore
     /// steps that follow it under the chain's current generation, counts the new nodes of the step's own enclosing group into its pending
     /// count, and records the definitions of the new steps with the chain.
     /// </summary>
-    public async ValueTask AddGroupAsync(IWorkTransaction transaction, Lease<JobId> lease, IReadOnlyList<ChainStepData> steps, IReadOnlyList<ChainGroupData> groups, CancellationToken cancellationToken)
+    public async ValueTask AddGroupAsync(WorkTransaction transaction, Lease<JobId> lease, IReadOnlyList<ChainStepData> steps, IReadOnlyList<ChainGroupData> groups, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(lease);
         ArgumentNullException.ThrowIfNull(steps);

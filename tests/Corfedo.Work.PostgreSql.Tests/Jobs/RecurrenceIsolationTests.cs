@@ -69,7 +69,7 @@ public sealed class RecurrenceIsolationTests(PostgreSqlDatabase database) : ICla
         await SnapshotAsync(connection, transaction);
         var before = await StateAsync(subject);
 
-        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(operation, transaction.WorkTransaction(), subject));
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(operation, transaction, subject));
         Assert.Contains("READ COMMITTED", refused.Message, StringComparison.Ordinal);
         await transaction.RollbackAsync(Cancel);
 
@@ -77,7 +77,7 @@ public sealed class RecurrenceIsolationTests(PostgreSqlDatabase database) : ICla
         Assert.Equal((operation == Operation.Schedule ? 0L : 1L, 0L), before);
     }
 
-    private Task RunAsync(Operation operation, IWorkTransaction transaction, Subject subject) => operation switch
+    private Task RunAsync(Operation operation, WorkTransaction transaction, Subject subject) => operation switch
     {
         Operation.Schedule => Jobs.ScheduleAsync(transaction, Definition, "s", Hourly, new RecurrenceOptions { Subject = subject }).AsTask(),
         Operation.Remove => Jobs.RemoveAsync(transaction, Definition, subject).AsTask(),
@@ -91,11 +91,11 @@ public sealed class RecurrenceIsolationTests(PostgreSqlDatabase database) : ICla
         await command.ExecuteScalarAsync(Cancel);
     }
 
-    private async Task InTransactionAsync(Func<IWorkTransaction, Task> operation)
+    private async Task InTransactionAsync(Func<WorkTransaction, Task> operation)
     {
         await using var connection = await database.DataSource.OpenConnectionAsync(Cancel);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, Cancel);
-        await operation(transaction.WorkTransaction());
+        await operation(transaction);
         await transaction.CommitAsync(Cancel);
     }
 

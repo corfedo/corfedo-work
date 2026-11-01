@@ -46,7 +46,7 @@ public sealed class LeaseRun<TKey>
     internal Activity? Span { get; set; }
 
     /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}"/>
-    public async ValueTask GuardAsync(IWorkTransaction transaction, CancellationToken cancellationToken = default)
+    public async ValueTask GuardAsync(WorkTransaction transaction, CancellationToken cancellationToken = default)
     {
         using var span = WorkTelemetry.Source.StartActivity("corfedo.work.guard");
         span?.SetTag(WorkTelemetry.SourceTag, Lease.Source.Name);
@@ -62,14 +62,14 @@ public sealed class LeaseRun<TKey>
     }
 
     /// <summary>Renews in the caller's transaction, so progress written in it commits with the renewal.</summary>
-    public ValueTask<RenewResult> RenewAsync(IWorkTransaction transaction, CancellationToken cancellationToken = default) =>
+    public ValueTask<RenewResult> RenewAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>
         operations.RenewAsync(Lease, transaction, cancellationToken);
 
     /// <summary>
     /// Ends the record in the caller's transaction. Whether the end took effect is known only once that transaction
     /// commits, so after the handler returns the dispatcher gives back a record whose end did not commit.
     /// </summary>
-    public async ValueTask<EndResult> EndAsync(IWorkTransaction transaction, LeaseCompletion? completion = null, CancellationToken cancellationToken = default)
+    public async ValueTask<EndResult> EndAsync(WorkTransaction transaction, LeaseCompletion? completion = null, CancellationToken cancellationToken = default)
     {
         var result = await operations.EndAsync(Lease, transaction, completion, cancellationToken);
         Interlocked.CompareExchange(ref state, Ended, Running);

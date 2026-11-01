@@ -51,14 +51,15 @@ Every provider must provide, and the conformance suite checks:
 
 ## Transactions
 
-Operations that join the caller's transaction take an `IWorkTransaction`, a handle to the application's own
-transaction. `dbTransaction.WorkTransaction()` wraps an ADO.NET transaction without naming the provider; the store or
+Operations that join the caller's transaction take a `WorkTransaction`, a handle to the application's own
+transaction. Any ADO.NET `DbTransaction` converts to it implicitly, without naming the provider, and every conversion of
+one transaction gives the same handle; the store or
 signal transport an operation runs on refuses a transaction of another provider's type. The handle also numbers the
 savepoints operations take inside the transaction.
 
 | Application uses | Adapter |
 |---|---|
-| ADO.NET | `npgsqlTransaction.WorkTransaction()` |
+| ADO.NET | The `NpgsqlTransaction` itself, by the implicit conversion |
 | EF Core | `Corfedo.Work.EntityFrameworkCore`: `context.Database.WorkTransaction()`, from the `DbContext`'s current transaction, for work and signals |
 | The in-memory store | Its transactions are handles themselves |
 | A document store | The provider's session type, for example a MongoDB client session |
@@ -508,7 +509,7 @@ it with `AddInMemoryWorkStore(database, application)`, and the store's clock, a 
 - Transactions: one store-wide async lock, held from `BeginAsync` until commit or rollback, so transactions are
   serializable by construction. A transaction's writes, the framework's and the application's, go to an overlay that
   commit applies; reads outside a transaction see committed records. Hooks roll back to a savepoint of the overlay.
-  `InMemoryTransaction` is the `IWorkTransaction`; domain test doubles insert, find, update and delete records of
+  `InMemoryTransaction` is a `WorkTransaction`; domain test doubles insert, find, update and delete records of
   application tables through it, and `transaction.InMemory()` returns it from the handle.
 - Tables: `CreateTable(location, key, fields)` declares an application table's key fields and fields; writes of
   other fields are refused. Startup verification requires the source's key fields in declared order and its lease,

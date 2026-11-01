@@ -1,11 +1,11 @@
 namespace Corfedo.Work;
 
 /// <summary>Runs inside a claim transaction before the claim commits; a failure rolls the claim back.</summary>
-public delegate ValueTask LeaseClaimCallback<TKey>(LeaseClaim<TKey> claim, IWorkTransaction transaction, CancellationToken cancellationToken)
+public delegate ValueTask LeaseClaimCallback<TKey>(LeaseClaim<TKey> claim, WorkTransaction transaction, CancellationToken cancellationToken)
     where TKey : notnull;
 
 /// <summary>Runs inside the transaction that settles an expired lease; a failure rolls the settlement back.</summary>
-public delegate ValueTask LeaseExpiryCallback<TKey>(LeaseExpiry<TKey> expiry, IWorkTransaction transaction, CancellationToken cancellationToken)
+public delegate ValueTask LeaseExpiryCallback<TKey>(LeaseExpiry<TKey> expiry, WorkTransaction transaction, CancellationToken cancellationToken)
     where TKey : notnull;
 
 /// <summary>The callbacks a store runs inside its own claim and settlement transactions for one source.</summary>
@@ -35,7 +35,7 @@ public interface ILeaseStore
         where TKey : notnull;
 
     /// <summary>In the caller's transaction, claims up to <paramref name="limit"/> of the candidates that are claimable.</summary>
-    ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken)
+    ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>Extends a valid lease in its own transaction.</summary>
@@ -43,7 +43,7 @@ public interface ILeaseStore
         where TKey : notnull;
 
     /// <summary>Extends a valid lease in the caller's transaction, which then holds the record's write lock.</summary>
-    ValueTask<RenewResult> RenewAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+    ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>Gives a validly held record back, due as given; counts a failure when <paramref name="failed"/>.</summary>
@@ -55,22 +55,22 @@ public interface ILeaseStore
     /// Returns <see cref="EndResult.Replayed"/> for a completion already recorded for this lease.
     /// </summary>
     /// <exception cref="LeaseLostException">The lease is not valid, or a different completion was recorded.</exception>
-    ValueTask<EndResult> EndAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
+    ValueTask<EndResult> EndAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>
     /// Sets the due time in the caller's transaction and signals claimers on commit. False if the record does not exist.
     /// </summary>
     /// <exception cref="ArgumentException">The source holds reconciliation records, whose due time requests and results set.</exception>
-    ValueTask<bool> ScheduleAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution, CancellationToken cancellationToken)
+    ValueTask<bool> ScheduleAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>Requests cancellation in the caller's transaction and signals the holder on commit.</summary>
-    ValueTask<bool> RequestCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
+    ValueTask<bool> RequestCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>Withdraws a cancellation request in the caller's transaction.</summary>
-    ValueTask<bool> ClearCancelAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
+    ValueTask<bool> ClearCancelAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>
