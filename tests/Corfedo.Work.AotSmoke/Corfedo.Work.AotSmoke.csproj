@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <RuntimeIdentifiers>linux-x64;linux-arm64;osx-arm64</RuntimeIdentifiers>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Corfedo.Work/Corfedo.Work.csproj" />
+    <ProjectReference Include="../../src/Corfedo.Work.InMemory/Corfedo.Work.InMemory.csproj" />
+    <ProjectReference Include="../../src/Corfedo.Work.PostgreSql/Corfedo.Work.PostgreSql.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+</Project>

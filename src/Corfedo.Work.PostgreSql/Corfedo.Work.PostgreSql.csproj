@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>PostgreSQL store provider for Corfedo Work, over Npgsql.</Description>
+    <PackageTags>$(PackageTags);postgresql;npgsql</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Corfedo.Work/Corfedo.Work.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Durable background work in the application's relational database: jobs and schedules, fenced leases on application records, reconciliation, commit-time signals and their hosting. Install a store provider such as Corfedo.Work.PostgreSql with it.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Cronos" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Corfedo.Work.PostgreSql" />
+    <InternalsVisibleTo Include="Corfedo.Work.InMemory" />
+    <InternalsVisibleTo Include="Corfedo.Work.Jobs.Tests" />
+    <InternalsVisibleTo Include="Corfedo.Work.Leases.Tests" />
+    <InternalsVisibleTo Include="Corfedo.Work.Signals.Tests" />
+  </ItemGroup>
+</Project>

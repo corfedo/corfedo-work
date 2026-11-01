@@ -1,0 +1,12 @@
+<Project>
+  <!--
+    The store providers use the core's internals, so each package depends on the exact version of the others. NuGet packs a
+    ProjectReference as a minimum version and has no metadata for an exact range (NuGet/Home#5556);
+    this rewrites the versions that GenerateNuspec reads. global.json pins the SDK these targets belong to.
+  -->
+  <Target Name="PackExactProjectReferenceVersions" AfterTargets="_GetProjectReferenceVersions">
+    <ItemGroup>
+      <_ProjectReferencesWithVersions Update="@(_ProjectReferencesWithVersions)" ProjectVersion="[%(ProjectVersion)]" />
+    </ItemGroup>
+  </Target>
+</Project>

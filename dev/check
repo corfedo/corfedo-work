@@ -1,0 +1,35 @@
+#!/bin/sh
+# Builds Release, runs the tests and publishes the Native AOT smoke application.
+# Fails on any build, test, trimming or AOT warning. PostgreSQL tests need Docker; see the README.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+
+dotnet build Corfedo.Work.slnx -c Release
+dotnet test Corfedo.Work.slnx -c Release --no-build
+
+case $(uname -s)-$(uname -m) in
+  Linux-x86_64) rid=linux-x64 ;;
+  Linux-aarch64) rid=linux-arm64 ;;
+  Darwin-arm64) rid=osx-arm64 ;;
+  *) echo "no AOT smoke runtime for $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+out=artifacts/aot-smoke/$rid
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
+# The smoke binary that runs below must come from this publish, not from an earlier one.
+rm -f "$out/Corfedo.Work.AotSmoke"
+status=0
+# The build above restored every runtime the smoke project lists. Restoring here with -r would add the runtime to the
+# lock file of every referenced library.
+dotnet publish tests/Corfedo.Work.AotSmoke -c Release -r "$rid" --no-restore -o "$out" >"$log" 2>&1 || status=$?
+cat "$log"
+if [ "$status" -ne 0 ]; then
+  echo "AOT smoke publish failed with exit code $status" >&2
+  exit "$status"
+fi
+if grep -Eq 'warning (IL|CS)[0-9]+' "$log"; then
+  echo "AOT smoke publish reported warnings" >&2
+  exit 1
+fi
+"$out/Corfedo.Work.AotSmoke"

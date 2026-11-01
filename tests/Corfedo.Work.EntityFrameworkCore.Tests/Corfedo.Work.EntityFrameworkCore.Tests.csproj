@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><IsTestProject>true</IsTestProject><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <None Include="../xunit.runner.json" Link="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+    <Compile Include="../Corfedo.Work.PostgreSql.Tests/Provisioning/PostgreSqlServer.cs" Link="Provisioning/PostgreSqlServer.cs" />
+    <ProjectReference Include="../../src/Corfedo.Work.EntityFrameworkCore/Corfedo.Work.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/Corfedo.Work.PostgreSql/Corfedo.Work.PostgreSql.csproj" />
+    <ProjectReference Include="../../src/Corfedo.Work/Corfedo.Work.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="xunit.v3.mtp-off" />
+    <Using Include="Xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

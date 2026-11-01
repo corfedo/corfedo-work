@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Corfedo.Work/Corfedo.Work.csproj" />
+    <Project Path="src/Corfedo.Work.Conformance/Corfedo.Work.Conformance.csproj" />
+    <Project Path="src/Corfedo.Work.EntityFrameworkCore/Corfedo.Work.EntityFrameworkCore.csproj" />
+    <Project Path="src/Corfedo.Work.InMemory/Corfedo.Work.InMemory.csproj" />
+    <Project Path="src/Corfedo.Work.PostgreSql/Corfedo.Work.PostgreSql.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Corfedo.Work.AotSmoke/Corfedo.Work.AotSmoke.csproj" />
+    <Project Path="tests/Corfedo.Work.EntityFrameworkCore.Tests/Corfedo.Work.EntityFrameworkCore.Tests.csproj" />
+    <Project Path="tests/Corfedo.Work.InMemory.Tests/Corfedo.Work.InMemory.Tests.csproj" />
+    <Project Path="tests/Corfedo.Work.Jobs.Tests/Corfedo.Work.Jobs.Tests.csproj" />
+    <Project Path="tests/Corfedo.Work.Leases.Tests/Corfedo.Work.Leases.Tests.csproj" />
+    <Project Path="tests/Corfedo.Work.PostgreSql.Tests/Corfedo.Work.PostgreSql.Tests.csproj" />
+    <Project Path="tests/Corfedo.Work.Signals.Tests/Corfedo.Work.Signals.Tests.csproj" />
+  </Folder>
+</Solution>

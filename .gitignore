@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+.idea/
+.vs/
+*.user
+.DS_Store
+
+/.local/

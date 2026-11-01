@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>In-memory store provider for Corfedo Work, with a controllable clock, for tests of applications that use Corfedo Work in one process. Not for production use.</Description>
+    <PackageTags>$(PackageTags);testing</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Corfedo.Work/Corfedo.Work.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <InternalsVisibleTo Include="Corfedo.Work.InMemory.Tests" />
+  </ItemGroup>
+</Project>
