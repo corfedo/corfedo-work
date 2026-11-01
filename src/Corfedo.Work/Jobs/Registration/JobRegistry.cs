@@ -9,7 +9,8 @@ namespace Corfedo.Work;
 /// names or cycles, then each definition by revision, with the host's <see cref="JobRetention"/> for durations its
 /// policy leaves unset, and builds its source from the newest stored one, then stores the code-defined recurrences by
 /// revision. A transactional operation on a definition the process has not registered is refused, so no process ends a
-/// job without its hook.
+/// job without its hook. Building the registry resolves the JSON codec of every definition without one of its own from
+/// the host's options, so a type they cannot serialize stops the host at startup.
 /// </summary>
 public sealed class JobRegistry : IWorkInitializer
 {
@@ -17,6 +18,7 @@ public sealed class JobRegistry : IWorkInitializer
     private readonly DeclaredRecurrence[] recurrences;
     private readonly WorkCalendar[] calendars;
     private readonly IServiceProvider services;
+    private readonly JobJson json;
 
     public JobRegistry(IEnumerable<JobDefinitionRegistration> registrations, IEnumerable<DeclaredRecurrence> recurrences, IEnumerable<DeclaredCalendar> calendars, IServiceProvider services)
     {
@@ -30,6 +32,7 @@ public sealed class JobRegistry : IWorkInitializer
         Telemetry = services.GetService<WorkTelemetryOptions>() ?? WorkTelemetryOptions.Default;
         Time = services.GetService<TimeProvider>() ?? TimeProvider.System;
         var retention = services.GetService<JobRetention>() ?? JobRetention.Default;
+        json = services.GetService<JobJson>() ?? JobJson.Default;
         definitions = new Dictionary<string, JobDefinitionRegistration>(StringComparer.Ordinal);
         foreach (var registration in registrations)
         {
@@ -38,6 +41,11 @@ public sealed class JobRegistry : IWorkInitializer
             {
                 throw new InvalidOperationException($"Job definition {registration.Definition.Key} is registered more than once.");
             }
+            registration.UseJson(json);
+        }
+        foreach (var recurrence in this.recurrences)
+        {
+            recurrence.Resolve(this);
         }
     }
 
@@ -117,6 +125,15 @@ public sealed class JobRegistry : IWorkInitializer
     /// <summary>The registration of the definition with <paramref name="key"/>, or null.</summary>
     public JobDefinitionRegistration? Find(string key) => definitions.GetValueOrDefault(key);
 
+    /// <summary>The arguments codec of <paramref name="definition"/>, which this process registers.</summary>
+    internal IJobArgs<TArgs> Args<TArgs>(JobDefinition<TArgs> definition) => ((JobDefinitionRegistration<TArgs>)Find(definition)).Args;
+
+    /// <summary>The result codec of <paramref name="definition"/>, also when this process does not register it.</summary>
+    internal IJobResults<TResult> Results<TArgs, TResult>(JobDefinition<TArgs, TResult> definition) =>
+        definitions.TryGetValue(definition.Key, out var registration) && ReferenceEquals(registration.Definition, definition)
+            ? (IJobResults<TResult>)registration.Results!
+            : json.Results(definition);
+
     /// <summary>
     /// The definition's outcome callback: counts the outcome, then resolves its hook, if any, in a new scope for every
     /// call. It runs inside the ending transaction, so an end rolled back and applied again is counted again.
@@ -147,6 +164,12 @@ public abstract class JobDefinitionRegistration
     public TimeSpan LeaseDuration { get; }
 
     internal Func<IServiceProvider, IJobEnded>? Hook { get; }
+
+    /// <summary>The result codec, an <c>IJobResults&lt;TResult&gt;</c> of the definition's result type; null without one.</summary>
+    internal object? Results { get; private protected set; }
+
+    /// <summary>Resolves the definition's codecs, its own or from the host's JSON options.</summary>
+    internal abstract void UseJson(JobJson json);
 
     /// <summary>The host's retention durations, stored for a revision whose policy leaves them unset.</summary>
     internal JobRetention Retention { get; set; } = JobRetention.Default;
@@ -246,4 +269,13 @@ public sealed class JobDefinitionRegistration<TArgs> : JobDefinitionRegistration
         : base(definition, acceptedArgs, leaseDuration, hook) => Definition = definition;
 
     public new JobDefinition<TArgs> Definition { get; }
+
+    /// <summary>The arguments codec, resolved when the registry is built.</summary>
+    internal IJobArgs<TArgs> Args { get; private set; } = null!;
+
+    internal override void UseJson(JobJson json)
+    {
+        Args = json.Args(Definition);
+        Results = Definition.ResultsWith(json);
+    }
 }

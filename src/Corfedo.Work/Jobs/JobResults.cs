@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
@@ -20,7 +19,10 @@ public static class JobResults
     /// <summary>The largest serialized result a job may store.</summary>
     public const int MaximumBytes = 256 * 1024;
 
-    /// <summary>JSON results through a source-generated <paramref name="typeInfo"/>, written as <paramref name="version"/>.</summary>
+    /// <summary>
+    /// JSON results through <paramref name="typeInfo"/>, written as <paramref name="version"/>, for a definition with
+    /// versioned results or JSON settings of its own; other definitions use the host's JSON options.
+    /// </summary>
     public static IJobResults<TResult> Json<TResult>(JsonTypeInfo<TResult> typeInfo, int version = 1)
     {
         ArgumentNullException.ThrowIfNull(typeInfo);
@@ -28,17 +30,7 @@ public static class JobResults
         return new JsonResults<TResult>(typeInfo, version);
     }
 
-    /// <summary>
-    /// JSON results through reflection with <paramref name="options"/> (<see cref="JsonSerializerOptions.Default"/>
-    /// when null), written as <paramref name="version"/>. Trimmed and Native AOT applications pass a source-generated
-    /// <see cref="JsonTypeInfo{T}"/> instead; with the same options both write the same JSON.
-    /// </summary>
-    [RequiresUnreferencedCode(ReflectionJson.Unreferenced)]
-    [RequiresDynamicCode(ReflectionJson.Dynamic)]
-    public static IJobResults<TResult> Json<TResult>(JsonSerializerOptions? options = null, int version = 1) =>
-        Json(ReflectionJson.TypeInfo<TResult>(options), version);
-
-    private sealed class JsonResults<TResult>(JsonTypeInfo<TResult> typeInfo, int version) : IJobResults<TResult>
+    internal sealed class JsonResults<TResult>(JsonTypeInfo<TResult> typeInfo, int version) : IJobResults<TResult>
     {
         public int Version => version;
 

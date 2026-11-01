@@ -1,4 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -24,6 +26,31 @@ public sealed class WorkBuilder
     internal Action<ProcessBuilder>? ProcessValue { get; private set; }
 
     internal WorkTelemetryOptions TelemetryValue { get; private set; } = WorkTelemetryOptions.Default;
+
+    internal List<Action<JsonSerializerOptions>> JsonValue { get; } = [];
+
+    /// <summary>
+    /// Changes the JSON options that serialize job arguments and results of definitions without a codec of their own,
+    /// such as their naming policy or converters. They start from <see cref="JsonSerializerDefaults.General"/>, with
+    /// reflection-based serialization while it is enabled; calls apply in order.
+    /// </summary>
+    public WorkBuilder ConfigureJson(Action<JsonSerializerOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        JsonValue.Add(configure);
+        return this;
+    }
+
+    /// <summary>
+    /// Serializes job arguments and results through <paramref name="resolver"/>, such as a source-generated
+    /// <c>JsonSerializerContext</c>, ahead of the resolvers already configured; under Native AOT it is how the host
+    /// supplies their types. The host checks every registered definition's types at startup.
+    /// </summary>
+    public WorkBuilder UseJson(IJsonTypeInfoResolver resolver)
+    {
+        ArgumentNullException.ThrowIfNull(resolver);
+        return ConfigureJson(options => options.TypeInfoResolverChain.Insert(0, resolver));
+    }
 
     /// <summary>
     /// Describes this process in the <see cref="ProcessRegistry">process registry</see>: its type, release, heartbeat
@@ -253,6 +280,7 @@ public static class WorkServiceCollectionExtensions
         services.AddSingleton(builder.RetentionValue);
         services.AddSingleton(builder.CalendarCoverageValue);
         services.AddSingleton(builder.TelemetryValue);
+        services.AddSingleton(new JobJson(builder.JsonValue));
         services.TryAddSingleton<LeaseRegistry>();
         services.TryAddSingleton<LeaseOperations>();
         services.TryAddSingleton<ReconcileOperations>();

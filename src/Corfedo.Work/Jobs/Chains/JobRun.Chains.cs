@@ -13,7 +13,7 @@ public partial class JobRun
     public async ValueTask AddGroupAsync(IWorkTransaction transaction, Action<ChainGroupBuilder> branches, Action<ChainGroup>? after = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(branches);
-        var builder = new ChainBuilder(Schedule.Now);
+        var builder = new ChainBuilder(Registry, Schedule.Now);
         var group = new ChainStep(builder, Id, null).ThenGroup(branches);
         after?.Invoke(group);
         await JobOperations.StoreDefinitionsAsync(Work, Registry, builder.Definitions, cancellationToken);
@@ -27,7 +27,7 @@ public partial class JobRun
     public async ValueTask<JobOutcomeStatus<TResult>?> GetParentResultAsync<TArgs, TResult>(JobDefinition<TArgs, TResult> definition, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        return await Work.Chains.GetParentOutcomeAsync(Id, definition.Key, cancellationToken) is { } stored ? JobOperations.Typed(definition, stored) : null;
+        return await Work.Chains.GetParentOutcomeAsync(Id, definition.Key, cancellationToken) is { } stored ? JobOperations.Typed(definition.Key, Registry.Results(definition), stored) : null;
     }
 
     /// <summary>
@@ -37,7 +37,8 @@ public partial class JobRun
     public async ValueTask<IReadOnlyList<JobOutcomeStatus<TResult>>> GetGroupResultsAsync<TArgs, TResult>(JobDefinition<TArgs, TResult> definition, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        return [.. (await Work.Chains.GetGroupOutcomesAsync(Id, definition.Key, cancellationToken)).Select(stored => JobOperations.Typed(definition, stored))];
+        var results = Registry.Results(definition);
+        return [.. (await Work.Chains.GetGroupOutcomesAsync(Id, definition.Key, cancellationToken)).Select(stored => JobOperations.Typed(definition.Key, results, stored))];
     }
 
     /// <summary>Creates the chain an occurrence owns and leaves the occurrence waiting for it; false when the lease was lost or the occurrence's cancellation was requested.</summary>

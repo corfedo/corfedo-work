@@ -139,7 +139,7 @@ public static class JobServiceCollectionExtensions
         {
             throw new InvalidOperationException($"Job definition {definition.Key} runs in pool {builder.PoolName}, which sets its capacity; the definition cannot set its own.");
         }
-        var registration = new JobDefinitionRegistration<TArgs>(definition, builder.AcceptedArgs ?? [definition.Args.Version], builder.LeaseValue, builder.Hook);
+        var registration = new JobDefinitionRegistration<TArgs>(definition, builder.AcceptedArgs ?? [definition.ArgsVersion], builder.LeaseValue, builder.Hook);
         // Dispatch starts only after the host stored the definition and replaced this source with the stored one; until
         // then it only names the definition's source.
         var declared = JobSource.Define(
@@ -173,7 +173,7 @@ public static class JobServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(definition);
         var builder = JobDefinitionBuilder.Create(services);
         configure?.Invoke(builder);
-        return services.AddJobRegistration(new JobDefinitionRegistration<TArgs>(definition, [definition.Args.Version], TimeSpan.FromMinutes(1), builder.Hook));
+        return services.AddJobRegistration(new JobDefinitionRegistration<TArgs>(definition, [definition.ArgsVersion], TimeSpan.FromMinutes(1), builder.Hook));
     }
 
     /// <summary>
@@ -189,8 +189,8 @@ public static class JobServiceCollectionExtensions
         {
             throw new ArgumentException($"Job definition {definition.Key} has a subject kind or the options name an identity; per-subject recurrences are set with ScheduleAsync.", nameof(definition));
         }
-        var data = JobOperations.Recurrence(definition, args, schedule, JobRequestData.DefinitionIdentity, null, options);
-        services.AddSingleton(new DeclaredRecurrence(definition, data));
+        JobOperations.CheckRecurrence(schedule, options);
+        services.AddSingleton(new DeclaredRecurrence(definition, registry => JobOperations.Recurrence(registry.Args(definition), definition, args, schedule, JobRequestData.DefinitionIdentity, null, options)));
         return services;
     }
 

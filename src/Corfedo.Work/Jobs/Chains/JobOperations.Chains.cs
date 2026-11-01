@@ -52,7 +52,7 @@ public sealed partial class JobOperations
     {
         ArgumentNullException.ThrowIfNull(chain);
         ArgumentNullException.ThrowIfNull(schedule);
-        var builder = new ChainBuilder(schedule);
+        var builder = new ChainBuilder(registry, schedule);
         chain(builder);
         if (builder.Steps.Count == 0)
         {

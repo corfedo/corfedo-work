@@ -11,8 +11,13 @@ public sealed class ChainBuilder
     private readonly List<ChainGroupData> groups = [];
     private readonly List<JobDefinition> definitions = [];
     private readonly Schedule root;
+    private readonly JobRegistry registry;
 
-    internal ChainBuilder(Schedule root) => this.root = root;
+    internal ChainBuilder(JobRegistry registry, Schedule root)
+    {
+        this.registry = registry;
+        this.root = root;
+    }
 
     internal IReadOnlyList<ChainStepData> Steps => steps;
 
@@ -39,7 +44,7 @@ public sealed class ChainBuilder
             throw new ArgumentException("Chain steps never merge; a merge key is not used.", nameof(options));
         }
         var id = JobId.New();
-        steps.Add(new ChainStepData(id, definition.Key, JobOperations.Data(definition, args, schedule ?? Schedule.Now, options with { Mode = RequestMode.New }), parent, group, condition));
+        steps.Add(new ChainStepData(id, definition.Key, JobOperations.Data(registry.Args(definition), definition, args, schedule ?? Schedule.Now, options with { Mode = RequestMode.New }), parent, group, condition));
         definitions.Add(definition);
         return new ChainStep(this, id, group);
     }

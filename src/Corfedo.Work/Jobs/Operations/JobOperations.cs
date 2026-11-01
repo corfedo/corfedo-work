@@ -18,7 +18,7 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     {
         ArgumentNullException.ThrowIfNull(schedule);
         var registration = registry.Find(definition);
-        var request = Data(definition, args, schedule, options ?? JobRequestOptions.Default);
+        var request = Data(registry.Args(definition), definition, args, schedule, options ?? JobRequestOptions.Default);
         return await Store.RequestAsync(transaction, await registration.SourceAsync(store, cancellationToken), request, cancellationToken);
     }
 
@@ -28,7 +28,8 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
         ArgumentNullException.ThrowIfNull(items);
         ArgumentNullException.ThrowIfNull(schedule);
         var registration = registry.Find(definition);
-        var requests = items.Select(item => Data(definition, item.Args, schedule, item.Options)).ToList();
+        var codec = registry.Args(definition);
+        var requests = items.Select(item => Data(codec, definition, item.Args, schedule, item.Options)).ToList();
         return await Store.RequestManyAsync(transaction, await registration.SourceAsync(store, cancellationToken), requests, cancellationToken);
     }
 
@@ -77,7 +78,7 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     {
         ArgumentNullException.ThrowIfNull(options);
         var registration = registry.Find(definition);
-        var data = Recurrence(definition, args, schedule, Identity(definition, options.Subject, options.MergeKey), options.Subject, options);
+        var data = Recurrence(registry.Args(definition), definition, args, schedule, Identity(definition, options.Subject, options.MergeKey), options.Subject, options);
         return await Store.ScheduleAsync(transaction, await registration.SourceAsync(store, cancellationToken), data, RecurrenceCalculator.Instance, cancellationToken);
     }
 
@@ -208,7 +209,19 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
     }
 
     /// <summary>A recurrence as the store applies it, with its schedule validated.</summary>
-    internal static RecurrenceData Recurrence<TArgs>(JobDefinition<TArgs> definition, TArgs args, Schedule schedule, string identity, Subject? subject, RecurrenceOptions options)
+    internal static RecurrenceData Recurrence<TArgs>(IJobArgs<TArgs> codec, JobDefinition definition, TArgs args, Schedule schedule, string identity, Subject? subject, RecurrenceOptions options)
+    {
+        CheckRecurrence(schedule, options);
+        var data = codec.Write(args);
+        if (data.Length > JobArgs.MaximumBytes)
+        {
+            throw new ArgumentException($"Arguments of {definition.Key} are {data.Length} bytes; at most {JobArgs.MaximumBytes} are stored.", nameof(args));
+        }
+        return new RecurrenceData(data, codec.Version, schedule, options.Missed, options.Overlap, identity, subject, options.Partition, options.Mode);
+    }
+
+    /// <summary>Validates a recurrence's schedule and options.</summary>
+    internal static void CheckRecurrence(Schedule schedule, RecurrenceOptions options)
     {
         ArgumentNullException.ThrowIfNull(schedule);
         RecurrenceSchedule.Create(schedule, DateTimeOffset.UtcNow);
@@ -228,15 +241,9 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
         {
             throw new ArgumentException("A partition cannot be empty.", nameof(options));
         }
-        var data = definition.Args.Write(args);
-        if (data.Length > JobArgs.MaximumBytes)
-        {
-            throw new ArgumentException($"Arguments of {definition.Key} are {data.Length} bytes; at most {JobArgs.MaximumBytes} are stored.", nameof(args));
-        }
-        return new RecurrenceData(data, definition.Args.Version, schedule, options.Missed, options.Overlap, identity, subject, options.Partition, options.Mode);
     }
 
-    internal static JobRequestData Data<TArgs>(JobDefinition<TArgs> definition, TArgs args, Schedule schedule, JobRequestOptions options)
+    internal static JobRequestData Data<TArgs>(IJobArgs<TArgs> codec, JobDefinition definition, TArgs args, Schedule schedule, JobRequestOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         if (schedule.Recurring)
@@ -262,12 +269,12 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
         {
             throw new ArgumentException("A partition cannot be empty.", nameof(options));
         }
-        var data = definition.Args.Write(args);
+        var data = codec.Write(args);
         if (data.Length > JobArgs.MaximumBytes)
         {
             throw new ArgumentException($"Arguments of {definition.Key} are {data.Length} bytes; at most {JobArgs.MaximumBytes} are stored. Store large inputs in the domain and pass their identity.", nameof(args));
         }
-        return new JobRequestData(data, definition.Args.Version, schedule, options.Subject, options.MergeKey, options.Partition, options.Mode, TraceParent());
+        return new JobRequestData(data, codec.Version, schedule, options.Subject, options.MergeKey, options.Partition, options.Mode, TraceParent());
     }
 
     /// <summary>The W3C id of the current activity, which a created job keeps for the span links of its runs; null without one.</summary>

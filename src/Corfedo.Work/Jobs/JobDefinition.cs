@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -23,7 +22,10 @@ public static class JobArgs
     /// <summary>The largest serialized arguments a request may store.</summary>
     public const int MaximumBytes = 256 * 1024;
 
-    /// <summary>JSON arguments through a source-generated <paramref name="typeInfo"/>, written as <paramref name="version"/>.</summary>
+    /// <summary>
+    /// JSON arguments through <paramref name="typeInfo"/>, written as <paramref name="version"/>, for a definition with
+    /// versioned arguments or JSON settings of its own; other definitions use the host's JSON options.
+    /// </summary>
     public static IJobArgs<TArgs> Json<TArgs>(JsonTypeInfo<TArgs> typeInfo, int version = 1)
     {
         ArgumentNullException.ThrowIfNull(typeInfo);
@@ -31,17 +33,7 @@ public static class JobArgs
         return new JsonArgs<TArgs>(typeInfo, version);
     }
 
-    /// <summary>
-    /// JSON arguments through reflection with <paramref name="options"/> (<see cref="JsonSerializerOptions.Default"/>
-    /// when null), written as <paramref name="version"/>. Trimmed and Native AOT applications pass a source-generated
-    /// <see cref="JsonTypeInfo{T}"/> instead; with the same options both write the same JSON.
-    /// </summary>
-    [RequiresUnreferencedCode(ReflectionJson.Unreferenced)]
-    [RequiresDynamicCode(ReflectionJson.Dynamic)]
-    public static IJobArgs<TArgs> Json<TArgs>(JsonSerializerOptions? options = null, int version = 1) =>
-        Json(ReflectionJson.TypeInfo<TArgs>(options), version);
-
-    private sealed class JsonArgs<TArgs>(JsonTypeInfo<TArgs> typeInfo, int version) : IJobArgs<TArgs>
+    internal sealed class JsonArgs<TArgs>(JsonTypeInfo<TArgs> typeInfo, int version) : IJobArgs<TArgs>
     {
         public int Version => version;
 
@@ -91,8 +83,40 @@ public abstract class JobDefinition
 
     public override string ToString() => Key;
 
-    /// <summary>Defines a job whose arguments are <typeparamref name="TArgs"/>.</summary>
+    /// <summary>
+    /// Defines a job whose arguments are <typeparamref name="TArgs"/>, serialized with the host's JSON options. Increase
+    /// <paramref name="revision"/> whenever the policy changes.
+    /// </summary>
+    public static JobDefinition<TArgs> Create<TArgs>(string key, long revision = 1, JobPolicy? policy = null, string? subject = null) =>
+        Define<TArgs>(key, revision, null, policy, subject);
+
+    /// <summary>Defines a job whose arguments <paramref name="args"/> serializes, for versioned arguments or another format.</summary>
     public static JobDefinition<TArgs> Create<TArgs>(string key, long revision, IJobArgs<TArgs> args, JobPolicy? policy = null, string? subject = null)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        return Define(key, revision, args, policy, subject);
+    }
+
+    /// <summary>
+    /// Defines a job whose arguments are <typeparamref name="TArgs"/> and whose result is <typeparamref name="TResult"/>
+    /// (J20), both serialized with the host's JSON options.
+    /// </summary>
+    public static JobDefinition<TArgs, TResult> Create<TArgs, TResult>(string key, long revision = 1, JobPolicy? policy = null, string? subject = null)
+    {
+        var untyped = Define<TArgs>(key, revision, null, policy, subject);
+        return new JobDefinition<TArgs, TResult>(untyped.Key, untyped.Revision, untyped.Subject, untyped.Policy, null, null);
+    }
+
+    /// <summary>Defines a job with a result whose arguments <paramref name="args"/> and result <paramref name="result"/> serialize (J20).</summary>
+    public static JobDefinition<TArgs, TResult> Create<TArgs, TResult>(string key, long revision, IJobArgs<TArgs> args, IJobResults<TResult> result, JobPolicy? policy = null, string? subject = null)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(result);
+        var untyped = Define(key, revision, args, policy, subject);
+        return new JobDefinition<TArgs, TResult>(untyped.Key, untyped.Revision, untyped.Subject, untyped.Policy, args, result);
+    }
+
+    private static JobDefinition<TArgs> Define<TArgs>(string key, long revision, IJobArgs<TArgs>? args, JobPolicy? policy, string? subject)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
         if (key.Any(char.IsControl))
@@ -100,7 +124,6 @@ public abstract class JobDefinition
             throw new ArgumentException("A definition key cannot contain control characters.", nameof(key));
         }
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(revision);
-        ArgumentNullException.ThrowIfNull(args);
         if (subject is not null)
         {
             ArgumentException.ThrowIfNullOrEmpty(subject);
@@ -108,14 +131,6 @@ public abstract class JobDefinition
         policy ??= new JobPolicy();
         Validate(policy);
         return new JobDefinition<TArgs>(key, revision, subject, policy, args);
-    }
-
-    /// <summary>Defines a job whose arguments are <typeparamref name="TArgs"/> and whose result is <typeparamref name="TResult"/> (J20).</summary>
-    public static JobDefinition<TArgs, TResult> Create<TArgs, TResult>(string key, long revision, IJobArgs<TArgs> args, IJobResults<TResult> result, JobPolicy? policy = null, string? subject = null)
-    {
-        ArgumentNullException.ThrowIfNull(result);
-        var untyped = Create(key, revision, args, policy, subject);
-        return new JobDefinition<TArgs, TResult>(untyped.Key, untyped.Revision, untyped.Subject, untyped.Policy, args, result);
     }
 
     internal static void Validate(JobPolicy policy)
@@ -190,19 +205,29 @@ public abstract class JobDefinition
 /// <summary>A job definition with arguments of type <typeparamref name="TArgs"/>.</summary>
 public class JobDefinition<TArgs> : JobDefinition
 {
-    internal JobDefinition(string key, long revision, string? subject, JobPolicy policy, IJobArgs<TArgs> args)
+    internal JobDefinition(string key, long revision, string? subject, JobPolicy policy, IJobArgs<TArgs>? args)
         : base(key, revision, subject, policy) => Args = args;
 
-    public IJobArgs<TArgs> Args { get; }
+    /// <summary>The definition's own codec; null when the host's JSON options serialize the arguments.</summary>
+    internal IJobArgs<TArgs>? Args { get; }
+
+    /// <summary>The argument version requests write: the codec's, 1 with the host's JSON options.</summary>
+    internal int ArgsVersion => Args?.Version ?? 1;
+
+    /// <summary>The result codec with <paramref name="json"/>, as an <c>IJobResults&lt;TResult&gt;</c>; null without a result type.</summary>
+    internal virtual object? ResultsWith(JobJson json) => null;
 }
 
 /// <summary>A job definition with arguments of type <typeparamref name="TArgs"/> and a result of type <typeparamref name="TResult"/>.</summary>
 public sealed class JobDefinition<TArgs, TResult> : JobDefinition<TArgs>
 {
-    internal JobDefinition(string key, long revision, string? subject, JobPolicy policy, IJobArgs<TArgs> args, IJobResults<TResult> results)
+    internal JobDefinition(string key, long revision, string? subject, JobPolicy policy, IJobArgs<TArgs>? args, IJobResults<TResult>? results)
         : base(key, revision, subject, policy, args) => Results = results;
 
-    public IJobResults<TResult> Results { get; }
+    /// <summary>The definition's own result codec; null when the host's JSON options serialize results.</summary>
+    internal IJobResults<TResult>? Results { get; }
+
+    internal override object? ResultsWith(JobJson json) => json.Results(this);
 }
 
 /// <summary>

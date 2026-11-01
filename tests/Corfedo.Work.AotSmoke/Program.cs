@@ -19,8 +19,10 @@ using Npgsql;
 // and counts a job outcome that in-process listeners observe. A second host only registers its process. A third host
 // stores work in an in-memory database on a controllable clock: it claims a record and loses the lease when the clock
 // advances past its duration. A fourth host runs work on that database as another application: it requests a job and a
-// chain of two steps, and its handlers complete them. A fifth host only registers signals over PostgreSQL: it
-// subscribes to a topic and stops listening when the subscription is disposed.
+// chain of two steps and a job with a result, serialized through the source-generated context it registers with
+// UseJson, and its handlers complete them. A fifth host only registers signals over PostgreSQL: it subscribes to a topic
+// and stops listening when the subscription is disposed. A sixth host registers a definition whose argument type its
+// context lacks and fails when its registry is built.
 var partitions = new List<object?>();
 using var meters = new MeterListener
 {
@@ -59,6 +61,7 @@ await using var dataSource = NpgsqlDataSource.Create(new NpgsqlConnectionStringB
 builder.Services.AddPostgreSqlWorkStore(dataSource);
 builder.Services.AddWork(work => work
     .StartMode(StartMode.Manual)
+    .UseJson(SmokeJson.Default)
     .Process(process => process.Type("feeds-worker").Release("1.0.0"))
     .AddLeaseHandler<InstanceKey, InstanceExecutor>(Sources.Instances, handler => handler
         .Capacity(4)
@@ -94,7 +97,7 @@ var operations = host.Services.GetRequiredService<LeaseOperations>();
 var registry = host.Services.GetRequiredService<LeaseRegistry>();
 var hosted = host.Services.GetServices<IHostedService>().ToArray();
 var workHost = host.Services.GetRequiredService<IWorkHost>();
-var newerResult = new JobResultVersionException(Sources.Report.Key, 2, Sources.Report.Results.Version);
+var newerResult = new JobResultVersionException(Sources.Report.Key, 2, 1);
 var lease = new Lease<InstanceKey>(Sources.Instances, new InstanceKey("tenant", 7), operations.Owner, 3);
 var restored = Sources.Instances.ParseToken(lease.Token);
 var callbacks = registry.Callbacks(Sources.Instances);
@@ -115,8 +118,10 @@ var jobs = host.Services.GetRequiredService<JobRegistry>();
 var parsed = WorkCalendar.Parse(Sources.BusinessDays.Name, Sources.BusinessDays.Revision, Sources.BusinessDays.Rule);
 var evaluator = new CalendarEvaluator([parsed], [new CalendarDates("public-holidays", 1, new HashSet<DateOnly> { new(2027, 1, 1) }, new DateOnly(2027, 12, 31))]);
 var slot = evaluator.Next(parsed.Name, new DateTimeOffset(2026, 12, 31, 17, 30, 0, TimeSpan.Zero));
-var feed = Sources.FeedSync.Args.Read(Sources.FeedSync.Args.Write(new SyncFeed("npm")), 2);
-var report = Sources.Report.Results.Read(Sources.Report.Results.Write(new FeedReport("npm", 3)), 1);
+var feedCodec = JobArgs.Json(SmokeJson.Default.SyncFeed, version: 2);
+var feed = feedCodec.Read(feedCodec.Write(new SyncFeed("npm")), 2);
+var reportCodec = JobResults.Json(SmokeJson.Default.FeedReport);
+var report = reportCodec.Read(reportCodec.Write(new FeedReport("npm", 3)), 1);
 JobDisposition<FeedReport> returned = report;
 JobDisposition<FeedReport> retried = JobResult.Retry(TimeSpan.Zero, "busy");
 var job = JobId.New();
@@ -157,8 +162,10 @@ var jobsBuilder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettin
 jobsBuilder.Services.AddSingleton<TimeProvider>(clock);
 jobsBuilder.Services.AddInMemoryWorkStore(memory, "jobs");
 jobsBuilder.Services.AddWork(work => work
+    .UseJson(SmokeJson.Default)
     .AddJob<SyncFeed, FeedSyncHandler>(Sources.FeedSync, job => job.AcceptsArgs(1, 2))
-    .AddJob<SyncFeed, FeedPruneHandler>(Sources.Prune));
+    .AddJob<SyncFeed, FeedPruneHandler>(Sources.Prune)
+    .AddJob<SyncFeed, FeedReport, FeedReportHandler>(Sources.Summary));
 using var jobsHost = jobsBuilder.Build();
 await jobsHost.StartAsync();
 var jobOperations = jobsHost.Services.GetRequiredService<JobOperations>();
@@ -170,6 +177,14 @@ using (var request = await memory.BeginAsync())
 }
 using var waiting = new CancellationTokenSource(TimeSpan.FromSeconds(30));
 var completed = await jobOperations.WaitAsync(Sources.FeedSync, requested.Id, TimeSpan.FromSeconds(30), waiting.Token);
+JobRequestResult summarized;
+using (var request = await memory.BeginAsync())
+{
+    summarized = await jobOperations.RequestAsync(request, Sources.Summary, new SyncFeed("npm"), Schedule.Now);
+    request.Commit();
+}
+await jobOperations.WaitAsync(Sources.Summary, summarized.Id, TimeSpan.FromSeconds(30), waiting.Token);
+var summary = await jobOperations.GetOutcomeAsync(Sources.Summary, summarized.Id, waiting.Token);
 ChainId requestedChain;
 using (var request = await memory.BeginAsync())
 {
@@ -188,6 +203,19 @@ signalsBuilder.Services.AddPostgreSqlSignals(dataSource, "fleet");
 using var signalsHost = signalsBuilder.Build();
 var signals = signalsHost.Services.GetRequiredService<IWorkSignals>();
 signals.Subscribe(new SignalTopic("fleet.changed"), new FleetChanged()).Dispose();
+var unlistedBuilder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true });
+unlistedBuilder.Services.AddInMemoryWorkStore(memory, "unlisted");
+unlistedBuilder.Services.AddWork(work => work.UseJson(SmokeJson.Default).AddJobDefinition(JobDefinition.Create<Unlisted>("feeds.unlisted")));
+using var unlistedHost = unlistedBuilder.Build();
+string? unlisted = null;
+try
+{
+    unlistedHost.Services.GetRequiredService<JobRegistry>();
+}
+catch (InvalidOperationException exception)
+{
+    unlisted = exception.Message;
+}
 var execution = ReconcileExecution.Id(Sources.Placements.Name, "tenant/7", 2, 1);
 if (restored != lease || hosted.Length != 1 || !ReferenceEquals(hosted[0], workHost) || newerResult.Readable != 1 || processHosted.Length != 1 || instance.State != ProcessState.Live
     || declared.Count != 6 || !declared.Single(d => d.Definition == Sources.Nightly.Key).DeclaresRecurrence || !declared.Single(d => d.Definition == Sources.Prune.Key).DeclaresRecurrence || !declared.Single(d => d.Definition == Sources.FeedSync.Key).AcceptedArgs.SequenceEqual([1, 2])
@@ -199,7 +227,8 @@ if (restored != lease || hosted.Length != 1 || !ReferenceEquals(hosted[0], workH
     || execution == ReconcileExecution.Id(Sources.Placements.Name, "tenant/7", 3, 1) || (execution.ToByteArray(bigEndian: true)[6] >> 4) != 8
     || !parsed.Digest.AsSpan().SequenceEqual(Sources.BusinessDays.Digest) || jobs.Calendars.Count != 1 || host.Services.GetServices<IWorkBackground>().Count() != 7
     || Sources.Report.Policy.Expect?.Deadline?.Calendar != Sources.BusinessDays.Name || !partitions.SequenceEqual(["tenant"]) || !sources.Contains("Corfedo.Work") || incidentHandlers.Single() is not IncidentNotifier
-    || memoryClaim?.Lease.Epoch != 1 || completed?.Outcome != JobOutcome.Completed || ranChain?.Outcome != JobOutcome.Completed || ranChain.Steps.Count != 2 || !renewed.Valid || expired || fired != 1 || signalsHost.Services.GetServices<IHostedService>().Any()
+    || memoryClaim?.Lease.Epoch != 1 || completed?.Outcome != JobOutcome.Completed || ranChain?.Outcome != JobOutcome.Completed || ranChain.Steps.Count != 2
+    || summary?.Result.Feed != "npm" || summary.Result.Runs != 1 || unlisted?.Contains("[JsonSerializable(typeof(Unlisted))]", StringComparison.Ordinal) != true || !renewed.Valid || expired || fired != 1 || signalsHost.Services.GetServices<IHostedService>().Any()
     || slot.Kind != CalendarSlotKind.Allowed || slot.Start != new DateTimeOffset(2027, 1, 4, 7, 0, 0, TimeSpan.Zero) || slot.End != new DateTimeOffset(2027, 1, 4, 17, 0, 0, TimeSpan.Zero))
 {
     Console.Error.WriteLine("smoke check failed");
@@ -265,17 +294,17 @@ internal static class Sources
         .ExcludeAnnual(month: 12, day: 24)
         .ExcludeDates("public-holidays");
 
-    public static readonly JobDefinition<SyncFeed> Cleanup = JobDefinition.Create("feeds.cleanup", 1, JobArgs.Json(SmokeJson.Default.SyncFeed));
+    public static readonly JobDefinition<SyncFeed> Cleanup = JobDefinition.Create<SyncFeed>("feeds.cleanup");
 
-    public static readonly JobDefinition<SyncFeed> Prune = JobDefinition.Create("feeds.prune", 1, JobArgs.Json(SmokeJson.Default.SyncFeed));
+    public static readonly JobDefinition<SyncFeed> Prune = JobDefinition.Create<SyncFeed>("feeds.prune");
 
-    public static readonly JobDefinition<SyncFeed> Nightly = JobDefinition.Create("feeds.nightly", 1, JobArgs.Json(SmokeJson.Default.SyncFeed), new JobPolicy { Late = Late.SkipAfter(TimeSpan.FromHours(1)) });
+    public static readonly JobDefinition<SyncFeed> Nightly = JobDefinition.Create<SyncFeed>("feeds.nightly", 1, new JobPolicy { Late = Late.SkipAfter(TimeSpan.FromHours(1)) });
 
-    public static readonly JobDefinition<SyncFeed, FeedReport> Report = JobDefinition.Create(
+    public static readonly JobDefinition<SyncFeed, FeedReport> Summary = JobDefinition.Create<SyncFeed, FeedReport>("feeds.summary");
+
+    public static readonly JobDefinition<SyncFeed, FeedReport> Report = JobDefinition.Create<SyncFeed, FeedReport>(
         "feeds.report",
         1,
-        JobArgs.Json(SmokeJson.Default.SyncFeed),
-        JobResults.Json(SmokeJson.Default.FeedReport),
         new JobPolicy
         {
             RunHistory = true,
@@ -287,6 +316,8 @@ internal static class Sources
 internal sealed record SyncFeed(string Feed);
 
 internal sealed record FeedReport(string Feed, int Runs);
+
+internal sealed record Unlisted(string Name);
 
 [JsonSerializable(typeof(SyncFeed))]
 [JsonSerializable(typeof(FeedReport))]

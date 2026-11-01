@@ -66,7 +66,7 @@ public sealed partial class JobOperations
     public async ValueTask<JobOutcomeStatus<TResult>?> GetOutcomeAsync<TArgs, TResult>(JobDefinition<TArgs, TResult> definition, JobId job, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        return await ReadOutcomeAsync(definition, job, cancellationToken) is { } stored ? Typed(definition, stored) : null;
+        return await ReadOutcomeAsync(definition, job, cancellationToken) is { } stored ? Typed(definition.Key, registry.Results(definition), stored) : null;
     }
 
     /// <summary>
@@ -127,14 +127,14 @@ public sealed partial class JobOperations
         (await Store.GetOutcomesAsync(definition.Key, [job], cancellationToken)).SingleOrDefault();
 
     /// <exception cref="JobResultVersionException">The stored result is newer than the definition's codec reads.</exception>
-    internal static JobOutcomeStatus<TResult> Typed<TArgs, TResult>(JobDefinition<TArgs, TResult> definition, StoredJobOutcome stored)
+    internal static JobOutcomeStatus<TResult> Typed<TResult>(string definition, IJobResults<TResult> results, StoredJobOutcome stored)
     {
         var hasResult = stored.Result is not null;
-        if (hasResult && stored.ResultVersion > definition.Results.Version)
+        if (hasResult && stored.ResultVersion > results.Version)
         {
-            throw new JobResultVersionException(definition.Key, stored.ResultVersion, definition.Results.Version);
+            throw new JobResultVersionException(definition, stored.ResultVersion, results.Version);
         }
-        var result = hasResult ? definition.Results.Read(stored.Result, stored.ResultVersion) : default!;
+        var result = hasResult ? results.Read(stored.Result, stored.ResultVersion) : default!;
         return new JobOutcomeStatus<TResult>(stored.Job, stored.Ended, stored.ExecutionId, stored.Outcome, stored.Reason, stored.EndedAt, hasResult, result);
     }
 

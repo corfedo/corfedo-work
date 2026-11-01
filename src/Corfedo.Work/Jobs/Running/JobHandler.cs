@@ -53,13 +53,13 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
     {
         using var timeoutReport = run.Hold.Token.Register(() => ReportIgnoredTimeout(run));
         var started = registry.Time.GetTimestamp();
-        var job = CreateRun(run, registration.Definition, ended);
+        var job = CreateRun(run, registration, ended);
         JobTransition? transition;
         string? errorType = null;
         try
         {
-            var args = registration.Definition.Args.Read(run.Claim.Job!.Args, run.Claim.Job.ArgsVersion);
-            var returned = await CallAsync(args, job, registration.Definition, cancellationToken);
+            var args = registration.Args.Read(run.Claim.Job!.Args, run.Claim.Job.ArgsVersion);
+            var returned = await CallAsync(args, job, registration, cancellationToken);
             // A completion that committed ended the lease, so applying Uncompleted changes nothing; otherwise it is
             // retried. A timed-out attempt ends as timed out whatever it returns. The store ends a retry of a job with a
             // cancellation request as cancelled.
@@ -92,10 +92,10 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
     }
 
     /// <summary>The attempt as its handler sees it.</summary>
-    private protected abstract JobRun CreateRun(LeaseRun<JobId> run, JobDefinition<TArgs> definition, JobEndedCallback ended);
+    private protected abstract JobRun CreateRun(LeaseRun<JobId> run, JobDefinitionRegistration<TArgs> registration, JobEndedCallback ended);
 
     /// <summary>Runs the handler; returns the transition it asks for, or null when it applied its own.</summary>
-    private protected abstract ValueTask<JobTransition?> CallAsync(TArgs args, JobRun run, JobDefinition<TArgs> definition, CancellationToken cancellationToken);
+    private protected abstract ValueTask<JobTransition?> CallAsync(TArgs args, JobRun run, JobDefinitionRegistration<TArgs> registration, CancellationToken cancellationToken);
 
     private protected JobRegistry Registry => registry;
 
@@ -215,10 +215,10 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
 internal sealed class JobHandler<TArgs, THandler>(THandler handler, JobRegistry registry, IWorkStore store, ILoggerFactory? logging = null) : JobHandler<TArgs>(registry, store, logging)
     where THandler : class, IJobHandler<TArgs>
 {
-    private protected override JobRun CreateRun(LeaseRun<JobId> run, JobDefinition<TArgs> definition, JobEndedCallback ended) =>
-        new(run, definition, Store, Registry, ended);
+    private protected override JobRun CreateRun(LeaseRun<JobId> run, JobDefinitionRegistration<TArgs> registration, JobEndedCallback ended) =>
+        new(run, registration.Definition, Store, Registry, ended);
 
-    private protected override async ValueTask<JobTransition?> CallAsync(TArgs args, JobRun run, JobDefinition<TArgs> definition, CancellationToken cancellationToken)
+    private protected override async ValueTask<JobTransition?> CallAsync(TArgs args, JobRun run, JobDefinitionRegistration<TArgs> registration, CancellationToken cancellationToken)
     {
         var disposition = await handler.RunAsync(args, run, cancellationToken);
         return disposition.Result is { } result ? JobTransition.From(result) : null;
@@ -235,12 +235,12 @@ internal sealed class JobHandler<TArgs, TResult, THandler>(THandler handler, Job
 {
     private static readonly JobTransition TooLarge = JobTransition.From(JobResult.Fail(JobReasons.ResultTooLarge));
 
-    private protected override JobRun CreateRun(LeaseRun<JobId> run, JobDefinition<TArgs> definition, JobEndedCallback ended) =>
-        new JobRun<TResult>(run, definition, ((JobDefinition<TArgs, TResult>)definition).Results, Store, Registry, ended);
+    private protected override JobRun CreateRun(LeaseRun<JobId> run, JobDefinitionRegistration<TArgs> registration, JobEndedCallback ended) =>
+        new JobRun<TResult>(run, registration.Definition, (IJobResults<TResult>)registration.Results!, Store, Registry, ended);
 
-    private protected override async ValueTask<JobTransition?> CallAsync(TArgs args, JobRun run, JobDefinition<TArgs> definition, CancellationToken cancellationToken)
+    private protected override async ValueTask<JobTransition?> CallAsync(TArgs args, JobRun run, JobDefinitionRegistration<TArgs> registration, CancellationToken cancellationToken)
     {
-        var results = ((JobDefinition<TArgs, TResult>)definition).Results;
+        var results = (IJobResults<TResult>)registration.Results!;
         var disposition = await handler.RunAsync(args, (JobRun<TResult>)run, cancellationToken);
         if (!disposition.HasValue)
         {
