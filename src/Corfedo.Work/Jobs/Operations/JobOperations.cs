@@ -13,23 +13,24 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
 {
     private IJobStore Store => store.Jobs;
 
-    /// <summary>Requests a job in the caller's transaction; it is signalled to claimers on commit (R1, J1, J3).</summary>
-    public async ValueTask<JobRequestResult> RequestAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, TArgs args, Schedule schedule, JobRequestOptions? options = null, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Requests a job in the caller's transaction, due by <paramref name="schedule"/> or now; it is signalled to claimers
+    /// on commit (R1, J1, J3).
+    /// </summary>
+    public async ValueTask<JobRequestResult> RequestAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, TArgs args, Schedule? schedule = null, JobRequestOptions? options = null, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(schedule);
         var registration = registry.Find(definition);
-        var request = Data(registry.Args(definition), definition, args, schedule, options ?? JobRequestOptions.Default);
+        var request = Data(registry.Args(definition), definition, args, schedule ?? Schedule.Now, options ?? JobRequestOptions.Default);
         return await Store.RequestAsync(transaction, await registration.SourceAsync(store, cancellationToken), request, cancellationToken);
     }
 
-    /// <summary>Requests one job per item in the caller's transaction: all commit or none do (J9).</summary>
-    public async ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, IEnumerable<JobRequestItem<TArgs>> items, Schedule schedule, CancellationToken cancellationToken = default)
+    /// <summary>Requests one job per item in the caller's transaction, due by <paramref name="schedule"/> or now: all commit or none do (J9).</summary>
+    public async ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, IEnumerable<JobRequestItem<TArgs>> items, Schedule? schedule = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(items);
-        ArgumentNullException.ThrowIfNull(schedule);
         var registration = registry.Find(definition);
         var codec = registry.Args(definition);
-        var requests = items.Select(item => Data(codec, definition, item.Args, schedule, item.Options)).ToList();
+        var requests = items.Select(item => Data(codec, definition, item.Args, schedule ?? Schedule.Now, item.Options)).ToList();
         return await Store.RequestManyAsync(transaction, await registration.SourceAsync(store, cancellationToken), requests, cancellationToken);
     }
 

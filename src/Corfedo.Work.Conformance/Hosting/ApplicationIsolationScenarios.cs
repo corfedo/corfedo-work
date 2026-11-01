@@ -39,7 +39,7 @@ public abstract class ApplicationIsolationScenarios(IJobConformanceProvider prov
         // Each application claims only its own job of the same definition and subject.
         var ordersJob = await RequestAsync(ordersWorker, shared, "orders", options: For(subject));
         var billingJob = await RequestAsync(billingWorker, shared, "fail", options: For(subject));
-        await InTransactionAsync(tx => Jobs(billingWorker).RequestAsync(tx, idle, new TestArgs("idle"), Schedule.Now, cancellationToken: Cancel));
+        await InTransactionAsync(tx => Jobs(billingWorker).RequestAsync(tx, idle, new TestArgs("idle"), cancellationToken: Cancel));
         await EventuallyAsync(async () => await Jobs(ordersWorker).GetOutcomeAsync(shared, ordersJob.Id, Cancel) is { Ended: true }, Settles, "the orders job ends");
         await EventuallyAsync(async () => await Jobs(billingWorker).GetOutcomeAsync(shared, billingJob.Id, Cancel) is { Ended: true }, Settles, "the billing job ends");
         Assert.Equal(["orders"], orders.Runs);

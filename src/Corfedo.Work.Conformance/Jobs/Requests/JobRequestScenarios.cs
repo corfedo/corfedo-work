@@ -13,7 +13,7 @@ public abstract class JobRequestScenarios(IJobConformanceProvider provider) : Jo
         await RequestAsync(client, definition, "committed");
         await using (var rolledBack = await BeginAsync())
         {
-            await Jobs(client).RequestAsync(rolledBack.Work, definition, new TestArgs("rolled-back"), Schedule.Now, cancellationToken: Cancel);
+            await Jobs(client).RequestAsync(rolledBack.Work, definition, new TestArgs("rolled-back"), cancellationToken: Cancel);
             await rolledBack.RollbackAsync(Cancel);
         }
         var attempts = new ConcurrentQueue<ObservedAttempt>();

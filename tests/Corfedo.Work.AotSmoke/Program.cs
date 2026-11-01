@@ -180,7 +180,7 @@ var completed = await jobOperations.WaitAsync(Sources.FeedSync, requested.Id, Ti
 JobRequestResult summarized;
 using (var request = await memory.BeginAsync())
 {
-    summarized = await jobOperations.RequestAsync(request, Sources.Summary, new SyncFeed("npm"), Schedule.Now);
+    summarized = await jobOperations.RequestAsync(request, Sources.Summary, new SyncFeed("npm"));
     request.Commit();
 }
 await jobOperations.WaitAsync(Sources.Summary, summarized.Id, TimeSpan.FromSeconds(30), waiting.Token);

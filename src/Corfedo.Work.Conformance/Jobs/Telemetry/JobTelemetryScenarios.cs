@@ -108,7 +108,7 @@ public abstract class JobTelemetryScenarios(IJobConformanceProvider provider) : 
         var client = await ClientAsync(null, taken, waiting);
         var takenJob = (await RequestAsync(client, taken, "x")).Id;
         await CrashClaimAsync(client, taken, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5));
-        await RequestAsync(client, waiting, "x", Schedule.Now);
+        await RequestAsync(client, waiting, "x");
         var runs = new ConcurrentQueue<ObservedOccurrence>();
         var worker = await ProcessAsync(
             work =>

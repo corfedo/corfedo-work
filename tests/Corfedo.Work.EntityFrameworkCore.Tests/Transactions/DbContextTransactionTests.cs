@@ -56,7 +56,7 @@ public sealed class DbContextTransactionTests(PostgreSqlDatabase database) : ICl
             await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
             context.Orders.Add(new Order { Id = order, Status = "placed" });
             await context.SaveChangesAsync(Cancel);
-            job = (await Jobs.RequestAsync(context.Database.WorkTransaction(), Shop.Ship, new ShipOrder(order, 0), Schedule.Now, cancellationToken: Cancel)).Id;
+            job = (await Jobs.RequestAsync(context.Database.WorkTransaction(), Shop.Ship, new ShipOrder(order, 0), cancellationToken: Cancel)).Id;
             await transaction.CommitAsync(Cancel);
         }
 
@@ -75,7 +75,7 @@ public sealed class DbContextTransactionTests(PostgreSqlDatabase database) : ICl
             await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
             context.Orders.Add(new Order { Id = order, Status = "placed" });
             await context.SaveChangesAsync(Cancel);
-            job = (await Jobs.RequestAsync(context.Database.WorkTransaction(), Shop.Ship, new ShipOrder(order, 0), Schedule.Now, cancellationToken: Cancel)).Id;
+            job = (await Jobs.RequestAsync(context.Database.WorkTransaction(), Shop.Ship, new ShipOrder(order, 0), cancellationToken: Cancel)).Id;
             await transaction.RollbackAsync(Cancel);
         }
 
@@ -96,7 +96,7 @@ public sealed class DbContextTransactionTests(PostgreSqlDatabase database) : ICl
         await using (var context = Context())
         {
             await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
-            job = (await Jobs.RequestAsync(context.Database.WorkTransaction(), Shop.Ship, new ShipOrder(order, RollBackAttempts: 1), Schedule.Now, cancellationToken: Cancel)).Id;
+            job = (await Jobs.RequestAsync(context.Database.WorkTransaction(), Shop.Ship, new ShipOrder(order, RollBackAttempts: 1), cancellationToken: Cancel)).Id;
             await transaction.CommitAsync(Cancel);
         }
 

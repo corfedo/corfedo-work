@@ -28,7 +28,7 @@ public sealed partial class JobJsonHostTests
         JobRequestResult requested;
         using (var transaction = await database.BeginAsync(Cancel))
         {
-            requested = await jobs.RequestAsync(transaction, Echo, new ListedArgs("npm"), Schedule.Now, cancellationToken: Cancel);
+            requested = await jobs.RequestAsync(transaction, Echo, new ListedArgs("npm"), cancellationToken: Cancel);
             transaction.Commit();
         }
 

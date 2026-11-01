@@ -33,7 +33,7 @@ public abstract class HostStartScenarios(IJobConformanceProvider provider) : Job
         var host = process.Services.GetRequiredService<IWorkHost>();
 
         // The host's own start applies the schema and stores definitions, so the application can request work.
-        await InTransactionAsync(tx => Jobs(process).RequestAsync(tx, definition, new TestArgs("requested"), Schedule.Now, cancellationToken: Cancel));
+        await InTransactionAsync(tx => Jobs(process).RequestAsync(tx, definition, new TestArgs("requested"), cancellationToken: Cancel));
         await Task.Delay(1500, Cancel);
         Assert.Empty(runs);
         Assert.Null(await Provider.ReadProcessAsync(process.Owner, Cancel));
@@ -82,7 +82,7 @@ public abstract class HostStartScenarios(IJobConformanceProvider provider) : Job
         _ = worker.Services.GetRequiredService<IWorkHost>();
         _ = Jobs(worker);
         var client = await ClientAsync(null, definition);
-        var job = await InTransactionAsync(tx => Jobs(client).RequestAsync(tx, definition, new TestArgs("a"), Schedule.Now, cancellationToken: Cancel));
+        var job = await InTransactionAsync(tx => Jobs(client).RequestAsync(tx, definition, new TestArgs("a"), cancellationToken: Cancel));
 
         await Task.Delay(1000, Cancel);
         Assert.Equal(0, runs);

@@ -147,7 +147,7 @@ public abstract class JobScenarioBase(IJobConformanceProvider provider) : LeaseS
     protected async Task<JobRequestResult> RequestAsync(TestProcess process, JobDefinition<TestArgs> definition, string args, Schedule? schedule = null, JobRequestOptions? options = null)
     {
         await using var transaction = await Provider.BeginAsync(Cancel);
-        var result = await Jobs(process).RequestAsync(transaction.Work, definition, new TestArgs(args), schedule ?? Schedule.Now, options, Cancel);
+        var result = await Jobs(process).RequestAsync(transaction.Work, definition, new TestArgs(args), schedule, options, Cancel);
         await transaction.CommitAsync(Cancel);
         return result;
     }

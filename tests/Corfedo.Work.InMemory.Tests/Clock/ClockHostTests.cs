@@ -119,7 +119,7 @@ public sealed class ClockHostTests : IAsyncDisposable
     private async Task<JobId> RequestAsync(JobOperations jobs, JobDefinition<ClockArgs> definition, ClockArgs? args = null)
     {
         using var transaction = await database.BeginAsync(Cancel);
-        var requested = await jobs.RequestAsync(transaction, definition, args ?? new ClockArgs(0), Schedule.Now, cancellationToken: Cancel);
+        var requested = await jobs.RequestAsync(transaction, definition, args ?? new ClockArgs(0), cancellationToken: Cancel);
         transaction.Commit();
         return requested.Id;
     }
