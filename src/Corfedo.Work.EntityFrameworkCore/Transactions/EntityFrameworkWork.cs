@@ -18,6 +18,6 @@ public static class EntityFrameworkWork
         ArgumentNullException.ThrowIfNull(database);
         var current = database.CurrentTransaction
             ?? throw new InvalidOperationException("The DbContext has no active transaction; begin one with Database.BeginTransactionAsync so the work commits with its changes.");
-        return Corfedo.Work.WorkTransaction.Of(current.GetDbTransaction());
+        return current.GetDbTransaction().WorkTransaction();
     }
 }

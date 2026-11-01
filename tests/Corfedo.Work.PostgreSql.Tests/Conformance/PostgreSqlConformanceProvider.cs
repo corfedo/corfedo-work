@@ -370,7 +370,7 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
 
     private sealed class Transaction(NpgsqlConnection connection, NpgsqlTransaction transaction) : IConformanceTransaction
     {
-        public IWorkTransaction Work { get; } = WorkTransaction.Of(transaction);
+        public IWorkTransaction Work { get; } = transaction.WorkTransaction();
 
         public async Task WriteProgressAsync(StoreLocation table, TestKey key, string progress, CancellationToken cancellationToken)
         {

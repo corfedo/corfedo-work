@@ -69,7 +69,7 @@ public sealed class RecurrenceIsolationTests(PostgreSqlDatabase database) : ICla
         await SnapshotAsync(connection, transaction);
         var before = await StateAsync(subject);
 
-        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(operation, WorkTransaction.Of(transaction), subject));
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(operation, transaction.WorkTransaction(), subject));
         Assert.Contains("READ COMMITTED", refused.Message, StringComparison.Ordinal);
         await transaction.RollbackAsync(Cancel);
 
@@ -95,7 +95,7 @@ public sealed class RecurrenceIsolationTests(PostgreSqlDatabase database) : ICla
     {
         await using var connection = await database.DataSource.OpenConnectionAsync(Cancel);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, Cancel);
-        await operation(WorkTransaction.Of(transaction));
+        await operation(transaction.WorkTransaction());
         await transaction.CommitAsync(Cancel);
     }
 

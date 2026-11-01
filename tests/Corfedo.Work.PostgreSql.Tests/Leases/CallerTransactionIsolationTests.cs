@@ -31,7 +31,7 @@ public sealed class CallerTransactionIsolationTests(PostgreSqlDatabase database)
         Assert.Single(await ClaimCommittedAsync(store, source, owner, new TestKey("t", 1)));
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-            await store.ClaimAsync(WorkTransaction.Of(later), source, LeaseCallbacks<TestKey>.None, owner, [new TestKey("t", 2)], 1, Cancel));
+            await store.ClaimAsync(later.WorkTransaction(), source, LeaseCallbacks<TestKey>.None, owner, [new TestKey("t", 2)], 1, Cancel));
         await later.RollbackAsync(Cancel);
 
         Assert.Equal(1L, await HeldAsync(source));
@@ -50,7 +50,7 @@ public sealed class CallerTransactionIsolationTests(PostgreSqlDatabase database)
         }
         Assert.Single(await ClaimCommittedAsync(store, source, owner, new TestKey("t", 1)));
 
-        Assert.Empty(await store.ClaimAsync(WorkTransaction.Of(later), source, LeaseCallbacks<TestKey>.None, owner, [new TestKey("t", 2)], 1, Cancel));
+        Assert.Empty(await store.ClaimAsync(later.WorkTransaction(), source, LeaseCallbacks<TestKey>.None, owner, [new TestKey("t", 2)], 1, Cancel));
         await later.CommitAsync(Cancel);
 
         Assert.Equal(1L, await HeldAsync(source));
@@ -65,13 +65,13 @@ public sealed class CallerTransactionIsolationTests(PostgreSqlDatabase database)
         var failing = new LeaseCallbacks<TestKey>((_, _, _) => throw new InvalidOperationException("inner hook"), null);
         var nested = new LeaseCallbacks<TestKey>(async (_, work, ct) =>
         {
-            await store.ClaimAsync(WorkTransaction.Of(work.Npgsql()), inner, failing, owner, [new TestKey("t", 1)], 1, ct);
+            await store.ClaimAsync(work.Npgsql().WorkTransaction(), inner, failing, owner, [new TestKey("t", 1)], 1, ct);
             throw new InvalidOperationException("outer hook");
         }, null);
         await using var connection = await database.DataSource.OpenConnectionAsync(Cancel);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, Cancel);
 
-        Assert.Empty(await store.ClaimAsync(WorkTransaction.Of(transaction), outer, nested, owner, [new TestKey("t", 1)], 1, Cancel));
+        Assert.Empty(await store.ClaimAsync(transaction.WorkTransaction(), outer, nested, owner, [new TestKey("t", 1)], 1, Cancel));
         await transaction.CommitAsync(Cancel);
 
         Assert.Equal((0L, 0L), (await HeldAsync(outer), await HeldAsync(inner)));
@@ -81,7 +81,7 @@ public sealed class CallerTransactionIsolationTests(PostgreSqlDatabase database)
     {
         await using var connection = await database.DataSource.OpenConnectionAsync(Cancel);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, Cancel);
-        var claims = await store.ClaimAsync(WorkTransaction.Of(transaction), source, LeaseCallbacks<TestKey>.None, owner, [key], 1, Cancel);
+        var claims = await store.ClaimAsync(transaction.WorkTransaction(), source, LeaseCallbacks<TestKey>.None, owner, [key], 1, Cancel);
         await transaction.CommitAsync(Cancel);
         return claims;
     }
