@@ -66,7 +66,8 @@ and "converged under this policy" stay distinguishable. Whether a record should 
 domain deleted or suspended, is the reconciler's decision: it reads the record and returns `Converged`.
 
 `DueAt` is never earlier than `NotBefore`: a failure sets both, and requests keep a due time at
-or after the floor (a request that resets backoff clears the floor instead). So the next due time of a record in
+or after the floor (a request that resets backoff clears the floor instead). `LeaseOperations` and the stores refuse
+`ScheduleAsync` on reconciliation sources, so nothing else sets the due time. So the next due time of a record in
 backoff is its `DueAt`, and a dispatcher wakes for it without polling.
 
 A claim sets `ClaimedRevision` to `RequestedRevision`, `AttemptedGeneration` to the current generation and clears

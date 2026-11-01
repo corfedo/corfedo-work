@@ -16,8 +16,7 @@ public sealed record WelcomeArgs(long UserId);
 
 public static class Jobs
 {
-    public static readonly JobDefinition<WelcomeArgs> Welcome =
-        JobDefinition.Create("users.welcome", 1, JobArgs.Json<WelcomeArgs>());
+    public static readonly JobDefinition<WelcomeArgs> Welcome = JobDefinition.Create<WelcomeArgs>("users.welcome");
 }
 
 public sealed class SendWelcome : IJobHandler<WelcomeArgs>
@@ -34,7 +33,7 @@ builder.Services.AddPostgreSqlWorkStore(dataSource);
 builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welcome));
 
 // In the transaction that creates the user:
-await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(42), Schedule.Now);
+await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(42));
 ```
 
 The [README](https://github.com/corfedo/corfedo-work#readme) has the full first example, and the

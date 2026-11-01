@@ -8,6 +8,7 @@ The hosting layer of `Corfedo.Work` runs registered handlers in a `Microsoft.Ext
 services.AddPostgreSqlWorkStore(dataSource, schema: "orders_work");   // the application's framework schema, R19
 services.AddWork(work => work
     .Process(process => process.Type("orders-worker").Release(version))
+    .UseJson(AppJson.Default)                                // job arguments and results through a source-generated context
     .AddJob<SyncFeed, FeedSyncHandler>(FeedSync, job => job.Capacity(2))
     .AddJobDefinition(Cleanup)                               // requested and cancelled here, run elsewhere
     .AddCalendar(BusinessDays)                               // J16, stored by revision at startup
@@ -24,7 +25,9 @@ services.AddWork(work => work
     .AddLeaseHandler<InstanceKey, InstanceExecutor>(Instances, l => l.Capacity(16)));
 ```
 
-A process runs exactly what it registers (R10). `AddCalendar(calendar)` registers a [calendar](calendars.md) that
+A process runs exactly what it registers (R10). `ConfigureJson(options => ...)` changes the JSON options job arguments
+and results use, and `UseJson(resolver)` puts a resolver in front of their chain; the host resolves the types of every
+registered definition at startup and stops with the type named when one is missing. `AddCalendar(calendar)` registers a [calendar](calendars.md) that
 schedules name with `Within`; `CalendarCoverage(margin)` sets how far ahead of need date sets should be covered.
 `AddRecurringChain(definition, args, schedule, chain)` declares a [recurring chain](chains.md#recurring-chains) and runs
 its occurrences; the definitions of its steps are registered with `AddJob` or `AddJobDefinition`.

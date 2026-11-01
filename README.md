@@ -37,15 +37,14 @@ Jobs, cron schedules, leases on your own tables and reconciliation are all built
 dotnet add package Corfedo.Work.PostgreSql
 ```
 
-**Define the job:** its arguments, a definition with a stable key and a revision, and a handler.
+**Define the job:** its arguments, a definition with a stable key, and a handler.
 
 ```csharp
 public sealed record WelcomeArgs(long UserId);
 
 public static class Jobs
 {
-    public static readonly JobDefinition<WelcomeArgs> Welcome =
-        JobDefinition.Create("users.welcome", 1, JobArgs.Json<WelcomeArgs>());
+    public static readonly JobDefinition<WelcomeArgs> Welcome = JobDefinition.Create<WelcomeArgs>("users.welcome");
 }
 
 public sealed class SendWelcome : IJobHandler<WelcomeArgs>
@@ -58,8 +57,8 @@ public sealed class SendWelcome : IJobHandler<WelcomeArgs>
 }
 ```
 
-The revision (`1`) lets replicas on different releases agree on one policy. Increase it when you change the
-definition's policy.
+Arguments are stored as JSON. A definition with a policy (attempts, backoff, limits) also takes a revision: increase it
+whenever the policy changes, so replicas on different releases agree on one policy.
 
 **Register the store and the job** in `Program.cs`. The store creates its tables in the `work` schema at startup.
 
@@ -74,7 +73,7 @@ builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welc
 ```csharp
 await using var transaction = await connection.BeginTransactionAsync(ct);
 // INSERT INTO users ...
-await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(42), Schedule.Now, cancellationToken: ct);
+await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(42), cancellationToken: ct);
 await transaction.CommitAsync(ct);
 ```
 

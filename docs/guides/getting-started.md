@@ -30,7 +30,7 @@ Every request, cancellation and completion takes the transaction it belongs to. 
 await using var transaction = await db.Database.BeginTransactionAsync(ct);
 db.Feeds.Add(feed);
 await db.SaveChangesAsync(ct);
-await jobs.RequestAsync(db.Database.WorkTransaction(), Jobs.FeedSync, new SyncFeed(feed.Name), Schedule.Now, cancellationToken: ct);
+await jobs.RequestAsync(db.Database.WorkTransaction(), Jobs.FeedSync, new SyncFeed(feed.Name), cancellationToken: ct);
 await transaction.CommitAsync(ct);
 ```
 

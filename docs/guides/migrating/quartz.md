@@ -40,8 +40,7 @@ public sealed record ReportArgs(string Region);
 
 public static class Jobs
 {
-    public static readonly JobDefinition<ReportArgs> NightlyReport =
-        JobDefinition.Create("reports.nightly", 1, JobArgs.Json<ReportArgs>());
+    public static readonly JobDefinition<ReportArgs> NightlyReport = JobDefinition.Create<ReportArgs>("reports.nightly");
 }
 
 public sealed class NightlyReportHandler : IJobHandler<ReportArgs>

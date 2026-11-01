@@ -12,7 +12,7 @@ packages, apart from the EF Core adapter, support Native AOT.
 | `[TickerFunction("Name")]` method | A `JobDefinition<TArgs>` with the key `"Name"`, and an `IJobHandler<TArgs>` |
 | The function's request object | A typed argument record |
 | `TickerFunctionContext` | `JobRun`: ids, attempt, progress and completion |
-| `ITimeTickerManager.AddAsync(new TimeTickerEntity { Function, ExecutionTime })` | `jobs.RequestAsync(tx, Jobs.Name, args, Schedule.At(time))` |
+| `ITimeTickerManager.AddAsync(new TimeTickerEntity { Function, ExecutionTime })` | `jobs.RequestAsync(Jobs.Name, args, Schedule.At(time))`, or in your transaction `jobs.RequestAsync(tx, ...)` |
 | Cron functions and `SeedCronTickers` | `work.AddRecurring(Jobs.Name, args, Schedule.Cron("* * * * *", "UTC"))` |
 | A ticker's retries and retry intervals | `JobPolicy.Attempts` and `Backoff`, shared by the definition |
 | Job chaining | [Chains](../../design/chains.md): `jobs.RequestChainAsync(tx, c => c.StartWith(...).Then(...))` |
@@ -41,8 +41,7 @@ public sealed record HelloArgs(string Name);
 
 public static class Jobs
 {
-    public static readonly JobDefinition<HelloArgs> Hello =
-        JobDefinition.Create("HelloWorld", 1, JobArgs.Json<HelloArgs>());
+    public static readonly JobDefinition<HelloArgs> Hello = JobDefinition.Create<HelloArgs>("HelloWorld");
 }
 
 public sealed class HelloHandler : IJobHandler<HelloArgs>
@@ -54,17 +53,20 @@ public sealed class HelloHandler : IJobHandler<HelloArgs>
     }
 }
 
-await jobs.RequestAsync(db.Database.WorkTransaction(), Jobs.Hello, new HelloArgs("world"),
-    Schedule.After(TimeSpan.FromSeconds(10)), cancellationToken: ct);
+await jobs.RequestAsync(Jobs.Hello, new HelloArgs("world"), Schedule.After(TimeSpan.FromSeconds(10)), cancellationToken: ct);
 ```
 
-For Native AOT, pass a source-generated `JsonSerializerContext` to `JobArgs.Json`: see
+Like `AddAsync`, this request commits on its own. Where the code that needs the job has a transaction, pass it first,
+`jobs.RequestAsync(db.Database.WorkTransaction(), Jobs.Hello, ...)`, and the job exists only if that transaction
+commits.
+
+For Native AOT, register a source-generated `JsonSerializerContext` with `work.UseJson(AppJson.Default)`: see
 [trimming and Native AOT](../native-aot.md).
 
 ## Differences to plan for
 
-- **Transactions.** A request joins your transaction, EF Core or plain Npgsql: if it rolls back, the job does not
-  exist.
+- **Transactions.** A request that takes your transaction, EF Core or plain Npgsql, joins it: if it rolls back, the
+  job does not exist. A request without a transaction commits on its own.
 - **Policy per definition.** Attempts, backoff, timeouts and concurrency limits belong to the definition and are
   stored with its revision, so every replica applies the same policy.
 - **Time zones.** Every cron schedule names its time zone.

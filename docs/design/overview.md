@@ -83,8 +83,8 @@ reports trimming and AOT warnings of its own.
 - **Shared policy is data.** Anything processes must agree on is stored with a revision; local registrations hold only
   what may differ per process.
 - **Closed generics only.** Every registration is a generic method whose type arguments are known at compile time;
-  serialization takes a codec (for JSON, a source-generated `JsonTypeInfo<T>`, or reflection-based JSON that the
-  trimming and AOT analyzers flag at its call site). No `MakeGenericType`, `Activator`, assembly scanning or attributes
+  job arguments and results use the host's JSON options, whose reflection resolver exists only while reflection-based
+  serialization is enabled, so a Native AOT application registers a source-generated context. No `MakeGenericType`, `Activator`, assembly scanning or attributes
   read at runtime.
 - **No hidden infrastructure.** Everything runs against the one store the application already uses.
 - **At least once, honestly.** Fencing protects database output; external effects are deduplicated by work identity.

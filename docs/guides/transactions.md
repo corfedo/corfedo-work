@@ -16,7 +16,7 @@ Operations take an `IWorkTransaction`, a handle to your open transaction.
 ```csharp
 await using var transaction = await connection.BeginTransactionAsync(ct);
 // ... your own writes on the same connection ...
-await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.FeedSync, args, Schedule.Now, cancellationToken: ct);
+await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.FeedSync, args, cancellationToken: ct);
 await transaction.CommitAsync(ct);
 ```
 
@@ -38,3 +38,12 @@ The same handle works for jobs, leases, reconciliation and signals.
 
 An operator action, such as pausing a definition or rerunning a job, runs in its own transaction when the operation
 takes no handle.
+
+Code that has no transaction at the call site can request a job without a handle:
+
+```csharp
+await jobs.RequestAsync(Jobs.FeedSync, args, cancellationToken: ct);
+```
+
+The request commits on its own and wakes the workers after that commit. A rollback of your own transaction does not
+remove the job, so prefer the transactional form wherever the job depends on your changes.

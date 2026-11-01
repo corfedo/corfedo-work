@@ -15,10 +15,9 @@ framework's tables with a revision:
 ```csharp
 public sealed record SyncFeed(string Feed);
 
-public static readonly JobDefinition<SyncFeed> FeedSync = JobDefinition.Create(
+public static readonly JobDefinition<SyncFeed> FeedSync = JobDefinition.Create<SyncFeed>(
     key: "feeds.sync",                                // stable registered name, never a CLR name
-    revision: 3,                                      // increases whenever any shared policy below changes
-    args: JobArgs.Json(AppJson.Default.SyncFeed, version: 1),
+    revision: 3,                                      // increases whenever any shared policy below changes; 1 by default
     subject: "feed",                                  // optional: jobs act on "feed" subjects
     policy: new JobPolicy
     {
@@ -34,6 +33,11 @@ public static readonly JobDefinition<SyncFeed> FeedSync = JobDefinition.Create(
         RunHistoryRetention = TimeSpan.FromDays(90),  // run history entries (D7); unset: the host's default
     });
 ```
+
+The arguments are serialized with the host's JSON options (`ConfigureJson`, `UseJson`, see [hosting](hosting.md)),
+resolved when the definition is registered, and written as argument version 1. A definition with versioned arguments
+or another format takes an `IJobArgs<TArgs>` codec after the revision, such as
+`JobArgs.Json(AppJson.Default.SyncFeedV2, version: 2)`; its version is the one requests write.
 
 A **registration** is local to the process that runs the job: capacity, lease duration, scope binding.
 
@@ -183,8 +187,12 @@ definitions, handlers, workers, attempts, leases, results and history, but neith
 ## Schedules
 
 One `Schedule` type covers every timing (J1). One-shot schedules go through `RequestAsync` and `RequestManyAsync`,
-which refuse recurring ones; recurring schedules go through `ScheduleAsync`, which creates or replaces the recurrence
-and names no job.
+which refuse recurring ones and default to `Schedule.Now`; recurring schedules go through `ScheduleAsync`, which
+creates or replaces the recurrence and names no job.
+
+Requests join the caller's transaction. `RequestAsync(definition, args, ...)` without one commits in the store's own
+READ COMMITTED transaction and signals claimers after that commit, with the same merging as a transactional request; a
+rollback of the caller's own transaction does not remove the job.
 
 | Schedule | Due | When requests merge |
 |---|---|---|
@@ -374,16 +382,16 @@ failed attempt when the definition sets `RetryTimeouts`.
   characters, fenced to the attempt's lease: a report from an attempt whose lease is no longer valid throws
   `LeaseLostException` (J19). Every claim that runs the handler clears it. It is a durable write in its own
   transaction; report at checkpoints. `JobStatus.Progress` shows it.
-- A definition with a result type (`JobDefinition<TArgs, TResult>`, created with a result codec such as
-  `JobResults.Json(typeInfo, version)`) is run by an `IJobHandler<TArgs, TResult>`. A returned value completes the job
-  and is stored with the outcome in the terminal transaction, with the codec's version (J20); a `JobResult` retries,
+- A definition with a result type (`JobDefinition<TArgs, TResult>`, whose results use the host's JSON options as
+  version 1, or a result codec such as `JobResults.Json(typeInfo, version)`) is run by an
+  `IJobHandler<TArgs, TResult>`. A returned value completes the job and is stored with the outcome in the terminal
+  transaction, with the codec's version (J20); a `JobResult` retries,
   fails or completes without a result, and `JobRun<TResult>.CompleteAsync(tx, value)` completes in the domain
   transaction. A serialized result holds at most 256 KiB (`JobResults.MaximumBytes`): a larger returned value ends the
   job failed with `result_too_large`, and `CompleteAsync` refuses it before writing.
 
   ```csharp
-  public static readonly JobDefinition<BuildReport, ReportSummary> Build = JobDefinition.Create(
-      "reports.build", 1, JobArgs.Json(AppJson.Default.BuildReport), JobResults.Json(AppJson.Default.ReportSummary));
+  public static readonly JobDefinition<BuildReport, ReportSummary> Build = JobDefinition.Create<BuildReport, ReportSummary>("reports.build");
 
   public sealed class BuildHandler : IJobHandler<BuildReport, ReportSummary>
   {
@@ -445,7 +453,7 @@ A stored revision with a new priority applies once the dispatcher rebuilds the d
 
 | Pattern | Expressed as |
 |---|---|
-| Fire and forget | `RequestAsync(tx, definition, args, Schedule.Now)` with no subject or merge key. |
+| Fire and forget | `RequestAsync(tx, definition, args)` with no subject or merge key. |
 | Delayed one-shot | `Schedule.At(time)` or `Schedule.After(delay)`. |
 | One-shot only if still useful | `Late.SkipAfter(grace)`. |
 | Deduplicated "make sure it runs" | Same subject or merge key with `Schedule.Now`; a request during a run causes one follow-up. |

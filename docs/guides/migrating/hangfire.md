@@ -7,7 +7,7 @@ your own PostgreSQL database and in the transaction that needs the work.
 
 | Hangfire | Corfedo Work |
 |---|---|
-| `BackgroundJob.Enqueue<T>(x => x.Send(id))` | `jobs.RequestAsync(tx, Jobs.Welcome, new WelcomeArgs(id), Schedule.Now)` |
+| `BackgroundJob.Enqueue<T>(x => x.Send(id))` | `jobs.RequestAsync(Jobs.Welcome, new WelcomeArgs(id))`, or in your transaction `jobs.RequestAsync(tx, ...)` |
 | `BackgroundJob.Schedule(..., delay)` | `Schedule.After(delay)` or `Schedule.At(time)` |
 | `RecurringJob.AddOrUpdate("id", ..., Cron.Daily())` | `work.AddRecurring(Jobs.Cleanup, args, Schedule.Cron("0 0 * * *", "UTC"))` |
 | `BackgroundJob.ContinueJobWith(parent, ...)` | A [chain](../../design/chains.md): `jobs.RequestChainAsync(tx, c => c.StartWith(...).Then(...))` |
@@ -31,8 +31,7 @@ public sealed record WelcomeArgs(long UserId);
 
 public static class Jobs
 {
-    public static readonly JobDefinition<WelcomeArgs> Welcome =
-        JobDefinition.Create("users.welcome", 1, JobArgs.Json<WelcomeArgs>());
+    public static readonly JobDefinition<WelcomeArgs> Welcome = JobDefinition.Create<WelcomeArgs>("users.welcome");
 }
 
 public sealed class SendWelcome(IEmailSender sender) : IJobHandler<WelcomeArgs>
@@ -44,16 +43,21 @@ public sealed class SendWelcome(IEmailSender sender) : IJobHandler<WelcomeArgs>
     }
 }
 
-await jobs.RequestAsync(db.Database.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(userId), Schedule.Now, cancellationToken: ct);
+await jobs.RequestAsync(Jobs.Welcome, new WelcomeArgs(userId), cancellationToken: ct);
 ```
+
+Like `Enqueue`, this request commits on its own. Where the code that needs the job has a transaction, pass it first
+instead: `jobs.RequestAsync(db.Database.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(userId), cancellationToken: ct)`.
+The job then exists only if that transaction commits.
 
 Because the stored job names its definition key and not a CLR method, renaming or moving the handler does not break
 jobs that are already queued.
 
 ## Differences to plan for
 
-- **Transactions.** A request joins your transaction: if it rolls back, the job does not exist. Request jobs after
-  the change that needs them, in the same transaction.
+- **Transactions.** A request that takes your transaction joins it: if it rolls back, the job does not exist. Request
+  jobs after the change that needs them, in the same transaction. A request without a transaction commits on its own,
+  as Hangfire's do.
 - **Merging.** Requests with the same subject or merge key merge into one outstanding job. Requests with neither
   create a job each, as in Hangfire.
 - **Retries.** Attempts include the first run. Hangfire's default of 10 retries is `Attempts = 11`.

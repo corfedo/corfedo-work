@@ -110,7 +110,7 @@ remain, and a holder gives a record back with a result through `ReconcileOperati
 | `GuardAsync(lease, tx)` | Inside the caller's transaction: requires a valid lease, extends it, and locks the record against claims and other writers until the transaction ends. Every transaction that commits a holder's output calls it (R3, E4). |
 | `ReleaseAsync(lease, due, failed)` | Gives the record back, due at `due`; counts a failure when `failed` (E5, E11). Never counts a takeover. |
 | `EndAsync(lease, tx, completion)` | In the caller's transaction: clears the lease, sets `DueAt` to null, clears cancellation and records the completion identity (E6, W4). Returns `Ended`, or `Replayed` for a completion already recorded. |
-| `ScheduleAsync(tx, source, key, due, execution)` | Sets `DueAt` in the caller's transaction and wakes claimers after commit (R1, R7). A new `execution` id marks a deliberate new execution; omitted, the current one continues. |
+| `ScheduleAsync(tx, source, key, due, execution)` | Sets `DueAt` in the caller's transaction and wakes claimers after commit (R1, R7). A new `execution` id marks a deliberate new execution; omitted, the current one continues. Refused on reconciliation sources. |
 | `RequestCancelAsync(tx, source, key)` | Sets `CancelRequestedAt` in the caller's transaction and wakes the holder's process (R8). |
 | `ClearCancelAsync(tx, source, key)` | Withdraws a cancellation request. |
 

@@ -11,10 +11,9 @@ Expectations are part of a definition's policy, so they are stored with its revi
 every process that declares the definition agrees on them:
 
 ```csharp
-public static readonly JobDefinition<DailyArgs> DailyInvoices = JobDefinition.Create(
+public static readonly JobDefinition<DailyArgs> DailyInvoices = JobDefinition.Create<DailyArgs>(
     key: "invoices.daily",
     revision: 4,
-    args: JobArgs.Json(AppJson.Default.DailyArgs, version: 1),
     policy: new JobPolicy
     {
         Expect = Expect.CompletesBy(new TimeOnly(8, 0), "Europe/Warsaw", calendar: "business-days")
