@@ -495,7 +495,8 @@ The first provider.
   before its first leases, PostgreSQL 18.6 settled each expired lease from the partition index over outstanding leases
   (3.3 ms instead of 0.02 ms) until the table was analyzed again.
 - Framework schema: numbered scripts in the provider's schema (`work` by default), applied in order under a
-  session-level advisory lock and recorded in `schema_versions`.
+  session-level advisory lock and recorded in `schema_versions`. A baseline script, version 14, creates the current
+  tables; later changes are scripts from version 15.
 
 ## In-memory
 

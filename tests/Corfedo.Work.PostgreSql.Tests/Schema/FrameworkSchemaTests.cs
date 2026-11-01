@@ -15,6 +15,6 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         await using var command = database.DataSource.CreateCommand("SELECT array_agg(version ORDER BY version) FROM concurrent.schema_versions");
         var versions = (int[])(await command.ExecuteScalarAsync(Cancel))!;
-        Assert.Equal([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14], versions);
+        Assert.Equal([14], versions);
     }
 }
