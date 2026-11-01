@@ -58,7 +58,10 @@ public interface ILeaseStore
     ValueTask<EndResult> EndAsync<TKey>(IWorkTransaction transaction, Lease<TKey> lease, LeaseCompletion? completion, CancellationToken cancellationToken)
         where TKey : notnull;
 
-    /// <summary>Sets the due time in the caller's transaction and signals claimers on commit. False if the record does not exist.</summary>
+    /// <summary>
+    /// Sets the due time in the caller's transaction and signals claimers on commit. False if the record does not exist.
+    /// </summary>
+    /// <exception cref="ArgumentException">The source holds reconciliation records, whose due time requests and results set.</exception>
     ValueTask<bool> ScheduleAsync<TKey>(IWorkTransaction transaction, LeaseSource<TKey> source, TKey key, Due due, Guid? execution, CancellationToken cancellationToken)
         where TKey : notnull;
 

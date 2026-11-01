@@ -7,9 +7,9 @@ internal sealed partial class InMemoryLeaseStore
     {
         var work = Join(transaction);
         var rules = Rules(source);
-        if (rules.Reconcile is not null && execution is not null)
+        if (rules.Reconcile is not null)
         {
-            throw new ArgumentException($"Reconciliation source {source.Name} derives its executions from revisions; request the record instead.", nameof(execution));
+            throw new ArgumentException($"Lease source {source.Name} holds reconciliation records; they are made due by requests and invalidations, not schedules.", nameof(source));
         }
         var rowKey = rules.RowKey(key);
         if (rules.Find(work, rowKey) is not { } r)
@@ -17,20 +17,7 @@ internal sealed partial class InMemoryLeaseStore
             return ValueTask.FromResult(false);
         }
         var dueAt = LeaseRules<TKey>.DueAt(due, rules.Due(r), Now);
-        if (rules.Reconcile is { } rf)
-        {
-            // Reconciliation sources derive executions from revisions and keep no execution field. A due time is never
-            // earlier than the backoff floor.
-            if (dueAt is { } value && r.Time(rf.NotBefore) is { } floor && floor > value)
-            {
-                dueAt = floor;
-            }
-            Write(work, rules, rowKey, r, [Set(rules.Fields.DueAt, dueAt)]);
-        }
-        else
-        {
-            Write(work, rules, rowKey, r, [Set(rules.Fields.DueAt, dueAt), Set(rules.Fields.ExecutionId, execution ?? r.Uuid(rules.Fields.ExecutionId))]);
-        }
+        Write(work, rules, rowKey, r, [Set(rules.Fields.DueAt, dueAt), Set(rules.Fields.ExecutionId, execution ?? r.Uuid(rules.Fields.ExecutionId))]);
         if (LeaseRules<TKey>.Wakes(dueAt))
         {
             Signal(work, WorkTopics.Due, source.Name);

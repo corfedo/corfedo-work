@@ -12,34 +12,19 @@ internal sealed partial class PostgreSqlLeaseStore
         var work = PostgreSqlTransaction.From(transaction);
         var sql = Sql(source);
         var k = sql.KeyCount;
-        if (sql.Reconcile is not null && execution is not null)
+        if (sql.Reconcile is not null)
         {
-            throw new ArgumentException($"Reconciliation source {source.Name} derives its executions from revisions; request the record instead.", nameof(execution));
+            throw new ArgumentException($"Lease source {source.Name} holds reconciliation records; they are made due by requests and invalidations, not schedules.", nameof(source));
         }
         await using var batch = new NpgsqlBatch(work.Connection, work.Transaction);
-        if (sql.Reconcile is null)
-        {
-            batch.BatchCommands.Add(KeyCommand(
-                $"UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.Due)} = {sql.DueExpression(k + 1, k + 2)}, "
-                + $"{LeaseSql.Bare(sql.Execution)} = COALESCE(${k + 3}, {sql.Execution}) WHERE {sql.KeyMatch(1)}",
-                source,
-                key,
-                Int32((int)due.Kind),
-                Interval(due.Delay),
-                new NpgsqlParameter { Value = execution is { } id ? id : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid }));
-        }
-        else
-        {
-            // Reconciliation sources derive executions from revisions and keep no execution field. A due time is never
-            // earlier than the backoff floor, so the next due time is found from DueAt alone.
-            batch.BatchCommands.Add(KeyCommand(
-                $"UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.Due)} = (SELECT CASE WHEN d IS NULL THEN NULL ELSE GREATEST(d, {sql.NotBefore}) END FROM (SELECT {sql.DueExpression(k + 1, k + 2)} AS d) AS due) "
-                + $"WHERE {sql.KeyMatch(1)}",
-                source,
-                key,
-                Int32((int)due.Kind),
-                Interval(due.Delay)));
-        }
+        batch.BatchCommands.Add(KeyCommand(
+            $"UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.Due)} = {sql.DueExpression(k + 1, k + 2)}, "
+            + $"{LeaseSql.Bare(sql.Execution)} = COALESCE(${k + 3}, {sql.Execution}) WHERE {sql.KeyMatch(1)}",
+            source,
+            key,
+            Int32((int)due.Kind),
+            Interval(due.Delay),
+            new NpgsqlParameter { Value = execution is { } id ? id : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid }));
         batch.BatchCommands.Add(KeyCommand(
             $"SELECT pg_notify(${k + 1}, ${k + 2}) FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Due} IS NOT NULL",
             source,

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Corfedo.Work.Conformance;
 
@@ -66,6 +67,9 @@ public abstract class ReconcileResultScenarios(IReconcileConformanceProvider pro
         await using (var transaction = await BeginAsync())
         {
             await Assert.ThrowsAsync<ArgumentException>(async () => await client.Operations.ScheduleAsync(transaction.Work, source.Leases, key, Due.Now, cancellationToken: Cancel));
+            var store = client.Services.GetRequiredService<IWorkStore>().Leases;
+            await Assert.ThrowsAsync<ArgumentException>(async () => await store.ScheduleAsync(transaction.Work, source.Leases, key, Due.Now, null, Cancel));
+            await Assert.ThrowsAsync<ArgumentException>(async () => await store.ScheduleAsync(transaction.Work, source.Leases, key, Due.Now, Guid.NewGuid(), Cancel));
         }
     }
 

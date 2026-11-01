@@ -56,7 +56,7 @@ client holding a lease; "pause" means a holder stops running (a long GC pause, a
 | C-2 | Two requests arrive while a run converges the record (follow-up policy). | Exactly one follow-up run after the current one. | C2 |
 | C-3 | Requests every second with a five-second debounce and a one-minute maximum, with free capacity. | The record becomes due no later than a minute after the first outstanding request. | C3 |
 | C-4 | A run reports waiting with a retry time. | The record is due at that time; failures are unchanged; a new request makes it due sooner. | C4 |
-| C-5 | A run fails repeatedly. | Backoff grows and caps; the record is never terminal; neither an ordinary request nor `ScheduleAsync(Due.Now)` moves the due time before the backoff floor; each failed result is logged with its code. | C5 |
+| C-5 | A run fails repeatedly. | Backoff grows and caps; the record is never terminal; an ordinary request does not move the due time before the backoff floor, and `ScheduleAsync` is refused by `LeaseOperations` and by the store; each failed result is logged with its code. | C5 |
 | C-6 | The source is invalidated with a million converged records. | The invalidating transaction writes no records; every eligible record runs once; requested records keep being served meanwhile. | C6 |
 | C-7 | The source is invalidated; a record's run reports waiting, another fails. | Neither becomes claimable again before its retry time; `AttemptedGeneration` is current and `ConvergedGeneration` is not. | C6 |
 | C-8 | The source is invalidated while its records have `DueAt` null. | Each record runs once and converges under the new generation; its `DueAt` stays null. | C6 |
