@@ -163,7 +163,7 @@ Each guide maps the concepts and shows one job rewritten:
 
 ## Status and license
 
-This is version 0.1.0, and the API may change before 1.0. The packages are trimming- and Native AOT-compatible, except
+This is version 0.2.0, and the API may change before 1.0. The packages are trimming- and Native AOT-compatible, except
 the EF Core adapter, since EF Core supports Native AOT only partly, and the conformance suite, which is a test library.
 See [trimming and Native AOT](docs/guides/native-aot.md). Contributions are welcome through issues and pull requests;
 see [CONTRIBUTING](CONTRIBUTING.md).
