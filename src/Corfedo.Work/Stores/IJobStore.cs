@@ -28,6 +28,14 @@ public interface IJobStore
     /// <exception cref="JobPartitionMismatchException">The outstanding job of the identity has another partition.</exception>
     ValueTask<JobRequestResult> RequestAsync(IWorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Applies a request as <see cref="RequestAsync(IWorkTransaction, LeaseSource{JobId}, JobRequestData, CancellationToken)"/>
+    /// does, in the store's own transaction, at read committed isolation where the store has levels, and signals claimers
+    /// on its commit.
+    /// </summary>
+    /// <exception cref="JobPartitionMismatchException">The outstanding job of the identity has another partition.</exception>
+    ValueTask<JobRequestResult> RequestAsync(LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken);
+
     /// <summary>In the caller's transaction, applies every request in order: all commit or none do.</summary>
     /// <exception cref="JobPartitionMismatchException">An outstanding job of an item's identity has another partition.</exception>
     ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync(IWorkTransaction transaction, LeaseSource<JobId> source, IReadOnlyList<JobRequestData> requests, CancellationToken cancellationToken);

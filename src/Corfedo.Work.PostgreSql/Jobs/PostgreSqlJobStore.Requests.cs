@@ -16,6 +16,15 @@ internal sealed partial class PostgreSqlJobStore
         return (await RequestManyAsync(transaction, source, [request], cancellationToken))[0];
     }
 
+    public async ValueTask<JobRequestResult> RequestAsync(LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, cancellationToken);
+        var result = await RequestAsync(new PostgreSqlTransaction(transaction).Work, source, request, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return result;
+    }
+
     /// <summary>
     /// Creates or merges standalone jobs; recurrences of the same identity are not consulted. Applies the requests in
     /// rounds in which each merge identity appears once, so a later request of an identity sees what an earlier one

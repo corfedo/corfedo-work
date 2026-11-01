@@ -24,6 +24,18 @@ public sealed partial class JobOperations(IWorkStore store, JobRegistry registry
         return await Store.RequestAsync(transaction, await registration.SourceAsync(store, cancellationToken), request, cancellationToken);
     }
 
+    /// <summary>
+    /// Requests a job in the store's own transaction, due by <paramref name="schedule"/> or now, and signals claimers on
+    /// its commit. It merges like a request in the caller's transaction, but commits on its own: a rollback of the
+    /// caller's transaction does not remove it.
+    /// </summary>
+    public async ValueTask<JobRequestResult> RequestAsync<TArgs>(JobDefinition<TArgs> definition, TArgs args, Schedule? schedule = null, JobRequestOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        var registration = registry.Find(definition);
+        var request = Data(registry.Args(definition), definition, args, schedule ?? Schedule.Now, options ?? JobRequestOptions.Default);
+        return await Store.RequestAsync(await registration.SourceAsync(store, cancellationToken), request, cancellationToken);
+    }
+
     /// <summary>Requests one job per item in the caller's transaction, due by <paramref name="schedule"/> or now: all commit or none do (J9).</summary>
     public async ValueTask<IReadOnlyList<JobRequestResult>> RequestManyAsync<TArgs>(IWorkTransaction transaction, JobDefinition<TArgs> definition, IEnumerable<JobRequestItem<TArgs>> items, Schedule? schedule = null, CancellationToken cancellationToken = default)
     {

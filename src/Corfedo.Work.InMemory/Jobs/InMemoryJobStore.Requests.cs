@@ -11,6 +11,14 @@ internal sealed partial class InMemoryJobStore
         return (await RequestManyAsync(transaction, source, [request], cancellationToken))[0];
     }
 
+    public async ValueTask<JobRequestResult> RequestAsync(LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken)
+    {
+        using var transaction = await database.BeginAsync(cancellationToken);
+        var result = await RequestAsync(transaction, source, request, cancellationToken);
+        transaction.Commit();
+        return result;
+    }
+
     /// <summary>
     /// Creates or merges standalone jobs in order, so a later request of an identity sees what an earlier one wrote;
     /// recurrences of the same identity are not consulted. A request meeting an outstanding job of another partition is

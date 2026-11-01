@@ -27,6 +27,29 @@ public abstract class JobRequestScenarios(IJobConformanceProvider provider) : Jo
     }
 
     [Fact]
+    public async Task J41_ARequestWithoutATransactionCommitsMergesAndWakesClaimers()
+    {
+        var definition = Definition(subject: "feed");
+        var npm = Subject.Of("feed", "npm");
+        var client = await ClientAsync(null, definition);
+        var first = await RequestAsync(client, definition, "a", options: For(npm));
+        var merged = await Jobs(client).RequestAsync(definition, new TestArgs("b"), options: For(npm), cancellationToken: Cancel);
+        Assert.Equal((JobRequestOutcome.Merged, first.Id), (merged.Outcome, merged.Id));
+        Assert.Equal("b", (await ReadJobAsync(first.Id)).Args);
+
+        var attempts = new ConcurrentQueue<ObservedAttempt>();
+        await WorkerAsync(definition, Recording(attempts), pollingInterval: TimeSpan.FromMinutes(1));
+        await EventuallyAsync(() => attempts.Count == 1, TimeSpan.FromSeconds(10), "the merged job runs at startup");
+        await Task.Delay(500, Cancel);
+        var created = await Jobs(client).RequestAsync(definition, new TestArgs("c"), options: For(Subject.Of("feed", "pypi")), cancellationToken: Cancel);
+
+        Assert.Equal(JobRequestOutcome.Created, created.Outcome);
+        Assert.Equal("c", (await ReadJobAsync(created.Id)).Args);
+        await EventuallyAsync(() => attempts.Count == 2, TimeSpan.FromSeconds(10), "the commit wakes the idle worker before its next poll");
+        Assert.Equal(["b", "c"], attempts.Select(a => a.Args));
+    }
+
+    [Fact]
     public async Task J2_OneShotSchedulesRunOnceAndNotBeforeTheirTime()
     {
         var definition = Definition();
