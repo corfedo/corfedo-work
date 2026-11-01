@@ -34,7 +34,7 @@ builder.Services.AddPostgreSqlWorkStore(dataSource);
 builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welcome));
 
 // In the transaction that creates the user:
-await jobs.RequestAsync(WorkTransaction.Of(transaction), Jobs.Welcome, new WelcomeArgs(42), Schedule.Now);
+await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(42), Schedule.Now);
 ```
 
 The [README](https://github.com/corfedo/corfedo-work#readme) has the full first example, and the

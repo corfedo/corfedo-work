@@ -55,7 +55,7 @@ sealed class OrderWorker(IWorkSignals signals) : BackgroundService, ISignalSubsc
 }
 ```
 
-With Npgsql directly, send with `WorkTransaction.Of(npgsqlTransaction)`.
+With Npgsql directly, send with `npgsqlTransaction.WorkTransaction()`.
 
 PostgreSQL commits transactions that send notifications one at a time. Send a signal when something a subscriber waits
 for changes, once per topic and key in a transaction, not for every row. Listening needs a session-level connection;

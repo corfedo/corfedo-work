@@ -94,7 +94,7 @@ against PostgreSQL through Npgsql's EF Core provider.
 
 | Sub-step | Contents | Status |
 |---|---|---|
-| 6d.1 | `WorkTransaction.Of(DbTransaction)` and `DatabaseFacade.WorkTransaction()`: requests, guards and completions join a `DbContext`'s transaction and roll back with it (R1); a context without an active transaction is refused. | Done |
+| 6d.1 | `DbTransaction.WorkTransaction()` and `DatabaseFacade.WorkTransaction()`: requests, guards and completions join a `DbContext`'s transaction and roll back with it (R1); a context without an active transaction is refused. | Done |
 | 6d.2 | `HasLease()` and `HasReconciliation()` model helpers mapping lease and revision fields, tested on an EF entity used as a domain lease source. | Done |
 | 6d.3 | Wake-up on `SaveChanges` for tracked changes of mapped `DueAt` properties (`AddWorkWakeUps`). | Done |
 | 6d.4 | Trimming of the package's own code; the package does not support Native AOT, see [decisions](decisions.md) (H-4). | Done |

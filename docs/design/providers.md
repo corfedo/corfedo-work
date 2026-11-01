@@ -52,13 +52,13 @@ Every provider must provide, and the conformance suite checks:
 ## Transactions
 
 Operations that join the caller's transaction take an `IWorkTransaction`, a handle to the application's own
-transaction. `WorkTransaction.Of(DbTransaction)` wraps an ADO.NET transaction without naming the provider; the store or
+transaction. `dbTransaction.WorkTransaction()` wraps an ADO.NET transaction without naming the provider; the store or
 signal transport an operation runs on refuses a transaction of another provider's type. The handle also numbers the
 savepoints operations take inside the transaction.
 
 | Application uses | Adapter |
 |---|---|
-| ADO.NET | `WorkTransaction.Of(npgsqlTransaction)` |
+| ADO.NET | `npgsqlTransaction.WorkTransaction()` |
 | EF Core | `Corfedo.Work.EntityFrameworkCore`: `context.Database.WorkTransaction()`, from the `DbContext`'s current transaction, for work and signals |
 | The in-memory store | Its transactions are handles themselves |
 | A document store | The provider's session type, for example a MongoDB client session |

@@ -10,13 +10,13 @@ Operations take an `IWorkTransaction`, a handle to your open transaction.
 | You use | Handle |
 |---|---|
 | EF Core | `db.Database.WorkTransaction()`, after `db.Database.BeginTransactionAsync()` |
-| Npgsql | `WorkTransaction.Of(npgsqlTransaction)` |
+| Npgsql | `npgsqlTransaction.WorkTransaction()` |
 | Tests on the in-memory store | the transaction from `database.BeginAsync()` |
 
 ```csharp
 await using var transaction = await connection.BeginTransactionAsync(ct);
 // ... your own writes on the same connection ...
-await jobs.RequestAsync(WorkTransaction.Of(transaction), Jobs.FeedSync, args, Schedule.Now, cancellationToken: ct);
+await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.FeedSync, args, Schedule.Now, cancellationToken: ct);
 await transaction.CommitAsync(ct);
 ```
 

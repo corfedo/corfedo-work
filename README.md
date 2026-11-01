@@ -74,7 +74,7 @@ builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welc
 ```csharp
 await using var transaction = await connection.BeginTransactionAsync(ct);
 // INSERT INTO users ...
-await jobs.RequestAsync(WorkTransaction.Of(transaction), Jobs.Welcome, new WelcomeArgs(42), Schedule.Now, cancellationToken: ct);
+await jobs.RequestAsync(transaction.WorkTransaction(), Jobs.Welcome, new WelcomeArgs(42), Schedule.Now, cancellationToken: ct);
 await transaction.CommitAsync(ct);
 ```
 
