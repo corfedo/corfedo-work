@@ -146,6 +146,16 @@ public sealed class ImportRunner(AppDb db) : ILeaseHandler<long>
 
 The packages depend on each other's exact version, so update them together.
 
+## Coming from another scheduler
+
+Each guide maps the concepts and shows one job rewritten:
+
+- [Hangfire](docs/guides/migrating/hangfire.md): `Enqueue`, `Schedule` and `RecurringJob` become typed job requests.
+- [Quartz.NET](docs/guides/migrating/quartz.md): jobs, triggers and cron expressions, including the differences in cron
+  syntax.
+- [TickerQ](docs/guides/migrating/tickerq.md): ticker functions, time and cron tickers. TickerQ is source-available
+  with paid tiers from its 5.x line; Corfedo Work is Apache-2.0 for everyone.
+
 ## Documentation
 
 - [Guides](docs/README.md#guides): getting started, jobs, leases, reconciliation, signals, transactions, testing and

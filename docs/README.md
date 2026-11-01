@@ -14,6 +14,7 @@ How to use Corfedo Work.
 | [Signals](guides/signals.md) | Commit-time wake-ups for your own background services. |
 | [Testing](guides/testing.md) | The in-memory store with a controllable clock. |
 | [Production](guides/production.md) | Schema, replicas, deployments, poolers, shutdown and telemetry. |
+| Migrating from [Hangfire](guides/migrating/hangfire.md), [Quartz.NET](guides/migrating/quartz.md), [TickerQ](guides/migrating/tickerq.md) | Concept maps, one rewritten job and how to switch over. |
 | [Trimming and Native AOT](guides/native-aot.md) | Which packages support it, and source-generated JSON for job arguments and results. |
 
 ## Design

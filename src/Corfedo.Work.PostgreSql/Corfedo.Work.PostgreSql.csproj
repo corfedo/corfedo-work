@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>PostgreSQL store provider for Corfedo Work, over Npgsql.</Description>
+    <Description>PostgreSQL store for Corfedo Work, over Npgsql: background jobs, cron schedules and leases in your PostgreSQL database, requested in your transactions and woken at commit through LISTEN/NOTIFY.</Description>
     <PackageTags>$(PackageTags);postgresql;npgsql</PackageTags>
   </PropertyGroup>
   <ItemGroup>
