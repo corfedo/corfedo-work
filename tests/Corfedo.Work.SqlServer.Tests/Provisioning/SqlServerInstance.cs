@@ -60,7 +60,7 @@ public sealed class SqlServerInstance : IAsyncLifetime
         await connection.OpenAsync();
         foreach (var name in databases)
         {
-            await using var command = new SqlCommand($"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}];", connection);
+            await using var command = new SqlCommand($"IF DB_ID(N'{name}') IS NOT NULL BEGIN ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]; END", connection);
             await command.ExecuteNonQueryAsync();
         }
     }
