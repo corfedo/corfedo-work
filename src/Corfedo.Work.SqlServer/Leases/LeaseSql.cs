@@ -31,6 +31,7 @@ internal sealed class LeaseSql
         Takeovers = "r." + Tsql.Quote(fields.Takeovers);
         Failures = "r." + Tsql.Quote(fields.Failures);
         Settled = "r." + Tsql.Quote(fields.SettledEpoch);
+        Outstanding = "r." + Tsql.Quote(fields.LeaseOutstanding);
         SettleFailures = "r." + Tsql.Quote(fields.SettleFailures);
         SettleRetryAt = "r." + Tsql.Quote(fields.SettleRetryAt);
         Cancel = "r." + Tsql.Quote(fields.CancelRequestedAt);
@@ -108,13 +109,13 @@ internal sealed class LeaseSql
         }
         // A lease superseded before it expired has a live holder; only an expired lease needs its expiry settled.
         NeedsSettlement = !settles ? "1 = 0"
-            : Supersedes ? $"({Expires} IS NOT NULL AND {Expires} <= SYSUTCDATETIME() AND {Settled} < {Epoch})"
-            : $"({Expires} IS NOT NULL AND {Settled} < {Epoch})";
+            : Supersedes ? $"({Expires} IS NOT NULL AND {Expires} <= SYSUTCDATETIME() AND {Unsettled})"
+            : $"({Expires} IS NOT NULL AND {Unsettled})";
         ClaimableWithoutSettling = $"({Claimable} AND NOT {NeedsSettlement})";
         SettlementWaiting = policy.SettleExpiry ? $"({SettleRetryAt} IS NOT NULL AND {SettleRetryAt} > SYSUTCDATETIME())" : "1 = 0";
         ClaimableWithSettling = $"({Claimable} AND NOT ({NeedsSettlement} AND {SettlementWaiting}))";
         OutstandingCondition = (settles
-            ? $"({Expires} IS NOT NULL AND {Settled} < {Epoch}"
+            ? $"({Expires} IS NOT NULL AND {Unsettled}"
             : $"({Expires} IS NOT NULL AND {Expires} > SYSUTCDATETIME()") + (job is null ? ")" : $" AND {Scope})");
         ScopePrefix = frameworkSchema + "\n" + store + "\n" + name + "\n";
         Policy = policy;
@@ -309,6 +310,19 @@ internal sealed class LeaseSql
     public string Failures { get; }
 
     public string Settled { get; }
+
+    /// <summary>The LeaseOutstanding column of application sources that settle.</summary>
+    public string Outstanding { get; }
+
+    /// <summary>The condition of a lease not settled yet, on the row alias <c>r</c>.</summary>
+    public string Unsettled => UnsettledOf("r");
+
+    /// <summary>
+    /// <see cref="Unsettled"/> on the row alias <paramref name="alias"/>. Application sources mark unsettled leases with
+    /// their LeaseOutstanding column, which leads their settlement and limit indexes; the framework's job table carries
+    /// the epochs in indexes of its own.
+    /// </summary>
+    public string UnsettledOf(string alias) => Job is null ? $"{On(alias, Outstanding)} = 1" : $"{On(alias, Settled)} < {On(alias, Epoch)}";
 
     /// <summary>Settlement failures of the expired epoch; only on sources with <c>SettleExpiry</c>.</summary>
     public string SettleFailures { get; }

@@ -7,41 +7,39 @@ internal sealed partial class PostgreSqlLeaseStore
     /// <summary>
     /// Checks the source's fields and types, and the indexes its statements use: a unique index on the key, an index
     /// led by the due time covering only unheld records (<c>WHERE LeaseExpiresAt IS NULL</c>), an index led by the
-    /// lease expiry (claims of expired leases and next due time), on sources that settle expiry an index led by the lease
-    /// expiry covering only unsettled leases (<c>WHERE LeaseExpiresAt IS NOT NULL AND SettledEpoch &lt; LeaseEpoch</c>,
-    /// expiry settlement), and when used an index led by the partition covering only
-    /// outstanding leases (<c>WHERE LeaseExpiresAt IS NOT NULL AND SettledEpoch &lt; LeaseEpoch</c>, partition and
-    /// spread limits) and an index led by the owner (owner limit). Reconciliation sources also need their
-    /// reconciliation fields and an index led by <c>AttemptedGeneration</c> over all records.
+    /// lease expiry (claims of expired leases and next due time), and an index led by the owner (owner limit). Sources
+    /// that settle have the stored generated column <c>LeaseOutstanding</c>, <c>CASE WHEN SettledEpoch &lt; LeaseEpoch
+    /// THEN 1 END</c>, an index led by it and the lease expiry over held leases (<c>WHERE LeaseExpiresAt IS NOT
+    /// NULL</c>, expiry settlement, store limits and next expiry), and where partition or spread limits are used an
+    /// index led by it and the partition over held leases. Reconciliation sources also need their reconciliation fields
+    /// and an index led by <c>AttemptedGeneration</c> over all records.
     /// </summary>
     public async ValueTask VerifyAsync<TKey>(LeaseSource<TKey> source, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var settles = source.Settles;
         var table = LeaseSql.Quote(source.Store.Schema) + "." + LeaseSql.Quote(source.Store.Name);
-        var columns = new Dictionary<string, (string Type, bool NotNull)>(StringComparer.Ordinal);
-        var indexes = new List<(bool Unique, bool Partial, bool UnheldOnly, bool OutstandingOnly, string[] Columns)>();
+        var columns = new Dictionary<string, (string Type, bool NotNull, string? Generated)>(StringComparer.Ordinal);
+        var indexes = new List<(bool Unique, bool Partial, bool UnheldOnly, bool HeldOnly, string[] Columns)>();
         await using (var batch = dataSource.CreateBatch())
         {
             batch.BatchCommands.Add(Command(
-                "SELECT a.attname::text, t.typname::text, a.attnotnull FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid "
+                "SELECT a.attname::text, t.typname::text, a.attnotnull, CASE WHEN a.attgenerated = 's' THEN pg_get_expr(d.adbin, d.adrelid) END "
+                + "FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
                 + "WHERE a.attrelid = to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped",
                 Text(table)));
             batch.BatchCommands.Add(Command(
                 "SELECT i.indisunique, i.indpred IS NOT NULL, coalesce(pg_get_expr(i.indpred, i.indrelid) = '(' || quote_ident($2) || ' IS NULL)', false), "
-                + "coalesce(pg_get_expr(i.indpred, i.indrelid) IN ('((' || quote_ident($2) || ' IS NOT NULL) AND (' || quote_ident($3) || ' < ' || quote_ident($4) || '))', "
-                + "'((' || quote_ident($3) || ' < ' || quote_ident($4) || ') AND (' || quote_ident($2) || ' IS NOT NULL))'), false), "
+                + "coalesce(pg_get_expr(i.indpred, i.indrelid) = '(' || quote_ident($2) || ' IS NOT NULL)', false), "
                 + "ARRAY(SELECT coalesce(a.attname::text, '') FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, n) "
                 + "LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum ORDER BY k.n) "
                 + "FROM pg_index i WHERE i.indrelid = to_regclass($1) AND i.indisvalid",
                 Text(table),
-                Text(source.Fields.LeaseExpiresAt),
-                Text(source.Fields.SettledEpoch),
-                Text(source.Fields.LeaseEpoch)));
+                Text(source.Fields.LeaseExpiresAt)));
             await using var reader = await batch.ExecuteReaderAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
             {
-                columns[reader.GetString(0)] = (reader.GetString(1), reader.GetBoolean(2));
+                columns[reader.GetString(0)] = (reader.GetString(1), reader.GetBoolean(2), reader.IsDBNull(3) ? null : reader.GetString(3));
             }
             await reader.NextResultAsync(cancellationToken);
             while (await reader.ReadAsync(cancellationToken))
@@ -96,6 +94,11 @@ internal sealed partial class PostgreSqlLeaseStore
         if (settles)
         {
             Require(f.SettledEpoch, true, "int8");
+            Require(f.LeaseOutstanding, false, "int4", "int2");
+            if (columns.TryGetValue(f.LeaseOutstanding, out var outstanding) && !LeaseOutstanding.Matches(outstanding.Generated, f))
+            {
+                problems.Add($"field {f.LeaseOutstanding} must be a stored generated column, {LeaseOutstanding.Expression(f, LeaseSql.Quote)}");
+            }
         }
         if (source.Policy.SettleExpiry)
         {
@@ -131,15 +134,16 @@ internal sealed partial class PostgreSqlLeaseStore
             problems.Add($"no index led by {f.DueAt} WHERE {f.LeaseExpiresAt} IS NULL (claims and next due time of unheld records)");
         }
         RequireLeading(f.LeaseExpiresAt, "claims of expired leases and next due time");
-        // Settlement reads unsettled expired leases only; on the index above each settlement would pass every expired
+        // Settlement and limit counts read unsettled leases only; led by the expiry alone they would pass every expired
         // lease already settled but not claimed again, so the cost of a burst would grow with its square.
-        if (settles && !indexes.Any(i => i.OutstandingOnly && i.Columns.Length > 0 && i.Columns[0] == f.LeaseExpiresAt))
+        bool HeldLedBy(string second) => indexes.Any(i => i.HeldOnly && i.Columns.Length > 1 && i.Columns[0] == f.LeaseOutstanding && i.Columns[1] == second);
+        if (settles && !HeldLedBy(f.LeaseExpiresAt))
         {
-            problems.Add($"no index led by {f.LeaseExpiresAt} WHERE {f.LeaseExpiresAt} IS NOT NULL AND {f.SettledEpoch} < {f.LeaseEpoch} (expiry settlement)");
+            problems.Add($"no index led by {f.LeaseOutstanding}, {f.LeaseExpiresAt} WHERE {f.LeaseExpiresAt} IS NOT NULL (expiry settlement, store limits and next expiry)");
         }
-        if (limitsPartition && !indexes.Any(i => i.OutstandingOnly && i.Columns.Length > 0 && i.Columns[0] == source.Partition))
+        if (limitsPartition && !HeldLedBy(source.Partition!))
         {
-            problems.Add($"no index led by {source.Partition} WHERE {f.LeaseExpiresAt} IS NOT NULL AND {f.SettledEpoch} < {f.LeaseEpoch} (partition and spread limits)");
+            problems.Add($"no index led by {f.LeaseOutstanding}, {source.Partition} WHERE {f.LeaseExpiresAt} IS NOT NULL (partition and spread limits)");
         }
         if (source.Policy.OwnerLimit is not null)
         {

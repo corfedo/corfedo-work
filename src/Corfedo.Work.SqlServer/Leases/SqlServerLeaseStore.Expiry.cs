@@ -55,17 +55,17 @@ internal sealed partial class SqlServerLeaseStore
         await using var connection = await OpenAsync(cancellationToken);
         await using var transaction = await BeginAsync(connection, cancellationToken);
         LeaseExpiry<TKey> expiry;
-        // The scan reads the expiry index in its order from the earliest expiry, bounded by the clock, passes settled
-        // leases by the epochs the index carries, and locks each row it finds through the key without waiting.
+        // The scan reads the settlement index in expiry order from the earliest unsettled expiry, bounded by the clock,
+        // and locks each row it finds through the key without waiting.
         // Skipping locked rows never waits, so the clock reading is evaluated against the latest committed version of
         // a row this statement locks; it only becomes true with time, or changes by an update, which is rechecked.
         string Expired(string a) =>
-            $"{sql.ScopeOf(a)} AND {LeaseSql.On(a, sql.Expires)} IS NOT NULL AND {LeaseSql.On(a, sql.Expires)} <= SYSUTCDATETIME() AND {LeaseSql.On(a, sql.Settled)} < {LeaseSql.On(a, sql.Epoch)}";
+            $"{sql.ScopeOf(a)} AND {LeaseSql.On(a, sql.Expires)} IS NOT NULL AND {LeaseSql.On(a, sql.Expires)} <= SYSUTCDATETIME() AND {sql.UnsettledOf(a)}";
         var into = $"DECLARE @expired TABLE ({string.Join(", ", sql.Shape.Keys.Select((k, i) => $"k{i} {k.Declaration} NOT NULL"))}, owner uniqueidentifier, epoch bigint, partition_key nvarchar(4000));\n";
         var notFailed = $"NOT EXISTS (SELECT 1 FROM @keys AS u WHERE {string.Join(" AND ", sql.Shape.Keys.Select((k, i) => $"x.{Tsql.Quote(k.Name)} = u.k{i}"))})";
         await using (var select = KeysCommand(connection, transaction, sql, source, failed,
             into + sql.ScanVariables
-            + sql.LockScan("scan", "1", sql.Shape.ExpiryIndex, $"{Expired("x")} AND {notFailed}", $"{Expired("r")} AND NOT {sql.SettlementWaiting}", LeaseSql.On("x", sql.Expires),
+            + sql.LockScan("scan", "1", sql.Shape.SettlementIndex, $"{Expired("x")} AND {notFailed}", $"{Expired("r")} AND NOT {sql.SettlementWaiting}", LeaseSql.On("x", sql.Expires),
                 "@expired", sql.KeyColumns + ", owner, epoch, partition_key", sql.Select(sql.Owner, sql.Epoch, sql.PartitionText))
             + "SELECT * FROM @expired;"))
         {

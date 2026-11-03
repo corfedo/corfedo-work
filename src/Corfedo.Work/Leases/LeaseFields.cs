@@ -19,6 +19,13 @@ public sealed record LeaseFields
 
     public string SettledEpoch { get; init; } = "settled_epoch";
 
+    /// <summary>
+    /// A stored computed column on sources that settle, <c>CASE WHEN SettledEpoch &lt; LeaseEpoch THEN 1 END</c>: 1 while a
+    /// lease is not settled. The indexes of settlement and store limits lead with it, so they pass over expired leases
+    /// already settled, on every store.
+    /// </summary>
+    public string LeaseOutstanding { get; init; } = "lease_outstanding";
+
     public string SettleFailures { get; init; } = "settle_failures";
 
     public string SettleRetryAt { get; init; } = "settle_retry_at";

@@ -215,6 +215,6 @@ The provider passes the whole conformance suite before 0.2.0 is released. Each s
 | 9d | Jobs: definitions and the definition fence, requests and merging, transitions, subject pauses, recurrences and planning, operator actions, status, run history, retention, the process registry. | Done |
 | 9e | Calendars, chains, monitoring. | Done |
 | 9f | Signals: the signals table transport, its listener and pruning. | Done |
-| 9g | EF Core adapter on SQL Server; Native AOT and trimming of the provider; guides and README. | In progress |
+| 9g | EF Core adapter on SQL Server; Native AOT and trimming of the provider; the outstanding-lease column on both providers; guides and README. | In progress |
 | 9h | Validation: the measurements of [SQL Server provider](sqlserver.md) repeated on the provider at 1M and 10M jobs, the open items there closed. | Not started |
 

@@ -44,6 +44,7 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
             {p}takeovers integer NOT NULL DEFAULT 0,
             {p}failures integer NOT NULL DEFAULT 0,
             {p}settled_epoch bigint NOT NULL DEFAULT 0,
+            {p}lease_outstanding integer GENERATED ALWAYS AS (CASE WHEN {p}settled_epoch < {p}lease_epoch THEN 1 END) STORED,
             {p}settle_failures integer NOT NULL DEFAULT 0,
             {p}settle_retry_at timestamptz,
             {p}cancel_requested_at timestamptz,
@@ -54,8 +55,8 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
         var indexes = string.Join("\n", prefixes.Select(p => $"""
             CREATE INDEX ON {Schema}.{name} ({p}due_at) WHERE {p}lease_expires_at IS NULL;
             CREATE INDEX ON {Schema}.{name} ({p}lease_expires_at) WHERE {p}lease_expires_at IS NOT NULL;
-            CREATE INDEX ON {Schema}.{name} ({p}lease_expires_at) WHERE {p}lease_expires_at IS NOT NULL AND {p}settled_epoch < {p}lease_epoch;
-            CREATE INDEX ON {Schema}.{name} (tenant, {p}lease_owner) WHERE {p}lease_expires_at IS NOT NULL AND {p}settled_epoch < {p}lease_epoch;
+            CREATE INDEX ON {Schema}.{name} ({p}lease_outstanding, {p}lease_expires_at) WHERE {p}lease_expires_at IS NOT NULL;
+            CREATE INDEX ON {Schema}.{name} ({p}lease_outstanding, tenant, {p}lease_owner) WHERE {p}lease_expires_at IS NOT NULL;
             CREATE INDEX ON {Schema}.{name} ({p}lease_owner) WHERE {p}lease_expires_at IS NOT NULL;
             """));
         await using var command = dataSource.CreateCommand($"""

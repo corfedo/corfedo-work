@@ -13,7 +13,9 @@ internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type
 /// <summary>
 /// What the statements of a source need from its table beyond the source definition: the key columns' exact types and
 /// collations, so key parameters and table variables compare without converting the column, and the names of the
-/// indexes the claim and settlement scans are bound to.
+/// indexes the claim and settlement scans are bound to. <see cref="SettlementIndex"/> serves expiry settlement, store
+/// limits and the next expiry: on application sources it leads with LeaseOutstanding, on the job table it is the expiry
+/// index, which carries the epochs.
 /// </summary>
 internal sealed record SourceShape(
     IReadOnlyList<KeyColumn> Keys,
@@ -21,6 +23,7 @@ internal sealed record SourceShape(
     string PartitionDeclaration,
     string DueIndex,
     string ExpiryIndex,
+    string SettlementIndex,
     string? PartitionIndex,
     string? OwnerIndex,
     string? GenerationIndex)
@@ -32,6 +35,7 @@ internal sealed record SourceShape(
         "nvarchar(400) COLLATE " + Tsql.Binary,
         "jobs_due",
         "jobs_expiry",
+        "jobs_expiry",
         "jobs_partition",
         null,
         null);
@@ -40,18 +44,19 @@ internal sealed record SourceShape(
 /// <summary>Reads and verifies a source's table in the catalog.</summary>
 internal static class SourceCatalog
 {
-    private sealed record Column(string Type, short MaxLength, string? Collation, bool NotNull);
+    private sealed record Column(string Type, short MaxLength, string? Collation, bool NotNull, string? Computed);
 
     private sealed record Index(string Name, bool Clustered, bool Unique, string? Filter, string[] Keys, string[] Included);
 
     /// <summary>
     /// Checks the source's fields and types and the indexes its statements use, and returns its shape. Required are a
     /// unique index on the key; an index led by the due time covering only unheld records (<c>WHERE LeaseExpiresAt IS
-    /// NULL</c>); an index led by the lease expiry, with no filter or <c>WHERE LeaseExpiresAt IS NOT NULL</c>, which on
-    /// sources that settle expiry also carries SettledEpoch and LeaseEpoch, since SQL Server filtered indexes cannot
-    /// compare two columns; where partition or spread limits are used an index led by the partition with
-    /// <c>WHERE LeaseExpiresAt IS NOT NULL</c> carrying SettledEpoch and LeaseEpoch, and LeaseOwner for spread limits;
-    /// an index led by the owner for owner limits; and on reconciliation sources an index led by AttemptedGeneration
+    /// NULL</c>); an index led by the lease expiry, with no filter or <c>WHERE LeaseExpiresAt IS NOT NULL</c>; on
+    /// sources that settle, the persisted computed column LeaseOutstanding (<c>CASE WHEN SettledEpoch &lt; LeaseEpoch
+    /// THEN 1 END</c>), since filtered indexes cannot compare two columns, and an index led by it and the lease expiry
+    /// with <c>WHERE LeaseExpiresAt IS NOT NULL</c>; where partition or spread limits are used an index led by it and the
+    /// partition with the same filter, carrying LeaseOwner for spread limits; an index led by the owner for owner
+    /// limits; and on reconciliation sources an index led by AttemptedGeneration
     /// without a filter. The table must not escalate locks, since a table lock would hold off every claim, which skips
     /// only locked rows: the store disables escalation on a table that has it.
     /// </summary>
@@ -69,8 +74,10 @@ internal static class SourceCatalog
             await using var command = Tsql.Command(connection, null, """
                 DECLARE @id int = OBJECT_ID(@table, N'U');
                 SELECT lock_escalation_desc FROM sys.tables WHERE object_id = @id;
-                SELECT c.name, t.name, c.max_length, c.collation_name, CAST(CASE WHEN c.is_nullable = 0 THEN 1 ELSE 0 END AS bit)
-                FROM sys.columns AS c JOIN sys.types AS t ON t.user_type_id = c.user_type_id WHERE c.object_id = @id;
+                SELECT c.name, t.name, c.max_length, c.collation_name, CAST(CASE WHEN c.is_nullable = 0 THEN 1 ELSE 0 END AS bit),
+                    CASE WHEN cc.is_persisted = 1 THEN cc.definition END
+                FROM sys.columns AS c JOIN sys.types AS t ON t.user_type_id = c.user_type_id
+                LEFT JOIN sys.computed_columns AS cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id WHERE c.object_id = @id;
                 SELECT i.index_id, i.name, i.is_unique, i.filter_definition, CAST(CASE WHEN i.type = 1 THEN 1 ELSE 0 END AS bit) FROM sys.indexes AS i
                 WHERE i.object_id = @id AND i.type IN (1, 2) AND i.is_disabled = 0 AND i.is_hypothetical = 0;
                 SELECT ic.index_id, c.name, ic.is_included_column FROM sys.index_columns AS ic
@@ -83,7 +90,8 @@ internal static class SourceCatalog
             await reader.NextSetAsync(cancellationToken);
             while (await reader.NextRowAsync(cancellationToken))
             {
-                columns[reader.GetString(0)] = new Column(reader.GetString(1), reader.GetInt16(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetBoolean(4));
+                columns[reader.GetString(0)] = new Column(reader.GetString(1), reader.GetInt16(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetBoolean(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5));
             }
             await reader.NextSetAsync(cancellationToken);
             var names = new Dictionary<int, (string Name, bool Unique, string? Filter, bool Clustered)>();
@@ -160,6 +168,11 @@ internal static class SourceCatalog
         if (source.Settles)
         {
             Require(f.SettledEpoch, true, "bigint");
+            Require(f.LeaseOutstanding, false, "int", "smallint", "tinyint");
+            if (columns.TryGetValue(f.LeaseOutstanding, out var outstanding) && !LeaseOutstanding.Matches(outstanding.Computed, f))
+            {
+                problems.Add($"field {f.LeaseOutstanding} must be a persisted computed column, {LeaseOutstanding.Expression(f, Tsql.Quote)}");
+            }
         }
         if (source.Policy.SettleExpiry)
         {
@@ -197,27 +210,28 @@ internal static class SourceCatalog
         {
             problems.Add($"no index led by {f.DueAt} WHERE {f.LeaseExpiresAt} IS NULL (claims and next due time of unheld records)");
         }
-        // Settlement reads unsettled expired leases only: the index carries the epochs, so settled ones are passed over
-        // in the index without reading the table.
-        string[] epochs = source.Settles ? [f.SettledEpoch, f.LeaseEpoch] : [];
-        var expiry = indexes
-            .Where(i => i.Keys.FirstOrDefault() == f.LeaseExpiresAt && (i.Filter is null || Normalize(i.Filter) == held))
-            .OrderByDescending(i => Covers(i, epochs))
-            .FirstOrDefault();
-        if (expiry is null || !Covers(expiry, epochs))
+        var expiry = indexes.FirstOrDefault(i => i.Keys.FirstOrDefault() == f.LeaseExpiresAt && (i.Filter is null || Normalize(i.Filter) == held));
+        if (expiry is null)
         {
-            problems.Add(source.Settles
-                ? $"no index led by {f.LeaseExpiresAt} carrying {f.SettledEpoch} and {f.LeaseEpoch}, without a filter or WHERE {f.LeaseExpiresAt} IS NOT NULL (claims of expired leases, next due time and expiry settlement)"
-                : $"no index led by {f.LeaseExpiresAt}, without a filter or WHERE {f.LeaseExpiresAt} IS NOT NULL (claims of expired leases and next due time)");
+            problems.Add($"no index led by {f.LeaseExpiresAt}, without a filter or WHERE {f.LeaseExpiresAt} IS NOT NULL (claims of expired leases and next due time)");
+        }
+        // Settlement and limit counts read unsettled leases only; led by the expiry alone they would pass every expired
+        // lease already settled but not claimed again.
+        Index? HeldLedBy(string second, params string[] covered) => indexes.FirstOrDefault(i =>
+            i.Keys.Length > 1 && i.Keys[0] == f.LeaseOutstanding && i.Keys[1] == second && Normalize(i.Filter) == held && Covers(i, covered));
+        Index? settlement = null;
+        if (source.Settles && (settlement = HeldLedBy(f.LeaseExpiresAt)) is null)
+        {
+            problems.Add($"no index led by {f.LeaseOutstanding}, {f.LeaseExpiresAt} WHERE {f.LeaseExpiresAt} IS NOT NULL (expiry settlement, store limits and next expiry)");
         }
         Index? partitionIndex = null;
         if (limitsPartition)
         {
-            string[] counted = source.Policy.SpreadLimit is null ? epochs : [.. epochs, f.LeaseOwner];
-            partitionIndex = indexes.FirstOrDefault(i => i.Keys.FirstOrDefault() == source.Partition && Normalize(i.Filter) == held && Covers(i, counted));
+            string[] counted = source.Policy.SpreadLimit is null ? [] : [f.LeaseOwner];
+            partitionIndex = HeldLedBy(source.Partition!, counted);
             if (partitionIndex is null)
             {
-                problems.Add($"no index led by {source.Partition} WHERE {f.LeaseExpiresAt} IS NOT NULL carrying {string.Join(" and ", counted)} (partition and spread limits)");
+                problems.Add($"no index led by {f.LeaseOutstanding}, {source.Partition} WHERE {f.LeaseExpiresAt} IS NOT NULL{(counted.Length == 0 ? "" : $" carrying {f.LeaseOwner}")} (partition and spread limits)");
             }
         }
         Index? ownerIndex = null;
@@ -251,7 +265,7 @@ internal static class SourceCatalog
         }
         var keyColumns = source.Key.Fields.Select(k => KeyOf(k.Name, columns[k.Name])).ToArray();
         var partitionDeclaration = partitionColumn is null ? "nvarchar(4000)" : Declaration(partitionColumn);
-        return new SourceShape(keyColumns, Tsql.Quote(keyIndex!.Name), partitionDeclaration, due!.Name, expiry!.Name, partitionIndex?.Name, ownerIndex?.Name, generationIndex?.Name);
+        return new SourceShape(keyColumns, Tsql.Quote(keyIndex!.Name), partitionDeclaration, due!.Name, expiry!.Name, (settlement ?? expiry)!.Name, partitionIndex?.Name, ownerIndex?.Name, generationIndex?.Name);
     }
 
     /// <summary>

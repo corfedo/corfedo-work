@@ -111,13 +111,13 @@ internal sealed partial class PostgreSqlLeaseStore
         where TKey : notnull
     {
         var sql = Sql(source);
-        // The next unsettled lease to expire, from the expiry index, and the earliest retry of expired leases whose
+        // The next unsettled lease to expire, from the settlement index, and the earliest retry of expired leases whose
         // settlement failed. A result at or before now means an expired lease is due but its record is locked.
         var retry = sql.Policy.SettleExpiry ? $"GREATEST({sql.Expires}, COALESCE({sql.SettleRetryAt}, {sql.Expires}))" : sql.Expires;
         var text = $"SELECT extract(epoch FROM min(t) - clock_timestamp())::float8 FROM ("
-            + $"(SELECT {sql.Expires} AS t FROM {sql.Table} AS r WHERE {sql.Scope} AND {sql.Expires} > now() AND {sql.Settled} < {sql.Epoch} "
+            + $"(SELECT {sql.Expires} AS t FROM {sql.Table} AS r WHERE {sql.Scope} AND {sql.Expires} > now() AND {sql.Unsettled} "
             + $"ORDER BY {sql.Expires} LIMIT 1) "
-            + $"UNION ALL (SELECT min({retry}) FROM {sql.Table} AS r WHERE {sql.Scope} AND {sql.Expires} <= now() AND {sql.Settled} < {sql.Epoch})) AS next";
+            + $"UNION ALL (SELECT min({retry}) FROM {sql.Table} AS r WHERE {sql.Scope} AND {sql.Expires} <= now() AND {sql.Unsettled})) AS next";
         return await ScalarSecondsAsync(text, cancellationToken);
     }
 

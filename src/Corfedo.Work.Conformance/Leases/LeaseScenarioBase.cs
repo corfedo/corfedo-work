@@ -36,6 +36,7 @@ public abstract class LeaseScenarioBase(ILeaseConformanceProvider provider) : IA
         Takeovers = prefix + "takeovers",
         Failures = prefix + "failures",
         SettledEpoch = prefix + "settled_epoch",
+        LeaseOutstanding = prefix + "lease_outstanding",
         SettleFailures = prefix + "settle_failures",
         SettleRetryAt = prefix + "settle_retry_at",
         CancelRequestedAt = prefix + "cancel_requested_at",

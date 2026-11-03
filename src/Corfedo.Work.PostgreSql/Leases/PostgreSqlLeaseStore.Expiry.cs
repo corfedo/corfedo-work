@@ -61,7 +61,7 @@ internal sealed partial class PostgreSqlLeaseStore
         // rechecked.
         await using (var select = new NpgsqlCommand(
             $"SELECT {sql.Select(sql.Owner, sql.Epoch, sql.PartitionText)} FROM {sql.Table} AS r "
-            + $"WHERE {sql.Scope} AND {sql.Expires} <= now() AND {sql.Expires} <= clock_timestamp() AND {sql.Settled} < {sql.Epoch} AND NOT {sql.SettlementWaiting} "
+            + $"WHERE {sql.Scope} AND {sql.Expires} <= now() AND {sql.Expires} <= clock_timestamp() AND {sql.Unsettled} AND NOT {sql.SettlementWaiting} "
             + $"AND NOT EXISTS (SELECT 1 FROM {sql.Unnest} WHERE {sql.KeyJoin}) "
             + $"ORDER BY {sql.Expires} LIMIT 1 FOR UPDATE OF r SKIP LOCKED",
             connection,

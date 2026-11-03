@@ -254,7 +254,7 @@ internal sealed partial class SqlServerLeaseStore
         if (policy.SourceLimit is { } sourceLimit)
         {
             // A saturated source takes nothing; expired leases that hold its slots are returned by settlement.
-            count = $"LEAST({count}, GREATEST({sourceLimit} - (SELECT COUNT(*) FROM {sql.Table} AS r WITH (INDEX({Tsql.Quote(sql.Shape.ExpiryIndex)})) WHERE {sql.OutstandingCondition}), 0))";
+            count = $"LEAST({count}, GREATEST({sourceLimit} - (SELECT COUNT(*) FROM {sql.Table} AS r WITH (INDEX({Tsql.Quote(sql.Shape.SettlementIndex)})) WHERE {sql.OutstandingCondition}), 0))";
         }
         text.Append($"DECLARE @n int = {count};\n");
         // Claims do not clear DueAt, so held records keep their due times. Unheld records come from the index on DueAt

@@ -41,8 +41,8 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
 
     /// <summary>
     /// A table with the lease fields of every prefix and the indexes SQL Server sources need: the due index over unheld
-    /// records, the expiry index over held ones carrying the epochs, the partition index led by the tenant over held
-    /// ones carrying the owner and the epochs, and the owner index. Lock escalation is disabled, as the store requires.
+    /// records, the expiry index over held ones, the settlement and partition indexes led by the outstanding column over
+    /// held ones, and the owner index. Lock escalation is disabled, as the store requires.
     /// </summary>
     public async Task<StoreLocation> CreateTableAsync(IReadOnlyList<string> prefixes, CancellationToken cancellationToken)
     {
@@ -55,6 +55,7 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
             {p}takeovers int NOT NULL DEFAULT 0,
             {p}failures int NOT NULL DEFAULT 0,
             {p}settled_epoch bigint NOT NULL DEFAULT 0,
+            {p}lease_outstanding AS (CASE WHEN {p}settled_epoch < {p}lease_epoch THEN 1 END) PERSISTED,
             {p}settle_failures int NOT NULL DEFAULT 0,
             {p}settle_retry_at datetime2(7),
             {p}cancel_requested_at datetime2(7),
@@ -64,9 +65,10 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
             """));
         var indexes = string.Join("\n", prefixes.Select(p => $"""
             CREATE INDEX {name}_{p}due ON {Schema}.{name} ({p}due_at) WHERE {p}lease_expires_at IS NULL;
-            CREATE INDEX {name}_{p}expiry ON {Schema}.{name} ({p}lease_expires_at) INCLUDE ({p}settled_epoch, {p}lease_epoch) WHERE {p}lease_expires_at IS NOT NULL;
-            CREATE INDEX {name}_{p}partition ON {Schema}.{name} (tenant, {p}lease_owner) INCLUDE ({p}lease_expires_at, {p}settled_epoch, {p}lease_epoch) WHERE {p}lease_expires_at IS NOT NULL;
-            CREATE INDEX {name}_{p}owner ON {Schema}.{name} ({p}lease_owner) INCLUDE ({p}lease_expires_at, {p}settled_epoch, {p}lease_epoch) WHERE {p}lease_expires_at IS NOT NULL;
+            CREATE INDEX {name}_{p}expiry ON {Schema}.{name} ({p}lease_expires_at) WHERE {p}lease_expires_at IS NOT NULL;
+            CREATE INDEX {name}_{p}settlement ON {Schema}.{name} ({p}lease_outstanding, {p}lease_expires_at) WHERE {p}lease_expires_at IS NOT NULL;
+            CREATE INDEX {name}_{p}partition ON {Schema}.{name} ({p}lease_outstanding, tenant, {p}lease_owner) WHERE {p}lease_expires_at IS NOT NULL;
+            CREATE INDEX {name}_{p}owner ON {Schema}.{name} ({p}lease_owner) INCLUDE ({p}lease_expires_at, {p}lease_outstanding) WHERE {p}lease_expires_at IS NOT NULL;
             """));
         await ExecuteAsync($"""
             CREATE TABLE {Schema}.{name} (

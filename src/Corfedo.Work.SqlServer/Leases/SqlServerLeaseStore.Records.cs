@@ -99,13 +99,13 @@ internal sealed partial class SqlServerLeaseStore
         where TKey : notnull
     {
         var sql = await SqlAsync(source, cancellationToken);
-        // The next unsettled lease to expire, from the expiry index, and the earliest retry of expired leases whose
+        // The next unsettled lease to expire, from the settlement index, and the earliest retry of expired leases whose
         // settlement failed. A result at or before now means an expired lease is due but its record is locked.
         var retry = sql.Policy.SettleExpiry ? $"GREATEST({sql.Expires}, COALESCE({sql.SettleRetryAt}, {sql.Expires}))" : sql.Expires;
-        var hint = $" WITH (INDEX({Tsql.Quote(sql.Shape.ExpiryIndex)}))";
+        var hint = $" WITH (INDEX({Tsql.Quote(sql.Shape.SettlementIndex)}))";
         var text = $"SELECT {Tsql.Micros("SYSUTCDATETIME()", "MIN(t)")} FROM ("
-            + $"SELECT MIN({sql.Expires}) FROM {sql.Table} AS r{hint} WHERE {sql.Scope} AND {sql.Expires} IS NOT NULL AND {sql.Expires} > SYSUTCDATETIME() AND {sql.Settled} < {sql.Epoch} "
-            + $"UNION ALL SELECT MIN({retry}) FROM {sql.Table} AS r{hint} WHERE {sql.Scope} AND {sql.Expires} IS NOT NULL AND {sql.Expires} <= SYSUTCDATETIME() AND {sql.Settled} < {sql.Epoch}) AS next (t);";
+            + $"SELECT MIN({sql.Expires}) FROM {sql.Table} AS r{hint} WHERE {sql.Scope} AND {sql.Expires} IS NOT NULL AND {sql.Expires} > SYSUTCDATETIME() AND {sql.Unsettled} "
+            + $"UNION ALL SELECT MIN({retry}) FROM {sql.Table} AS r{hint} WHERE {sql.Scope} AND {sql.Expires} IS NOT NULL AND {sql.Expires} <= SYSUTCDATETIME() AND {sql.Unsettled}) AS next (t);";
         return await ScalarMicrosAsync(text, cancellationToken);
     }
 
