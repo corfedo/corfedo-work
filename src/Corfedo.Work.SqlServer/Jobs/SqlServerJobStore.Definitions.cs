@@ -28,9 +28,9 @@ internal sealed partial class SqlServerJobStore
                 + $"SELECT {DefinitionColumns} FROM {definitions} WITH (UPDLOCK, ROWLOCK) WHERE [key] = @key;",
                 Tsql.Text("@fence", LeaseSql.DefinitionLockName(schema, definition.Key), 255),
                 Tsql.Text("@key", definition.Key, 200)))
-            await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await read.ReaderAsync(cancellationToken))
             {
-                stored = await reader.ReadAsync(cancellationToken) ? ReadDefinition(reader) : null;
+                stored = await reader.NextRowAsync(cancellationToken) ? ReadDefinition(reader) : null;
             }
             if (stored is not null && stored.Revision > definition.Revision)
             {
@@ -86,7 +86,7 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Ticks("@expect_running", policy.Expect?.RunningLimit),
                 Tsql.Int32("@expect_failures", policy.Expect?.FailureLimit)))
             {
-                await command.ExecuteNonQueryAsync(cancellationToken);
+                await command.NonQueryAsync(cancellationToken);
             }
             return new StoredJobDefinition(definition.Key, definition.Revision, definition.Subject, policy, definition.Digest, stored?.Paused ?? false);
         }, cancellationToken);
@@ -97,8 +97,8 @@ internal sealed partial class SqlServerJobStore
         ArgumentNullException.ThrowIfNull(key);
         await using var connection = await leases.OpenAsync(cancellationToken);
         await using var command = Tsql.Command(connection, null, $"SELECT {DefinitionColumns} FROM {definitions} WHERE [key] = @key;", Tsql.Text("@key", key, 200));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? ReadDefinition(reader) : null;
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        return await reader.NextRowAsync(cancellationToken) ? ReadDefinition(reader) : null;
     }
 
     private static StoredJobDefinition ReadDefinition(SqlDataReader reader)

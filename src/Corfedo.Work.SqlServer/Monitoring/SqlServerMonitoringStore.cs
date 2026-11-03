@@ -47,12 +47,12 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
                 {Tsql.Bit($"EXISTS (SELECT 1 FROM {keyChanges} AS c WHERE c.[definition] = d.[key])")}
             FROM {definitions} AS d ORDER BY d.[key];
             """);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         var now = Tsql.Time(reader, 0);
-        await reader.NextResultAsync(cancellationToken);
+        await reader.NextSetAsync(cancellationToken);
         var list = new List<StoredExpectation>();
-        while (await reader.ReadAsync(cancellationToken))
+        while (await reader.NextRowAsync(cancellationToken))
         {
             list.Add(new StoredExpectation(reader.GetString(0), reader.GetInt64(1), SqlServerJobStore.ReadExpectation(reader, 3), reader.GetBoolean(2), reader.GetBoolean(8), reader.GetBoolean(9), reader.GetBoolean(10)));
         }
@@ -90,9 +90,9 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
             + " ORDER BY i.opened_at DESC, i.id DESC;",
             [.. parameters]);
         var list = new List<WorkIncident>(Math.Min(limit + 1, 1001));
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 list.Add(ReadIncident(reader, 0));
             }
@@ -115,8 +115,8 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
             ORDER BY d.[key];
             """);
         var keys = new List<string>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             keys.Add(reader.GetString(0));
         }
@@ -127,7 +127,7 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
     {
         await using var connection = await leases.OpenAsync(cancellationToken);
         await using var command = Tsql.Command(connection, null, $"UPDATE {processes} SET monitors = 1 WHERE owner = @owner AND monitors = 0;", Tsql.Guid("@owner", owner.Value));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     /// <summary>Reads an incident from <paramref name="first"/> on, in the order of <see cref="IncidentColumns"/>.</summary>
@@ -144,7 +144,7 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
     private static async Task<List<WorkIncident>> ReadIncidentsAsync(SqlDataReader reader, CancellationToken cancellationToken)
     {
         var list = new List<WorkIncident>();
-        while (await reader.ReadAsync(cancellationToken))
+        while (await reader.NextRowAsync(cancellationToken))
         {
             list.Add(ReadIncident(reader, 0));
         }

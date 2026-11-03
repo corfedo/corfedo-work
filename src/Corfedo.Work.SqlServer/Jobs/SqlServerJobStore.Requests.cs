@@ -116,8 +116,8 @@ internal sealed partial class SqlServerJobStore
     private static async Task<DateTimeOffset> ClockAsync(SqlServerTransaction work, CancellationToken cancellationToken)
     {
         await using var clock = Tsql.Command(work, "SELECT SYSUTCDATETIME();");
-        await using var reader = await clock.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
+        await using var reader = await clock.ReaderAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         return Tsql.Time(reader, 0);
     }
 
@@ -284,9 +284,9 @@ internal sealed partial class SqlServerJobStore
         await using var command = Tsql.Command(work, text.ToString(), [.. parameters]);
         var written = new HashSet<int>();
         var unwritten = new List<(int Item, Guid Id, string Partition)>();
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 var item = items[reader.GetInt32(0)];
                 var outcome = reader.GetInt32(2) switch
@@ -298,8 +298,8 @@ internal sealed partial class SqlServerJobStore
                 results[item] = new JobRequestResult(new JobId(reader.GetGuid(1)), outcome);
                 written.Add(item);
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 unwritten.Add((items[reader.GetInt32(0)], reader.GetGuid(1), reader.GetString(2)));
             }

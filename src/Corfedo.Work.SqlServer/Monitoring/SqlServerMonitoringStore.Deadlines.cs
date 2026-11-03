@@ -25,9 +25,9 @@ internal sealed partial class SqlServerMonitoringStore
         await using (var read = Tsql.Command(connection, null, $"SELECT DISTINCT s.window_start FROM {states} AS s WHERE {Selection("s")};",
             Tsql.Text("@definition", definition, 200),
             Tsql.Int64("@revision", revision)))
-        await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await read.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 if (!reader.IsDBNull(0))
                 {
@@ -72,7 +72,7 @@ internal sealed partial class SqlServerMonitoringStore
                         writer.WriteEndObject();
                     }
                 })));
-            return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+            return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
         }, cancellationToken);
     }
 
@@ -103,9 +103,9 @@ internal sealed partial class SqlServerMonitoringStore
                 """,
                 Tsql.Text("@definition", definition, 200),
                 Tsql.Int32("@limit", limit)))
-            await using (var reader = await select.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await select.ReaderAsync(cancellationToken))
             {
-                while (await reader.ReadAsync(cancellationToken))
+                while (await reader.NextRowAsync(cancellationToken))
                 {
                     var window = new ExpectationWindow(Tsql.Time(reader, 2), Tsql.Time(reader, 3), Tsql.NullableTime(reader, 4), Tsql.NullableTime(reader, 5), Tsql.NullableTime(reader, 6));
                     var subject = reader.IsDBNull(0) ? null : Subject.Of(reader.GetString(0), reader.GetString(1));
@@ -167,7 +167,7 @@ internal sealed partial class SqlServerMonitoringStore
                         }
                     })));
                 List<WorkIncident> inserted;
-                await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                await using (var reader = await command.ReaderAsync(cancellationToken))
                 {
                     inserted = await ReadIncidentsAsync(reader, cancellationToken);
                 }
@@ -181,9 +181,9 @@ internal sealed partial class SqlServerMonitoringStore
             await using (var command = Tsql.Command(work,
                 $"SELECT MIN(s.deadline_at) FROM {states} AS s WHERE s.[definition] = @definition AND s.deadline_at IS NOT NULL AND s.deadline_at < {Tsql.NeverLiteral};",
                 Tsql.Text("@definition", definition, 200)))
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
             {
-                await reader.ReadAsync(cancellationToken);
+                await reader.NextRowAsync(cancellationToken);
                 earliest = Tsql.NullableTime(reader, 0);
             }
             return new DeadlinePass(rows.Count, changes, earliest);

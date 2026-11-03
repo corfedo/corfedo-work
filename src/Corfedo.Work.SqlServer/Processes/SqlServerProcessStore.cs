@@ -24,7 +24,7 @@ internal sealed class SqlServerProcessStore(string connectionString, string sche
             Tsql.Text("@type", registration.Type, 200),
             Tsql.Text("@release", registration.Release, 200),
             Tsql.Ticks("@stale_after", registration.StaleAfter));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     public async ValueTask<bool> HeartbeatAsync(OwnerId owner, CancellationToken cancellationToken)
@@ -33,7 +33,7 @@ internal sealed class SqlServerProcessStore(string connectionString, string sche
         await using var command = Tsql.Command(connection, null,
             $"UPDATE {processes} SET heartbeat_at = SYSUTCDATETIME() WHERE owner = @owner; SELECT @@ROWCOUNT;",
             Tsql.Guid("@owner", owner.Value));
-        return (int)(await command.ExecuteScalarAsync(cancellationToken))! > 0;
+        return (int)(await command.ScalarAsync(cancellationToken))! > 0;
     }
 
     public async ValueTask StopAsync(OwnerId owner, CancellationToken cancellationToken)
@@ -42,7 +42,7 @@ internal sealed class SqlServerProcessStore(string connectionString, string sche
         await using var command = Tsql.Command(connection, null,
             $"UPDATE {processes} SET stopped_at = SYSUTCDATETIME() WHERE owner = @owner AND stopped_at IS NULL;",
             Tsql.Guid("@owner", owner.Value));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     public async ValueTask<IReadOnlyList<ProcessInstance>> ListAsync(string? type, IReadOnlyCollection<ProcessState> states, CancellationToken cancellationToken)
@@ -60,8 +60,8 @@ internal sealed class SqlServerProcessStore(string connectionString, string sche
             Tsql.Text("@type", type, 200),
             Tsql.Json("@states", JsonSerializer.Serialize(states.Select(s => (int)s).ToArray(), SqlServerJson.Default.Int32Array)));
         var list = new List<ProcessInstance>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             list.Add(ReadInstance(reader, 0));
         }
@@ -84,7 +84,7 @@ internal sealed class SqlServerProcessStore(string connectionString, string sche
             """) + "SELECT COUNT(*) FROM @expired;",
             Tsql.Ticks("@retention", retention),
             Tsql.Int32("@limit", limit));
-        return (int)(await command.ExecuteScalarAsync(cancellationToken))!;
+        return (int)(await command.ScalarAsync(cancellationToken))!;
     }
 
     /// <summary>The <see cref="ProcessState"/> of the process row <paramref name="alias"/> at <paramref name="now"/>.</summary>

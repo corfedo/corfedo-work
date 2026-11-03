@@ -74,8 +74,8 @@ internal sealed partial class SqlServerLeaseStore
         if (!await FenceDefinitionAsync(work, sql, cancellationToken))
         {
             await using var now = Tsql.Command(work, "SELECT SYSUTCDATETIME();");
-            await using var reader = await now.ExecuteReaderAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await using var reader = await now.ReaderAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             return new([], 0, 0) { Cutoff = Tsql.Time(reader, 0) };
         }
         var (locked, cutoff) = await LockDueAsync(work, sql, source, sql.ClaimableFor(callbacks), owner, limit, busy, cancellationToken);
@@ -171,7 +171,7 @@ internal sealed partial class SqlServerLeaseStore
         }
         await using var command = Tsql.Command(work,
             "SELECT transaction_isolation_level FROM sys.dm_exec_sessions WHERE session_id = @@SPID;");
-        var level = Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+        var level = Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
         if (level != 2)
         {
             var name = level switch
@@ -199,8 +199,8 @@ internal sealed partial class SqlServerLeaseStore
             return true;
         }
         await using var command = Tsql.Command(work, sql.DefinitionFence + sql.DefinitionRead);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        if (!await reader.NextRowAsync(cancellationToken))
         {
             throw new JobDefinitionChangedException(job.Definition, 0);
         }
@@ -300,11 +300,11 @@ internal sealed partial class SqlServerLeaseStore
         }
         await using var command = Tsql.Command(work, text.ToString(), [.. parameters]);
         var keys = new List<TKey>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         var cutoff = Tsql.Time(reader, 0);
-        await reader.NextResultAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await reader.NextSetAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             keys.Add(ReadKey(source, reader));
         }
@@ -319,8 +319,8 @@ internal sealed partial class SqlServerLeaseStore
         await using var command = KeysCommand(work.Connection, work.Transaction, sql, source, keys,
             $"SELECT {sql.KeyList} FROM {sql.KeyedRows("UPDLOCK, ROWLOCK, READPAST")} ORDER BY {sql.KeyColumns};");
         var locked = new List<TKey>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             locked.Add(ReadKey(source, reader));
         }
@@ -560,9 +560,9 @@ internal sealed partial class SqlServerLeaseStore
             SELECT {sql.KeyList} FROM {sql.KeyedRows()} WHERE r.[subject_kind] IS NOT NULL AND {sql.SubjectLock} IN (SELECT name FROM @busy);
             """);
         var busy = new HashSet<string>(StringComparer.Ordinal);
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 busy.Add(source.Key.Format(ReadKey(source, reader)));
             }
@@ -581,7 +581,7 @@ internal sealed partial class SqlServerLeaseStore
             : $"{LeaseSql.Bare(sql.Due)} = {retry}, {LeaseSql.Bare(sql.NotBefore)} = {retry}";
         await using var command = KeyCommand(work.Connection, work.Transaction, sql, source, key,
             $"UPDATE r SET {LeaseSql.Bare(sql.Failures)} = {sql.Failures} + 1, {set} FROM {sql.Table} AS r WHERE {sql.KeyMatch};");
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     private static async Task<List<Candidate<TKey>>> EvaluateAsync<TKey>(SqlServerTransaction work, LeaseSql sql, LeaseSource<TKey> source, List<TKey> keys, string claimable, CancellationToken cancellationToken)
@@ -592,9 +592,9 @@ internal sealed partial class SqlServerLeaseStore
             + $"FROM {sql.KeyedRows()} ORDER BY CASE WHEN {sql.Due} IS NULL THEN 1 ELSE 0 END, {sql.Due}, {sql.KeyList};";
         await using var command = KeysCommand(work.Connection, work.Transaction, sql, source, keys, text);
         var candidates = new List<Candidate<TKey>>(keys.Count);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
         var k = sql.KeyCount;
-        while (await reader.ReadAsync(cancellationToken))
+        while (await reader.NextRowAsync(cancellationToken))
         {
             candidates.Add(new Candidate<TKey>(
                 ReadKey(source, reader),
@@ -682,8 +682,8 @@ internal sealed partial class SqlServerLeaseStore
             Tsql.Json("@names", JsonSerializer.Serialize(ordered, SqlServerJson.Default.StringArray)),
             Tsql.Int32("@timeout", wait ? -1 : 0));
         var busy = new List<string>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             busy.Add(reader.GetString(0));
         }
@@ -694,7 +694,7 @@ internal sealed partial class SqlServerLeaseStore
     private static async Task WaitForScopeAsync(SqlServerTransaction work, string scope, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(work, LeaseSql.AppLock("@scope", "Exclusive"), Tsql.Text("@scope", scope, 255));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     private sealed class OutstandingCounts
@@ -726,21 +726,21 @@ internal sealed partial class SqlServerLeaseStore
             text.Append($"SELECT COUNT(*) FROM {sql.Table} AS r WHERE {sql.OutstandingCondition};\n");
         }
         await using var command = Tsql.Command(work, text.ToString(), [.. parameters]);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
         if (sql.Partition is not null)
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 counts.Partitions[reader.GetString(0)] = (reader.GetInt32(1), reader.GetInt32(2));
             }
-            await reader.NextResultAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
         }
-        await reader.ReadAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         counts.Owner = reader.GetInt32(0);
         if (sql.Policy.SourceLimit is not null)
         {
-            await reader.NextResultAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             counts.Source = reader.GetInt32(0);
         }
         return counts;
@@ -814,8 +814,8 @@ internal sealed partial class SqlServerLeaseStore
         await using var command = KeysCommand(work.Connection, work.Transaction, sql, source, accepted.Select(c => c.Key), text.ToString(), [.. parameters]);
         var byKey = accepted.ToDictionary(c => source.Key.Format(c.Key), StringComparer.Ordinal);
         var claims = new List<LeaseClaim<TKey>>(accepted.Count);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             var key = ReadKey(source, reader);
             var before = byKey[source.Key.Format(key)];

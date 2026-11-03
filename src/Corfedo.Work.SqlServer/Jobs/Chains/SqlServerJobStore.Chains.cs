@@ -57,7 +57,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
                 Tsql.Int64("@epoch", lease.Epoch),
                 Tsql.Guid("@chain", chain.Id.Value)))
             {
-                if (Convert.ToInt32(await start.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) != 1)
+                if (Convert.ToInt32(await start.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) != 1)
                 {
                     return false;
                 }
@@ -87,7 +87,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
             Tsql.Int32("@pending", Pending(chain.Steps, chain.Groups, null)),
             Tsql.Strings("@definitions", chain.Steps.Select(s => s.Definition).Distinct(StringComparer.Ordinal))))
         {
-            await insert.ExecuteNonQueryAsync(cancellationToken);
+            await insert.NonQueryAsync(cancellationToken);
         }
         await InsertGroupsAsync(work, chain.Id, 1, chain.Steps, chain.Groups, false, cancellationToken);
         await InsertStepsAsync(work, chain.Id, 1, chain.Steps, root, cancellationToken);
@@ -129,7 +129,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
                     writer.WriteEndObject();
                 }
             })));
-        await insert.ExecuteNonQueryAsync(cancellationToken);
+        await insert.NonQueryAsync(cancellationToken);
     }
 
     /// <summary>
@@ -211,7 +211,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
                 grp uniqueidentifier '$.g', condition smallint '$.c', trace_parent nvarchar(100) '$.t') AS u
             ORDER BY u.id;
             """, [.. parameters]);
-        await insert.ExecuteNonQueryAsync(cancellationToken);
+        await insert.NonQueryAsync(cancellationToken);
     }
 
     /// <summary>The due expression of a one-shot schedule, adding the parameters it reads.</summary>
@@ -255,9 +255,9 @@ internal sealed partial class SqlServerJobStore : IChainStore
             """,
             Tsql.Guid("@owner", lease.Owner.Value),
             Tsql.Int64("@epoch", lease.Epoch)))
-        await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await read.ReaderAsync(cancellationToken))
         {
-            if (!await reader.ReadAsync(cancellationToken))
+            if (!await reader.NextRowAsync(cancellationToken))
             {
                 throw new LeaseLostException($"The lease on {lease.Source.Name} record {lease.Key} at epoch {lease.Epoch} is no longer valid.");
             }
@@ -288,7 +288,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
             Tsql.Guid("@group", scope),
             Tsql.Int32("@pending", Pending(addedSteps, added, scope)),
             Tsql.Strings("@definitions", addedSteps.Select(s => s.Definition).Distinct(StringComparer.Ordinal)));
-        await count.ExecuteNonQueryAsync(cancellationToken);
+        await count.NonQueryAsync(cancellationToken);
     }
 
     /// <summary>
@@ -312,9 +312,9 @@ internal sealed partial class SqlServerJobStore : IChainStore
                 Tsql.Guid("@chain", chain),
                 Tsql.Text("@reason", JobReasons.RootSkipped));
             var definitions = new List<string>();
-            await using (var reader = await skip.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await skip.ReaderAsync(cancellationToken))
             {
-                while (await reader.ReadAsync(cancellationToken))
+                while (await reader.NextRowAsync(cancellationToken))
                 {
                     definitions.Add(reader.GetString(0));
                 }
@@ -341,9 +341,9 @@ internal sealed partial class SqlServerJobStore : IChainStore
                 Tsql.Guid("@step", step),
                 Tsql.Int16("@outcome", (short)JobOutcome.Completed));
             var settled = new List<(Guid Id, Guid? Group)>();
-            await using (var reader = await empty.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await empty.ReaderAsync(cancellationToken))
             {
-                while (await reader.ReadAsync(cancellationToken))
+                while (await reader.NextRowAsync(cancellationToken))
                 {
                     settled.Add((reader.GetGuid(0), reader.IsDBNull(1) ? null : reader.GetGuid(1)));
                 }
@@ -384,9 +384,9 @@ internal sealed partial class SqlServerJobStore : IChainStore
             Tsql.Int16("@settled", (short)settled),
             Tsql.Text("@reason", JobReasons.ChainCondition));
         var signals = new List<(string, SignalTopic)>();
-        await using (var reader = await decide.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await decide.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 signals.Add((reader.GetString(0), reader.GetBoolean(1) ? WorkTopics.Due : WorkTopics.Plan));
             }
@@ -425,9 +425,9 @@ internal sealed partial class SqlServerJobStore : IChainStore
                 Tsql.Guid("@id", current),
                 Tsql.Int16("@rank", rank));
             JobOutcome outcome;
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
             {
-                await reader.ReadAsync(cancellationToken);
+                await reader.NextRowAsync(cancellationToken);
                 if (reader.GetInt32(0) > 0)
                 {
                     return;
@@ -445,9 +445,9 @@ internal sealed partial class SqlServerJobStore : IChainStore
         await using (var command = Tsql.Command(work, Count(chains, "owner_job uniqueidentifier, owner_definition nvarchar(200), delete_requested bit"),
             Tsql.Guid("@id", chain),
             Tsql.Int16("@rank", rank)))
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             if (reader.GetInt32(0) > 0)
             {
                 return;
@@ -464,7 +464,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
                 Tsql.Guid("@id", occurrence),
                 Tsql.Guid("@chain", chain),
                 Tsql.Int16("@outcome", (short)settledOutcome));
-            if (Convert.ToInt32(await record.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1)
+            if (Convert.ToInt32(await record.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1)
             {
                 await leases.NotifyAsync(work.Connection, work.Transaction, WorkTopics.Plan, JobDefinition.SourceNameOf(ownerDefinition!), cancellationToken);
             }
@@ -511,7 +511,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
             DELETE r FROM @steps AS s INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = s.id WHERE r.chain_id = @chain;
             DELETE FROM {chains} WHERE id = @chain;
             """, Tsql.Guid("@chain", chain));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     /// <summary>A JSON array whose elements <paramref name="write"/> writes.</summary>

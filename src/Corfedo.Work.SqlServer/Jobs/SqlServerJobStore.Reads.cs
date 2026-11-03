@@ -31,7 +31,7 @@ internal sealed partial class SqlServerJobStore
             Tsql.Int64("@epoch", lease.Epoch),
             Tsql.Int16("@percent", (short)progress.Percent),
             Tsql.Text("@message", progress.Message, -1));
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == 1;
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     /// <summary>
@@ -75,8 +75,8 @@ internal sealed partial class SqlServerJobStore
             """,
             Tsql.Text("@definition", definition, 200),
             Tsql.Json("@subjects", SubjectsJson(subjects)));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             var outstanding = !reader.IsDBNull(1);
             var everEnded = !reader.IsDBNull(13);
@@ -137,7 +137,7 @@ internal sealed partial class SqlServerJobStore
             $"UPDATE {Jobs} SET waited = 1 WHERE id = @id AND [definition] = @definition AND state = 0 AND waited = 0;\nSELECT @@ROWCOUNT;",
             Tsql.Text("@definition", definition, 200),
             Tsql.Guid("@id", job.Value));
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == 1;
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
     public async ValueTask<IReadOnlyList<StoredJobOutcome>> GetOutcomesAsync(string definition, IReadOnlyList<JobId> jobs, CancellationToken cancellationToken)
@@ -157,8 +157,8 @@ internal sealed partial class SqlServerJobStore
             Tsql.Text("@definition", definition, 200),
             Tsql.Guids("@jobs", jobs.Select(j => j.Value)));
         var outcomes = new List<StoredJobOutcome>(jobs.Count);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             outcomes.Add(StoredOutcome(reader));
         }
@@ -214,9 +214,9 @@ internal sealed partial class SqlServerJobStore
             + $"FROM {runs} WHERE {filter} ORDER BY started_at DESC, job_id DESC, epoch DESC;",
             [.. parameters]);
         var entries = new List<JobRunEntry>(Math.Min(limit + 1, 1001));
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 entries.Add(new JobRunEntry(
                     new JobId(reader.GetGuid(0)),

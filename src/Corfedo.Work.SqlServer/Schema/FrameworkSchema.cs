@@ -484,7 +484,7 @@ internal static class FrameworkSchema
             + "IF @r < 0 THROW 51000, N'The framework schema lock was not granted.', 1;",
             Tsql.Text("@lock", lockName, 255)))
         {
-            await lockCommand.ExecuteNonQueryAsync(cancellationToken);
+            await lockCommand.NonQueryAsync(cancellationToken);
         }
         try
         {
@@ -493,14 +493,14 @@ internal static class FrameworkSchema
                 Tsql.Text("@schema", schema, 128),
                 Tsql.Text("@quoted", quoted, 300)))
             {
-                await create.ExecuteNonQueryAsync(cancellationToken);
+                await create.NonQueryAsync(cancellationToken);
             }
             var applied = 0;
             await using (var current = Tsql.Command(connection, null,
                 $"IF OBJECT_ID(@table, N'U') IS NULL SELECT 0 ELSE EXEC (N'SELECT COALESCE(MAX(version), 0) FROM ' + @table);",
                 Tsql.Text("@table", quoted + ".schema_versions", 400)))
             {
-                applied = (int)(await current.ExecuteScalarAsync(cancellationToken))!;
+                applied = (int)(await current.ScalarAsync(cancellationToken))!;
             }
             foreach (var (version, script) in Scripts)
             {
@@ -512,14 +512,14 @@ internal static class FrameworkSchema
                 var text = script.Replace("{schema}", quoted, StringComparison.Ordinal) + (version == 1 ? "\n" + SignalsTable(schema) : "");
                 await using (var apply = Tsql.Command(connection, transaction, text))
                 {
-                    await apply.ExecuteNonQueryAsync(cancellationToken);
+                    await apply.NonQueryAsync(cancellationToken);
                 }
                 await using (var record = Tsql.Command(connection, transaction,
                     DisableEscalation + $"\nINSERT INTO {quoted}.schema_versions (version) VALUES (@version);",
                     Tsql.Text("@schema", schema, 128),
                     Tsql.Int32("@version", version)))
                 {
-                    await record.ExecuteNonQueryAsync(cancellationToken);
+                    await record.NonQueryAsync(cancellationToken);
                 }
                 await transaction.CommitAsync(cancellationToken);
             }
@@ -541,8 +541,8 @@ internal static class FrameworkSchema
     private static async Task RequireSnapshotReadsAsync(SqlConnection connection, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(connection, null, "SELECT DB_NAME(), is_read_committed_snapshot_on FROM sys.databases WHERE database_id = DB_ID();");
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         if (!reader.GetBoolean(1))
         {
             var name = reader.GetString(0);

@@ -52,7 +52,7 @@ internal sealed partial class SqlServerSignalTransport(string connectionString, 
                 byte[] position;
                 await using (var start = Tsql.Command(connection, null, "SELECT CAST(MIN_ACTIVE_ROWVERSION() AS binary(8));"))
                 {
-                    position = (byte[])(await start.ExecuteScalarAsync(cancellationToken))!;
+                    position = (byte[])(await start.ScalarAsync(cancellationToken))!;
                 }
                 connected();
                 var lastRead = time.GetTimestamp();
@@ -74,7 +74,7 @@ internal sealed partial class SqlServerSignalTransport(string connectionString, 
             }
             catch (Exception) when (cancellationToken.IsCancellationRequested)
             {
-                // SqlClient reports a command cancelled by the token as a SqlException.
+                // A stop ends listening, whichever failure it caused in the statement or connection it interrupted.
                 return;
             }
             catch (Exception exception)
@@ -106,11 +106,11 @@ internal sealed partial class SqlServerSignalTransport(string connectionString, 
             Tsql.Int32("@wait", (int)options.MaximumWait.TotalMilliseconds),
             new SqlParameter("@poll", SqlDbType.VarChar, 12) { Value = options.PollInterval.ToString(@"hh\:mm\:ss\.fff", System.Globalization.CultureInfo.InvariantCulture) });
         command.CommandTimeout = (int)Math.Ceiling(options.MaximumWait.TotalSeconds) + 30;
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        await reader.ReadAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         var top = reader.GetFieldValue<byte[]>(0);
-        await reader.NextResultAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await reader.NextSetAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             if (SignalTopic.IsValidName(reader.GetString(0)))
             {
@@ -126,7 +126,7 @@ internal sealed partial class SqlServerSignalTransport(string connectionString, 
         await using var command = Tsql.Command(connection, null,
             $"DELETE TOP ({PruneBatch}) FROM {sql.Table} WITH (READPAST) WHERE sent_at < DATEADD(millisecond, -@retention, SYSUTCDATETIME());",
             Tsql.Int32("@retention", (int)Math.Min(options.Retention.TotalMilliseconds, int.MaxValue)));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     /// <summary>
@@ -140,7 +140,7 @@ internal sealed partial class SqlServerSignalTransport(string connectionString, 
             return;
         }
         await using var command = Tsql.Command(connection, null, Schema.FrameworkSchema.EnsureSignals(sql.Schema));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
         ensured = true;
     }
 

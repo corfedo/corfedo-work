@@ -14,8 +14,8 @@ internal sealed partial class SqlServerJobStore
             $"SELECT {OutcomeColumns} FROM {Jobs} AS s INNER JOIN {Jobs} AS j ON j.id = s.chain_parent WHERE s.id = @step AND j.[definition] = @definition;",
             Tsql.Guid("@step", step.Value),
             Tsql.Text("@definition", definition, 200));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? StoredOutcome(reader) : null;
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        return await reader.NextRowAsync(cancellationToken) ? StoredOutcome(reader) : null;
     }
 
     /// <summary>The steps of the group the step follows that no step or group of the group follows, from the chain's steps.</summary>
@@ -33,8 +33,8 @@ internal sealed partial class SqlServerJobStore
             Tsql.Guid("@step", step.Value),
             Tsql.Text("@definition", definition, 200));
         var outcomes = new List<StoredJobOutcome>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             outcomes.Add(StoredOutcome(reader));
         }
@@ -57,8 +57,8 @@ internal sealed partial class SqlServerJobStore
                  FROM {chainGroups} AS g WHERE g.chain_id = c.id ORDER BY g.id FOR JSON PATH)
             FROM {chains} AS c WHERE c.id = @chain;
             """, Tsql.Guid("@chain", chain.Value));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        if (!await reader.NextRowAsync(cancellationToken))
         {
             return null;
         }
@@ -135,9 +135,9 @@ internal sealed partial class SqlServerJobStore
                 SELECT id, chain_parent, chain_group, outcome, chain_condition, [definition] FROM {Jobs} WITH (INDEX(jobs_chain)) WHERE chain_id IS NOT NULL AND chain_id = @chain;
                 SELECT id, parent, enclosing_group, outcome, dynamic FROM {chainGroups} WHERE chain_id = @chain;
                 """, Tsql.Guid("@chain", chain.Value)))
-            await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await read.ReaderAsync(cancellationToken))
             {
-                if (!await reader.ReadAsync(cancellationToken))
+                if (!await reader.NextRowAsync(cancellationToken))
                 {
                     return RetryFromOutcome.NotFound;
                 }
@@ -146,8 +146,8 @@ internal sealed partial class SqlServerJobStore
                     return RetryFromOutcome.NotSettled;
                 }
                 generation = reader.GetInt64(0) + 1;
-                await reader.NextResultAsync(cancellationToken);
-                while (await reader.ReadAsync(cancellationToken))
+                await reader.NextSetAsync(cancellationToken);
+                while (await reader.NextRowAsync(cancellationToken))
                 {
                     var id = reader.GetGuid(0);
                     nodes[id] = new ChainNode(
@@ -160,8 +160,8 @@ internal sealed partial class SqlServerJobStore
                         reader.GetString(5),
                         false);
                 }
-                await reader.NextResultAsync(cancellationToken);
-                while (await reader.ReadAsync(cancellationToken))
+                await reader.NextSetAsync(cancellationToken);
+                while (await reader.NextRowAsync(cancellationToken))
                 {
                     var id = reader.GetGuid(0);
                     nodes[id] = new ChainNode(id, true, reader.GetGuid(1), reader.IsDBNull(2) ? null : reader.GetGuid(2), reader.IsDBNull(3) ? null : (JobOutcome)reader.GetInt16(3), ChainOutcomes.None, null, reader.GetBoolean(4));
@@ -305,7 +305,7 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Int16("@worst", top.Worst),
                 Tsql.Text("@reason", JobReasons.ChainCondition)))
             {
-                await write.ExecuteNonQueryAsync(cancellationToken);
+                await write.NonQueryAsync(cancellationToken);
             }
             if (chosen.IsGroup && !members[chosen.Id].Any())
             {
@@ -314,7 +314,7 @@ internal sealed partial class SqlServerJobStore
                     Tsql.Guid("@id", chosen.Id),
                     Tsql.Int16("@outcome", (short)JobOutcome.Completed)))
                 {
-                    await settle.ExecuteNonQueryAsync(cancellationToken);
+                    await settle.NonQueryAsync(cancellationToken);
                 }
                 await DecideAsync(work, chain.Value, chosen.Id, ChainOutcomes.Succeeded, cancellationToken);
                 await CountSettledAsync(work, chain.Value, chosen.Group, Rank(JobOutcome.Completed), cancellationToken);
@@ -366,7 +366,7 @@ internal sealed partial class SqlServerJobStore
             bool? settled;
             await using (var read = Tsql.Command(work, $"SELECT {Tsql.Bit("settled_at IS NOT NULL")} FROM {chains} WHERE id = @chain;", Tsql.Guid("@chain", chain.Value)))
             {
-                settled = (bool?)await read.ExecuteScalarAsync(cancellationToken);
+                settled = (bool?)await read.ScalarAsync(cancellationToken);
             }
             if (settled is null)
             {
@@ -378,7 +378,7 @@ internal sealed partial class SqlServerJobStore
                 await using var mark = Tsql.Command(work,
                     $"UPDATE {chains} SET delete_requested = 1 WHERE id = @chain AND settled_at IS NULL;\nSELECT @@ROWCOUNT;",
                     Tsql.Guid("@chain", chain.Value));
-                if (Convert.ToInt32(await mark.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1)
+                if (Convert.ToInt32(await mark.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1)
                 {
                     return ChainDeleteOutcome.Deleting;
                 }
@@ -389,7 +389,7 @@ internal sealed partial class SqlServerJobStore
                 SELECT {Tsql.Bit("settled_at IS NOT NULL")} FROM {chains} WHERE id = @chain;
                 """, Tsql.Guid("@chain", chain.Value)))
             {
-                switch ((bool?)await locked.ExecuteScalarAsync(cancellationToken))
+                switch ((bool?)await locked.ScalarAsync(cancellationToken))
                 {
                     case null:
                         return ChainDeleteOutcome.NotFound;

@@ -238,6 +238,41 @@ internal static class Tsql
         }
     }
 
+    /// <summary>
+    /// Runs the command, reporting a cancellation as <see cref="OperationCanceledException"/>: SqlClient reports a
+    /// command that <paramref name="cancellationToken"/> stopped as a <see cref="SqlException"/>. The same holds for
+    /// <see cref="ReaderAsync"/>, <see cref="ScalarAsync"/>, <see cref="NextRowAsync"/> and <see cref="NextSetAsync"/>.
+    /// </summary>
+    public static Task<int> NonQueryAsync(this SqlCommand command, CancellationToken cancellationToken) =>
+        Cancellable(command.ExecuteNonQueryAsync(cancellationToken), cancellationToken);
+
+    public static Task<SqlDataReader> ReaderAsync(this SqlCommand command, CancellationToken cancellationToken) =>
+        Cancellable(command.ExecuteReaderAsync(cancellationToken), cancellationToken);
+
+    public static Task<object?> ScalarAsync(this SqlCommand command, CancellationToken cancellationToken) =>
+        Cancellable(command.ExecuteScalarAsync(cancellationToken)!, cancellationToken);
+
+    public static Task<bool> NextRowAsync(this SqlDataReader reader, CancellationToken cancellationToken) =>
+        Cancellable(reader.ReadAsync(cancellationToken), cancellationToken);
+
+    public static Task<bool> NextSetAsync(this SqlDataReader reader, CancellationToken cancellationToken) =>
+        Cancellable(reader.NextResultAsync(cancellationToken), cancellationToken);
+
+    private static Task<T> Cancellable<T>(Task<T> task, CancellationToken cancellationToken) =>
+        task.IsCompletedSuccessfully ? task : Translated(task, cancellationToken);
+
+    private static async Task<T> Translated<T>(Task<T> task, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await task;
+        }
+        catch (SqlException exception) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(exception.Message, exception, cancellationToken);
+        }
+    }
+
     /// <summary>Error numbers of a unique index (2601) or unique constraint (2627) violation.</summary>
     public static bool IsUniqueViolation(SqlException exception) => exception.Errors.Cast<SqlError>().Any(e => e.Number is 2601 or 2627);
 

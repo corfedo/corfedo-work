@@ -75,19 +75,19 @@ internal sealed partial class SqlServerJobStore
             """,
             Tsql.Text("@definition", definition, 200),
             Tsql.Int32("@limit", limit)))
-        await using (var reader = await locks.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await locks.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 instants.Add((reader.GetGuid(0), reader.GetString(1), Tsql.Time(reader, 2), (Blocked)reader.GetInt16(3), (Closed)reader.GetInt16(4)));
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 closed.Add((reader.GetGuid(0), reader.GetString(1), (Closed)reader.GetInt16(2)));
             }
-            await reader.NextResultAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             now = Tsql.Time(reader, 0);
         }
 
@@ -150,7 +150,7 @@ internal sealed partial class SqlServerJobStore
                 FROM @plans AS u INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = u.id;
                 """,
                 Tsql.Json("@decisions", PlansJson(plans.DistinctBy(p => p.Id))));
-            await write.ExecuteNonQueryAsync(cancellationToken);
+            await write.NonQueryAsync(cancellationToken);
             if (plans.Any(p => p.Decision == CalendarDecision.Planned))
             {
                 await NotifyDueAsync(work, source, cancellationToken);
@@ -168,7 +168,7 @@ internal sealed partial class SqlServerJobStore
             """,
             Tsql.Text("@definition", definition, 200)))
         {
-            nextIn = Tsql.Wait(await next.ExecuteScalarAsync(cancellationToken));
+            nextIn = Tsql.Wait(await next.ScalarAsync(cancellationToken));
         }
         return new(instants.Count, closed.Count, nextIn);
     }

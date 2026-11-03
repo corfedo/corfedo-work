@@ -32,8 +32,8 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             Tsql.Text("@lock", Tsql.LockName("calendar", schema, calendar.Name), 255),
             Tsql.Text("@name", calendar.Name, 128)))
         {
-            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
+            await using var reader = await select.ReaderAsync(cancellationToken);
+            if (await reader.NextRowAsync(cancellationToken))
             {
                 stored = WorkCalendar.Parse(calendar.Name, reader.GetInt64(0), reader.GetString(2));
                 digest = reader.GetFieldValue<byte[]>(1);
@@ -60,7 +60,7 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             Tsql.Bytes("@digest", calendar.Digest),
             Tsql.Text("@rule", calendar.Rule, -1)))
         {
-            await write.ExecuteNonQueryAsync(cancellationToken);
+            await write.NonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
         return calendar;
@@ -71,8 +71,8 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
         await using var connection = await Tsql.OpenAsync(connectionString, cancellationToken);
         await using var command = Tsql.Command(connection, null, $"SELECT name, revision, [rule] FROM {calendars} ORDER BY name;");
         var result = new List<WorkCalendar>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             result.Add(WorkCalendar.Parse(reader.GetString(0), reader.GetInt64(1), reader.GetString(2)));
         }
@@ -84,8 +84,8 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
         await using var connection = await Tsql.OpenAsync(connectionString, cancellationToken);
         await using var command = Tsql.Command(connection, null, $"SELECT name, revision, covers_through, dates FROM {dates} ORDER BY name;");
         var result = new List<CalendarDates>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             result.Add(ReadDates(reader));
         }
@@ -115,27 +115,27 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             """,
             Tsql.Text("@name", name, 128)))
         {
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             if (reader.IsDBNull(0))
             {
                 return false;
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 if (WorkCalendar.Parse(reader.GetString(0), reader.GetInt64(1), reader.GetString(2)).References.Contains(name, StringComparer.Ordinal))
                 {
                     composing.Add(reader.GetString(0));
                 }
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 jobCounts.Add(string.Create(CultureInfo.InvariantCulture, $"{reader.GetString(0)} ({reader.GetInt32(1)})"));
             }
-            await reader.NextResultAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             recurrenceCount = reader.GetInt32(0);
         }
         var blockers = new List<string>();
@@ -157,7 +157,7 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
         }
         await using (var delete = Tsql.Command(connection, transaction, $"DELETE FROM {calendars} WHERE name = @name;", Tsql.Text("@name", name, 128)))
         {
-            await delete.ExecuteNonQueryAsync(cancellationToken);
+            await delete.NonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
         return true;
@@ -180,7 +180,7 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             """),
             Tsql.Guid("@owner", owner.Value),
             Tsql.Json("@calendars", "[" + string.Join(",", registered.Select(c => "[" + System.Text.Json.JsonSerializer.Serialize(c.Name, SqlServerJson.Default.String) + "," + c.Revision.ToString(CultureInfo.InvariantCulture) + "]")) + "]"));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     /// <summary>
@@ -197,8 +197,8 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             ORDER BY c.name;
             """);
         var list = new List<UnregisteredCalendar>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             list.Add(new UnregisteredCalendar(reader.GetString(0), reader.GetInt64(1), Tsql.Time(reader, 2)));
         }
@@ -255,15 +255,15 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
         }
         await using (var command = Tsql.Command(work, text.ToString(), [.. parameters]))
         {
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 waiting.Add(reader.GetString(0));
             }
             foreach (var name in published)
             {
-                await reader.NextResultAsync(cancellationToken);
-                await reader.ReadAsync(cancellationToken);
+                await reader.NextSetAsync(cancellationToken);
+                await reader.NextRowAsync(cancellationToken);
                 if (reader.GetBoolean(0))
                 {
                     needed.Add(name);
@@ -324,8 +324,8 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             Tsql.Text("@lock", Tsql.LockName("dates", schema, set.Name), 255),
             Tsql.Text("@name", set.Name, 128)))
         {
-            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-            if (await reader.ReadAsync(cancellationToken))
+            await using var reader = await select.ReaderAsync(cancellationToken);
+            if (await reader.NextRowAsync(cancellationToken))
             {
                 stored = ReadDates(reader);
             }
@@ -354,7 +354,7 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             new SqlParameter("@covers", System.Data.SqlDbType.Date) { Value = set.CoversThrough.ToDateTime(TimeOnly.MinValue) },
             Tsql.Text("@dates", string.Join(',', set.Dates.Order().Select(d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture))), -1)))
         {
-            await write.ExecuteNonQueryAsync(cancellationToken);
+            await write.NonQueryAsync(cancellationToken);
         }
         var depending = (await LoadAsync(work, cancellationToken)).DependingOn(set.Name);
         if (depending.Count == 0)
@@ -377,8 +377,8 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             """,
             Tsql.Strings("@calendars", depending)))
         {
-            await using var reader = await replan.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await using var reader = await replan.ReaderAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 definitions.Add(reader.GetString(0));
             }
@@ -405,13 +405,13 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
         var dateRevisions = new Dictionary<string, long>(StringComparer.Ordinal);
         await using (var command = Tsql.Command(work, $"SELECT name, revision FROM {calendars}; SELECT name, revision FROM {dates};"))
         {
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 calendarRevisions[reader.GetString(0)] = reader.GetInt64(1);
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 dateRevisions[reader.GetString(0)] = reader.GetInt64(1);
             }
@@ -432,14 +432,14 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
             Tsql.Strings("@calendars", staleCalendars),
             Tsql.Strings("@dates", staleDates)))
         {
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 var calendar = WorkCalendar.Parse(reader.GetString(0), reader.GetInt64(1), reader.GetString(2));
                 loadedCalendars[calendar.Name] = calendar;
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 var set = ReadDates(reader);
                 loadedDates[set.Name] = set;

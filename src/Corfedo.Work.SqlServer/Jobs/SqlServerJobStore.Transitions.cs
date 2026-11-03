@@ -59,9 +59,9 @@ internal sealed partial class SqlServerJobStore
             """,
             Tsql.Guid("@owner", lease.Owner.Value),
             Tsql.Int64("@epoch", lease.Epoch)))
-        await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await read.ReaderAsync(cancellationToken))
         {
-            if (!await reader.ReadAsync(cancellationToken))
+            if (!await reader.NextRowAsync(cancellationToken))
             {
                 return false;
             }
@@ -118,7 +118,7 @@ internal sealed partial class SqlServerJobStore
             Tsql.Text("@reason", transition.Code ?? JobReasons.HandlerFailed, -1),
             Tsql.Ticks("@delay", delay > transition.After ? delay : transition.After)))
         {
-            if (Convert.ToInt32(await retry.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) != 1)
+            if (Convert.ToInt32(await retry.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) != 1)
             {
                 return false;
             }
@@ -209,9 +209,9 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Int32("@result_version", completion?.Result is null ? null : completion.ResultVersion),
                 .. parameters,
             ]))
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            if (!await reader.ReadAsync(cancellationToken))
+            if (!await reader.NextRowAsync(cancellationToken))
             {
                 return false;
             }

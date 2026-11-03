@@ -24,9 +24,9 @@ internal sealed partial class SqlServerJobStore
             await using (var read = Tsql.Command(work,
                 $"SELECT r.recurrence_id, {Tsql.Bit("r.chain_id IS NOT NULL")} FROM {sql.Table} AS r WHERE r.id = @job AND {sql.Scope};",
                 Tsql.Guid("@job", job.Value)))
-            await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await read.ReaderAsync(cancellationToken))
             {
-                if (!await reader.ReadAsync(cancellationToken))
+                if (!await reader.NextRowAsync(cancellationToken))
                 {
                     return new RunNowResult(job, RunNowOutcome.NotFound);
                 }
@@ -56,7 +56,7 @@ internal sealed partial class SqlServerJobStore
     private static async Task<bool> OutstandingAsync(SqlServerTransaction work, LeaseSql sql, JobId job, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(work, $"SELECT 1 FROM {sql.Table} AS r WHERE r.id = @job AND {sql.Scope} AND r.state = 0;", Tsql.Guid("@job", job.Value));
-        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+        return await command.ScalarAsync(cancellationToken) is not null;
     }
 
     /// <summary>
@@ -77,9 +77,9 @@ internal sealed partial class SqlServerJobStore
                 {Tsql.Bit("r.due_at <= SYSUTCDATETIME()")}, {Tsql.Bit($"{sql.SubjectPaused} OR EXISTS (SELECT 1 FROM {definitions} AS d WHERE d.[key] = r.[definition] AND d.paused = 1)")}
             FROM {sql.Table} AS r WHERE r.id = @job AND {sql.Scope};
             """, Tsql.Guid("@job", job.Value)))
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            if (!await reader.ReadAsync(cancellationToken))
+            if (!await reader.NextRowAsync(cancellationToken))
             {
                 return new(job, RunNowOutcome.NotFound);
             }
@@ -120,7 +120,7 @@ internal sealed partial class SqlServerJobStore
             """,
             Tsql.Guid("@job", job),
             Tsql.Bool("@ignore", ignoreCalendar));
-        return await command.ExecuteScalarAsync(cancellationToken) is true;
+        return await command.ScalarAsync(cancellationToken) is true;
     }
 
     /// <summary>
@@ -160,9 +160,9 @@ internal sealed partial class SqlServerJobStore
                     {Tsql.Bit($"EXISTS (SELECT 1 FROM {sql.Table} AS o WITH (INDEX(jobs_merge)) WHERE o.[definition] = r.[definition] AND o.merge_key IS NOT NULL AND o.merge_key = r.merge_key AND o.state = 0)")}
                 FROM {sql.Table} AS r WHERE r.id = @job AND {sql.Scope};
                 """, Tsql.Guid("@job", job.Value)))
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
             {
-                outcome = !await reader.ReadAsync(cancellationToken) ? RerunOutcome.NotFound
+                outcome = !await reader.NextRowAsync(cancellationToken) ? RerunOutcome.NotFound
                     : reader.GetBoolean(2) ? RerunOutcome.ChainStep
                     : reader.GetBoolean(0) ? RerunOutcome.Outstanding
                     : reader.GetBoolean(1) ? RerunOutcome.Recurring
@@ -188,7 +188,7 @@ internal sealed partial class SqlServerJobStore
             {
                 try
                 {
-                    planned = await rerun.ExecuteScalarAsync(cancellationToken) is true;
+                    planned = await rerun.ScalarAsync(cancellationToken) is true;
                 }
                 catch (SqlException exception) when (Tsql.IsUniqueViolation(exception))
                 {

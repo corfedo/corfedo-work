@@ -94,9 +94,9 @@ internal sealed partial class SqlServerJobStore
             Tsql.Text("@partition", partition, 400),
             Tsql.Bytes("@args", recurrence.Args),
             Tsql.Int32("@args_version", recurrence.ArgsVersion)))
-        await using (var reader = await select.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await select.ReaderAsync(cancellationToken))
         {
-            if (!await reader.ReadAsync(cancellationToken))
+            if (!await reader.NextRowAsync(cancellationToken))
             {
                 throw new InvalidOperationException($"The recurrence of {definition} with this identity was removed while it was being stored.");
             }
@@ -163,7 +163,7 @@ internal sealed partial class SqlServerJobStore
                 MonitorSignal(source),
             ]))
         {
-            await update.ExecuteNonQueryAsync(cancellationToken);
+            await update.NonQueryAsync(cancellationToken);
         }
         await NotifyPlanAsync(work, source, cancellationToken);
         return created ? RecurrenceOutcome.Created : RecurrenceOutcome.Replaced;
@@ -224,7 +224,7 @@ internal sealed partial class SqlServerJobStore
             Tsql.Guid("@rid", recurrence.Id),
             Tsql.Text("@definition", sql.Job!.Definition, 200),
             MonitorSignal(source));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
         return true;
     }
 
@@ -264,7 +264,7 @@ internal sealed partial class SqlServerJobStore
             await using var wait = Tsql.Command(work,
                 $"UPDATE {recurrences} SET waiting_at = COALESCE(waiting_at, SYSUTCDATETIME()), updated_at = SYSUTCDATETIME() WHERE id = @rid;",
                 Tsql.Guid("@rid", recurrence.Id));
-            await wait.ExecuteNonQueryAsync(cancellationToken);
+            await wait.NonQueryAsync(cancellationToken);
             return new(new JobId(running.Id), RunNowOutcome.Waiting);
         }
         RunNowResult result;
@@ -281,7 +281,7 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Guid("@job", id),
                 Tsql.Guid("@rid", recurrence.Id),
                 Tsql.Text("@occurrence", "trigger:" + Guid.CreateVersion7().ToString("N"), 200));
-            await insert.ExecuteNonQueryAsync(cancellationToken);
+            await insert.NonQueryAsync(cancellationToken);
             result = new(new JobId(id), RunNowOutcome.Started);
         }
         await (recurrence.Calendar && !ignoreCalendar ? NotifyPlanAsync(work, source, cancellationToken) : NotifyDueAsync(work, source, cancellationToken));
@@ -324,8 +324,8 @@ internal sealed partial class SqlServerJobStore
 
     private static async Task<LockedRecurrence?> ReadLockedRecurrenceAsync(SqlCommand command, CancellationToken cancellationToken)
     {
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? new(reader.GetGuid(0), (Overlap)reader.GetInt16(1), reader.GetBoolean(2)) : null;
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        return await reader.NextRowAsync(cancellationToken) ? new(reader.GetGuid(0), (Overlap)reader.GetInt16(1), reader.GetBoolean(2)) : null;
     }
 
     /// <summary>
@@ -344,9 +344,9 @@ internal sealed partial class SqlServerJobStore
             SELECT r.id, {Tsql.Bit(Running)} FROM @occurrences AS o INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = o.id
             WHERE r.state = 0 AND r.skip_pending = 0 ORDER BY r.id;
             """, Tsql.Guid("@rid", recurrence));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
         var jobs = new List<LockedOccurrence>();
-        while (await reader.ReadAsync(cancellationToken))
+        while (await reader.NextRowAsync(cancellationToken))
         {
             jobs.Add(new(reader.GetGuid(0), reader.GetBoolean(1)));
         }

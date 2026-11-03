@@ -24,15 +24,15 @@ internal sealed partial class SqlServerJobStore
         await using (var connection = await leases.OpenAsync(cancellationToken))
         {
             await using (var clock = Tsql.Command(connection, null, "SELECT SYSUTCDATETIME();"))
-            await using (var reader = await clock.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await clock.ReaderAsync(cancellationToken))
             {
-                await reader.ReadAsync(cancellationToken);
+                await reader.NextRowAsync(cancellationToken);
                 now = Tsql.Time(reader, 0);
             }
             await using (var command = Tsql.Command(connection, null, $"SELECT [key], job_retention, run_history_retention FROM {definitions} ORDER BY [key];"))
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
             {
-                while (await reader.ReadAsync(cancellationToken))
+                while (await reader.NextRowAsync(cancellationToken))
                 {
                     keys.Add((reader.GetString(0), TimeSpan.FromTicks(reader.GetInt64(1)), TimeSpan.FromTicks(reader.GetInt64(2))));
                 }
@@ -93,7 +93,7 @@ internal sealed partial class SqlServerJobStore
             {
                 await using var connection = await leases.OpenAsync(cancellationToken);
                 await using var command = Tsql.Command(connection, null, Tsql.OwnTransaction(text), [.. parameters.Select(p => (SqlParameter)((ICloneable)p).Clone()), Tsql.Int32("@limit", limit)]);
-                return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+                return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
             });
         }
     }

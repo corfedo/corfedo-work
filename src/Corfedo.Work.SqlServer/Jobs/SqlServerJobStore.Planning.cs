@@ -86,9 +86,9 @@ internal sealed partial class SqlServerJobStore
             """,
             Tsql.Text("@fence", LeaseSql.DefinitionLockName(schema, definition), 255),
             Tsql.Text("@definition", definition, 200)))
-        await using (var reader = await fence.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await fence.ReaderAsync(cancellationToken))
         {
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             if (!reader.GetBoolean(0))
             {
                 return new(0, 0, TimeSpan.FromMilliseconds(100));
@@ -142,9 +142,9 @@ internal sealed partial class SqlServerJobStore
             Tsql.Text("@definition", definition, 200),
             Tsql.Int32("@limit", limit),
             Tsql.Bool("@definition_paused", definitionPaused)))
-        await using (var reader = await locks.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await locks.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 planned.Add(new(
                     reader.GetGuid(0),
@@ -156,18 +156,18 @@ internal sealed partial class SqlServerJobStore
                     Tsql.NullableTime(reader, 11),
                     reader.GetBoolean(12)));
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 ended.Add(new(reader.GetGuid(0), reader.GetGuid(1), Tsql.Time(reader, 2)));
             }
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 outstanding.Add(reader.GetGuid(0));
             }
-            await reader.NextResultAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             now = Tsql.Time(reader, 0);
         }
 
@@ -196,7 +196,7 @@ internal sealed partial class SqlServerJobStore
                 ORDER BY c.next_at;
                 """,
                 Tsql.Text("@definition", definition, 200));
-            nextIn = Tsql.Wait(await next.ExecuteScalarAsync(cancellationToken));
+            nextIn = Tsql.Wait(await next.ScalarAsync(cancellationToken));
         }
         if (occurrences > 0)
         {
@@ -335,7 +335,7 @@ internal sealed partial class SqlServerJobStore
             END CATCH
             SELECT @planned;
             """, [.. parameters]);
-        return Convert.ToBoolean(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) ? created : 0;
+        return Convert.ToBoolean(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) ? created : 0;
     }
 
     /// <summary>
@@ -377,9 +377,9 @@ internal sealed partial class SqlServerJobStore
                     Tsql.Text("@definition", sql.Job!.Definition, 200),
                     Tsql.Guids("@failed", failed),
                     Tsql.Text("@overlap", JobReasons.Overlap)))
-                await using (var reader = await select.ExecuteReaderAsync(cancellationToken))
+                await using (var reader = await select.ReaderAsync(cancellationToken))
                 {
-                    if (!await reader.ReadAsync(cancellationToken))
+                    if (!await reader.NextRowAsync(cancellationToken))
                     {
                         return (Done: true, Ended: false);
                     }

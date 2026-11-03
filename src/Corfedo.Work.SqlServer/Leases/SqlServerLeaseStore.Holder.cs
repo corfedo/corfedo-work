@@ -50,8 +50,8 @@ internal sealed partial class SqlServerLeaseStore
             Tsql.Guid("@owner", lease.Owner.Value),
             Tsql.Int64("@epoch", lease.Epoch),
             Tsql.Ticks("@duration", source.Policy.Duration));
-        await using var reader = fence is null ? await command.ExecuteReaderAsync(cancellationToken) : await ExecuteFencedAsync(command, work!.Work, cancellationToken);
-        return await reader.ReadAsync(cancellationToken)
+        await using var reader = fence is null ? await command.ReaderAsync(cancellationToken) : await ExecuteFencedAsync(command, work!.Work, cancellationToken);
+        return await reader.NextRowAsync(cancellationToken)
             ? new RenewResult(true, reader.GetBoolean(0), Tsql.FromMicros(reader.GetInt64(1)))
             : RenewResult.Lost;
     }
@@ -90,7 +90,7 @@ internal sealed partial class SqlServerLeaseStore
                 Tsql.Ticks("@due_delay", due.Delay),
                 Tsql.Bool("@failed", failed),
                 Tsql.Text("@source", source.Name, 1024));
-            return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+            return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
         });
     }
 
@@ -121,14 +121,14 @@ internal sealed partial class SqlServerLeaseStore
             Tsql.Bytes("@digest", completion?.Digest),
             Tsql.Text("@source", source.Name, 1024));
         await using var reader = await ExecuteFencedAsync(command, fence is null ? null : work.Work, cancellationToken);
-        await reader.ReadAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         if (reader.GetInt32(0) == 1)
         {
             return EndResult.Ended;
         }
-        await reader.NextResultAsync(cancellationToken);
+        await reader.NextSetAsync(cancellationToken);
         if (completion is not null
-            && await reader.ReadAsync(cancellationToken)
+            && await reader.NextRowAsync(cancellationToken)
             && !reader.IsDBNull(0) && reader.GetGuid(0) == lease.Owner.Value
             && reader.GetInt64(1) == lease.Epoch
             && !reader.IsDBNull(2) && reader.GetGuid(2) == completion.Id)

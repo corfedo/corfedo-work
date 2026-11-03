@@ -49,7 +49,7 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
             parameters.Add(Tsql.Ticks("@maximum", maximum));
         }
         await using var command = SqlServerLeaseStore.KeyCommand(work.Connection, work.Transaction, sql, source.Leases, key, text, [.. parameters]);
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
     }
 
     public async ValueTask CompleteAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)
@@ -129,7 +129,7 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
             Tsql.Ticks("@delay", delay ?? TimeSpan.Zero),
             Tsql.Text("@source", source.Name, 1024));
         await using var reader = await SqlServerLeaseStore.ExecuteFencedAsync(command, fence is null ? null : work.Work, cancellationToken);
-        await reader.ReadAsync(cancellationToken);
+        await reader.NextRowAsync(cancellationToken);
         return reader.GetInt32(0) == 1;
     }
 
@@ -174,6 +174,6 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
             {signals.Insert}SELECT generation FROM @generation;
             """;
         await using var command = Tsql.Command(work, text, SqlServerSignalSql.Parameters(WorkTopics.Due, source.Name));
-        return (long)(await command.ExecuteScalarAsync(cancellationToken))!;
+        return (long)(await command.ScalarAsync(cancellationToken))!;
     }
 }

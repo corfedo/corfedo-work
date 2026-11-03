@@ -26,7 +26,7 @@ internal sealed partial class SqlServerLeaseStore
             Tsql.Ticks("@due_delay", due.Delay),
             Tsql.Guid("@execution", execution),
             Tsql.Text("@source", source.Name, 1024));
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
     }
 
     /// <summary>Sets <c>CancelRequestedAt</c> and signals the process of the record's holder, if it is held.</summary>
@@ -68,7 +68,7 @@ internal sealed partial class SqlServerLeaseStore
             {notify}SELECT @changed;
             """;
         await using var command = KeyCommand(work.Connection, work.Transaction, sql, source, key, text, Tsql.Text("@source", source.Name, 1024));
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
     }
 
     public async ValueTask<TimeSpan?> NextDueAsync<TKey>(LeaseSource<TKey> source, DateTimeOffset cutoff, CancellationToken cancellationToken)
@@ -113,7 +113,7 @@ internal sealed partial class SqlServerLeaseStore
     {
         await using var connection = await OpenAsync(cancellationToken);
         await using var command = Tsql.Command(connection, null, text, parameters);
-        var value = await command.ExecuteScalarAsync(cancellationToken);
+        var value = await command.ScalarAsync(cancellationToken);
         return value is long micros ? Tsql.FromMicros(micros) : null;
     }
 }

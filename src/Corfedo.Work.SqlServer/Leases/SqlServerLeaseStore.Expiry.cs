@@ -69,8 +69,8 @@ internal sealed partial class SqlServerLeaseStore
                 "@expired", sql.KeyColumns + ", owner, epoch, partition_key", sql.Select(sql.Owner, sql.Epoch, sql.PartitionText))
             + "SELECT * FROM @expired;"))
         {
-            await using var reader = await select.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken))
+            await using var reader = await select.ReaderAsync(cancellationToken);
+            if (!await reader.NextRowAsync(cancellationToken))
             {
                 return Settlement.None;
             }
@@ -111,7 +111,7 @@ internal sealed partial class SqlServerLeaseStore
             + signals.Insert,
             Corfedo.Work.SqlServer.Signals.SqlServerSignalSql.Parameters(WorkTopics.Due, source.Name)))
         {
-            await update.ExecuteNonQueryAsync(cancellationToken);
+            await update.NonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
         return Settlement.Settled;
@@ -124,7 +124,7 @@ internal sealed partial class SqlServerLeaseStore
         await using var command = KeyCommand(connection, transaction, sql, source, key,
             $"UPDATE r SET {LeaseSql.Bare(sql.SettleFailures)} = {sql.SettleFailures} + 1, "
             + $"{LeaseSql.Bare(sql.SettleRetryAt)} = {Tsql.AddTicks("SYSUTCDATETIME()", sql.SettlementBackoff)} FROM {sql.Table} AS r WHERE {sql.KeyMatch};");
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     [LoggerMessage(EventId = 2, EventName = "lease.settlement_failed", Level = LogLevel.Warning, Message = "Settlement of the expired lease on {Source} record {Key} failed and will be retried: {Error}")]

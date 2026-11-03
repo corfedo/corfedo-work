@@ -55,7 +55,7 @@ internal sealed partial class SqlServerMonitoringStore
                 Tsql.Time("@ended", endedAt),
                 Tsql.Int32("@limit", limit),
             ]);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
         var opened = await ReadIncidentsAsync(reader, cancellationToken);
         return opened.Count == 0 ? IncidentChanges.None : new IncidentChanges(opened, []);
     }
@@ -89,7 +89,7 @@ internal sealed partial class SqlServerMonitoringStore
             {ResolveIncidents(resolve, "GREATEST(@ended, i.opened_at)")}            SELECT {IncidentColumns} FROM @resolved AS i;
             """,
             [Tsql.Text("@definition", definition, 200), Tsql.Time("@ended", endedAt), .. SubjectParameters(subject)]))
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
             resolved = await ReadIncidentsAsync(reader, cancellationToken);
         }
@@ -103,7 +103,7 @@ internal sealed partial class SqlServerMonitoringStore
             await using var command = Tsql.Command(work,
                 $"UPDATE s SET window_start = @ended, met_at = NULL FROM {states} AS s WHERE s.[definition] = @definition AND {KeyMatch("s", incident.Subject)};",
                 [Tsql.Text("@definition", definition, 200), Tsql.Time("@ended", endedAt), .. SubjectParameters(incident.Subject)]);
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.NonQueryAsync(cancellationToken);
         }
         return new IncidentChanges([], resolved);
     }

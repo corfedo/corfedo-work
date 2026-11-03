@@ -34,6 +34,6 @@ internal sealed class SqlServerSignalSql(string schema)
     public async Task SendAsync(SqlConnection connection, SqlTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(connection, transaction, Insert, Parameters(topic, key));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 }

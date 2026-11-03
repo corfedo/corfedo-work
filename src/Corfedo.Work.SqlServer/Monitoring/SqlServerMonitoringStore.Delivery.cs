@@ -18,8 +18,8 @@ internal sealed partial class SqlServerMonitoringStore
         await using var command = Tsql.Command(connection, null,
             $"SELECT {IncidentColumns}, {Tsql.Bit("i.opened_delivered_at IS NOT NULL")}, {Tsql.Bit("i.resolved_delivered_at IS NOT NULL")} FROM {incidents} AS i WHERE {HeldLease};",
             LeaseParameters(lease));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? new IncidentDelivery(ReadIncident(reader, 0), reader.GetBoolean(9), reader.GetBoolean(10)) : null;
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        return await reader.NextRowAsync(cancellationToken) ? new IncidentDelivery(ReadIncident(reader, 0), reader.GetBoolean(9), reader.GetBoolean(10)) : null;
     }
 
     public async ValueTask<bool> RecordDeliveryAsync(Lease<Guid> lease, bool resolution, CancellationToken cancellationToken)
@@ -51,7 +51,7 @@ internal sealed partial class SqlServerMonitoringStore
     {
         await using var connection = await leases.OpenAsync(cancellationToken);
         await using var command = Tsql.Command(connection, null, Tsql.OwnTransaction(LockIncident + update + "\nSELECT @@ROWCOUNT;"), LeaseParameters(lease));
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
     }
 
     private static SqlParameter[] LeaseParameters(Lease<Guid> lease) =>
@@ -91,15 +91,15 @@ internal sealed partial class SqlServerMonitoringStore
             SELECT d.[key], {Tsql.Micros("o.due_at", "SYSUTCDATETIME()")} FROM {definitions} AS d
             LEFT JOIN (SELECT [definition], MIN(due_at) AS due_at FROM @oldest GROUP BY [definition]) AS o ON o.[definition] = d.[key];
             """);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        await using var reader = await command.ReaderAsync(cancellationToken);
         var open = new Dictionary<WorkIncidentKind, long>();
-        while (await reader.ReadAsync(cancellationToken))
+        while (await reader.NextRowAsync(cancellationToken))
         {
             open[(WorkIncidentKind)reader.GetInt16(0)] = reader.GetInt64(1);
         }
-        await reader.NextResultAsync(cancellationToken);
+        await reader.NextSetAsync(cancellationToken);
         var due = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
-        while (await reader.ReadAsync(cancellationToken))
+        while (await reader.NextRowAsync(cancellationToken))
         {
             due[reader.GetString(0)] = reader.IsDBNull(1) ? TimeSpan.Zero : Tsql.FromMicros(reader.GetInt64(1));
         }

@@ -45,10 +45,10 @@ internal sealed partial class SqlServerMonitoringStore
                 """,
                 Tsql.Text("@definition", definition, 200),
                 Tsql.Ticks("@limit", limit));
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            await using var reader = await command.ReaderAsync(cancellationToken);
             var opened = await ReadIncidentsAsync(reader, cancellationToken);
-            await reader.NextResultAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             var next = Tsql.NullableTime(reader, 0);
             await reader.DisposeAsync();
             if (opened.Count > 0)
@@ -91,9 +91,9 @@ internal sealed partial class SqlServerMonitoringStore
                 Tsql.Int64("@epoch", lease.Epoch));
             TimeSpan? left = null;
             List<WorkIncident> opened = [];
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
             {
-                if (await reader.ReadAsync(cancellationToken))
+                if (await reader.NextRowAsync(cancellationToken))
                 {
                     var micros = reader.GetInt64(0);
                     if (micros > 0)
@@ -137,7 +137,7 @@ internal sealed partial class SqlServerMonitoringStore
                 """,
                 Tsql.Text("@definition", definition, 200));
             List<WorkIncident> resolved;
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
             {
                 resolved = await ReadIncidentsAsync(reader, cancellationToken);
             }
@@ -189,10 +189,10 @@ internal sealed partial class SqlServerMonitoringStore
                 Tsql.Strings("@waiting", waiting));
             List<WorkIncident> opened;
             List<WorkIncident> resolved;
-            await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
             {
                 opened = await ReadIncidentsAsync(reader, cancellationToken);
-                await reader.NextResultAsync(cancellationToken);
+                await reader.NextSetAsync(cancellationToken);
                 resolved = await ReadIncidentsAsync(reader, cancellationToken);
             }
             var changes = new IncidentChanges(opened, resolved);
@@ -218,9 +218,9 @@ internal sealed partial class SqlServerMonitoringStore
         DateTimeOffset now;
         await using (var connection = await leases.OpenAsync(cancellationToken))
         await using (var clock = Tsql.Command(connection, null, "SELECT SYSUTCDATETIME();"))
-        await using (var reader = await clock.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await clock.ReaderAsync(cancellationToken))
         {
-            await reader.ReadAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             now = Tsql.Time(reader, 0);
         }
         var bound = retention.Ticks >= (now - DateTimeOffset.MinValue).Ticks ? DateTimeOffset.MinValue : now - retention;
@@ -257,7 +257,7 @@ internal sealed partial class SqlServerMonitoringStore
                 await using var connection = await leases.OpenAsync(cancellationToken);
                 await using var command = Tsql.Command(connection, null, Tsql.OwnTransaction(text),
                     [.. parameters.Select(p => (Microsoft.Data.SqlClient.SqlParameter)((ICloneable)p).Clone()), Tsql.Int32("@limit", limit)]);
-                return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+                return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
             });
     }
 }

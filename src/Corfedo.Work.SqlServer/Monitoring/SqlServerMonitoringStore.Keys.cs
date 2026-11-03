@@ -62,9 +62,9 @@ internal sealed partial class SqlServerMonitoringStore
                 """,
                 Tsql.Text("@definition", definition, 200),
                 Tsql.Int32("@limit", limit)))
-            await using (var reader = await delete.ExecuteReaderAsync(cancellationToken))
+            await using (var reader = await delete.ReaderAsync(cancellationToken))
             {
-                while (await reader.ReadAsync(cancellationToken))
+                while (await reader.NextRowAsync(cancellationToken))
                 {
                     deleted++;
                     keys.Add((reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1)));
@@ -99,9 +99,9 @@ internal sealed partial class SqlServerMonitoringStore
             """,
             Tsql.Text("@definition", definition, 200),
             Tsql.Json("@keys", KeysJson(keys))))
-        await using (var reader = await read.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await read.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 var key = (reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetString(1));
                 var expected = reader.GetBoolean(2);
@@ -127,7 +127,7 @@ internal sealed partial class SqlServerMonitoringStore
                 $"INSERT INTO {keyChanges} ([definition], subject_kind, subject_id) SELECT @definition, k, i FROM OPENJSON(@keys) WITH (k nvarchar(100) '$.k', i nvarchar(400) '$.i');",
                 Tsql.Text("@definition", definition, 200),
                 Tsql.Json("@keys", KeysJson(requeue)));
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.NonQueryAsync(cancellationToken);
         }
         if (start.Count > 0)
         {
@@ -146,7 +146,7 @@ internal sealed partial class SqlServerMonitoringStore
                 END
                 """,
                 [Tsql.Text("@definition", definition, 200), Tsql.Json("@keys", KeysJson(start)), .. WindowParameters(window, revision)]);
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.NonQueryAsync(cancellationToken);
         }
         if (clear.Count == 0)
         {
@@ -161,7 +161,7 @@ internal sealed partial class SqlServerMonitoringStore
             """,
             Tsql.Text("@definition", definition, 200),
             Tsql.Json("@keys", KeysJson(clear))))
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
             resolved = await ReadIncidentsAsync(reader, cancellationToken);
         }
@@ -197,7 +197,7 @@ internal sealed partial class SqlServerMonitoringStore
                         + $"INSERT INTO {states} ([definition], whole, deadline_at, window_start, revision) VALUES (@definition, 1, COALESCE(@deadline, {Tsql.NeverLiteral}), @window_start, @revision);")}
                     """,
                     [Tsql.Text("@definition", definition, 200), .. WindowParameters(window, revision)]);
-                await upsert.ExecuteNonQueryAsync(cancellationToken);
+                await upsert.NonQueryAsync(cancellationToken);
                 return 0;
             }, cancellationToken);
             return;
@@ -214,7 +214,7 @@ internal sealed partial class SqlServerMonitoringStore
                 SELECT {IncidentColumns} FROM @resolved AS i;
                 """,
                 Tsql.Text("@definition", definition, 200));
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            await using var reader = await command.ReaderAsync(cancellationToken);
             var resolved = await ReadIncidentsAsync(reader, cancellationToken);
             await reader.DisposeAsync();
             if (resolved.Count == 0)
@@ -261,7 +261,7 @@ internal sealed partial class SqlServerMonitoringStore
                 SELECT @count;
                 """,
                 [Tsql.Text("@definition", definition, 200), Tsql.Int32("@limit", limit), .. WindowParameters(window, revision)]);
-            return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
+            return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
         }, cancellationToken);
     }
 
@@ -288,10 +288,10 @@ internal sealed partial class SqlServerMonitoringStore
                 """,
                 Tsql.Text("@definition", definition, 200),
                 Tsql.Int32("@limit", limit));
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            await reader.ReadAsync(cancellationToken);
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
             var cleared = reader.GetInt32(0);
-            await reader.NextResultAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
             return (cleared, await ReadIncidentsAsync(reader, cancellationToken));
         }, cancellationToken);
         WorkTelemetry.Count(resolved.Count == 0 ? IncidentChanges.None : new IncidentChanges([], resolved));
@@ -335,7 +335,7 @@ internal sealed partial class SqlServerMonitoringStore
             Tsql.Text("@definition", definition.Definition, 200),
             Tsql.Int64("@revision", definition.Revision),
             Tsql.Bool("@paused", definition.Paused));
-        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
     }
 
     /// <summary>The parameters of <see cref="StartWindow"/>.</summary>

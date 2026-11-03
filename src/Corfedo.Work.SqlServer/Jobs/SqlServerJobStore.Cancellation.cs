@@ -46,7 +46,7 @@ internal sealed partial class SqlServerJobStore
             definition,
             Tsql.Text("@identity", identity, 512)))
         {
-            await clear.ExecuteNonQueryAsync(cancellationToken);
+            await clear.NonQueryAsync(cancellationToken);
         }
         var locked = await LockForCancelAsync(
             work,
@@ -76,7 +76,7 @@ internal sealed partial class SqlServerJobStore
             Tsql.Text("@kind", subject.Kind, 100),
             Tsql.Text("@id", subject.Id, 400)))
         {
-            await clear.ExecuteNonQueryAsync(cancellationToken);
+            await clear.NonQueryAsync(cancellationToken);
         }
         var locked = await LockForCancelAsync(
             work,
@@ -126,8 +126,8 @@ internal sealed partial class SqlServerJobStore
             WHERE r.state = 0 AND r.skip_pending = 0 ORDER BY c.owner, c.waiting, c.id;
             """, parameters);
         var locked = new LockedForCancel([], [], []);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             var job = (reader.GetGuid(0), reader.GetString(1));
             if (reader.GetBoolean(2))
@@ -200,9 +200,9 @@ internal sealed partial class SqlServerJobStore
             WHERE {sql.Scope} AND r.lease_expires_at > SYSUTCDATETIME();
             SELECT id, owner FROM @held;
             """, Tsql.Guids("@jobs", jobs)))
-        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        await using (var reader = await command.ReaderAsync(cancellationToken))
         {
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 held.Add(reader.GetGuid(0));
                 owners.Add(reader.GetGuid(1));
@@ -245,7 +245,7 @@ internal sealed partial class SqlServerJobStore
                     Tsql.Text("@definition", sql.Job!.Definition, 200),
                     Tsql.Guids("@failed", failed)))
                 {
-                    if (await select.ExecuteScalarAsync(cancellationToken) is not Guid found)
+                    if (await select.ScalarAsync(cancellationToken) is not Guid found)
                     {
                         return (Done: true, Job: Guid.Empty, Ended: false);
                     }

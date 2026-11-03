@@ -51,7 +51,7 @@ internal sealed partial class SqlServerJobStore
             """),
             Tsql.Guid("@owner", owner.Value),
             Tsql.Json("@definitions", DefinitionsJson(definitions)));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.NonQueryAsync(cancellationToken);
     }
 
     private static string DefinitionsJson(IReadOnlyList<ProcessDefinition> definitions)
@@ -159,8 +159,8 @@ internal sealed partial class SqlServerJobStore
             """);
         var unrun = new List<UnservedDefinition>();
         var versions = new List<UnservedVersion>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             if (reader.IsDBNull(1))
             {
@@ -192,8 +192,8 @@ internal sealed partial class SqlServerJobStore
             """,
             Tsql.Text("@identity", JobRequestData.DefinitionIdentity, 512));
         var list = new List<UndeclaredRecurrence>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             list.Add(new UndeclaredRecurrence(reader.GetString(0), reader.GetInt64(1), Tsql.NullableTime(reader, 2)));
         }
@@ -211,8 +211,8 @@ internal sealed partial class SqlServerJobStore
             ORDER BY pd.definition, p.started_at, p.owner;
             """);
         var list = new List<OutdatedProcess>();
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
         {
             list.Add(new OutdatedProcess(SqlServerProcessStore.ReadInstance(reader, 0), reader.GetString(7), reader.GetInt64(8), reader.GetInt64(9)));
         }

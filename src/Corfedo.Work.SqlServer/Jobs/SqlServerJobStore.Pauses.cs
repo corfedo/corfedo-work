@@ -18,7 +18,7 @@ internal sealed partial class SqlServerJobStore
             Tsql.Text("@definition", definition, 200),
             Tsql.Bool("@paused", paused)))
         {
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.NonQueryAsync(cancellationToken);
         }
         if (!paused)
         {
@@ -68,7 +68,7 @@ internal sealed partial class SqlServerJobStore
             Tsql.Bool("@paused", paused),
             MonitorSignal(source)))
         {
-            await command.ExecuteNonQueryAsync(cancellationToken);
+            await command.NonQueryAsync(cancellationToken);
         }
         if (!paused)
         {
@@ -125,7 +125,7 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Int32("@limit", limit),
                 Tsql.Text("@source", source.Name, 1024),
                 MonitorSignal(source));
-            return (int)(await command.ExecuteScalarAsync(cancellationToken))!;
+            return (int)(await command.ScalarAsync(cancellationToken))!;
         }, cancellationToken);
     }
 }

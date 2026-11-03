@@ -128,7 +128,7 @@ internal sealed partial class SqlServerLeaseStore(string connectionString, strin
     {
         try
         {
-            var reader = await command.ExecuteReaderAsync(cancellationToken);
+            var reader = await command.ReaderAsync(cancellationToken);
             if (work is not null)
             {
                 work.ReadCommitted = true;
