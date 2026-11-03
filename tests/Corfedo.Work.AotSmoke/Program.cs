@@ -5,8 +5,6 @@ using System.Text.Json.Serialization;
 using Corfedo.Work;
 using Corfedo.Work.InMemory;
 using Corfedo.Work.PostgreSql;
-using Corfedo.Work.SqlServer;
-using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Npgsql;
@@ -205,32 +203,6 @@ signalsBuilder.Services.AddPostgreSqlSignals(dataSource, "fleet");
 using var signalsHost = signalsBuilder.Build();
 var signals = signalsHost.Services.GetRequiredService<IWorkSignals>();
 signals.Subscribe(new SignalTopic("fleet.changed"), new FleetChanged()).Dispose();
-var sqlServer = new SqlConnectionStringBuilder { DataSource = "smoke.invalid", InitialCatalog = "work", ConnectTimeout = 1, ConnectRetryCount = 0 }.ConnectionString;
-var sqlServerBuilder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true });
-sqlServerBuilder.Services.AddSqlServerWorkStore(sqlServer);
-sqlServerBuilder.Services.AddWork(work => work
-    .StartMode(StartMode.Manual)
-    .UseJson(SmokeJson.Default)
-    .AddJob<SyncFeed, FeedSyncHandler>(Sources.FeedSync, job => job.AcceptsArgs(1, 2))
-    .AddJob<SyncFeed, FeedReport, FeedReportHandler>(Sources.Report)
-    .AddMonitoring());
-using var sqlServerHost = sqlServerBuilder.Build();
-var sqlServerStore = sqlServerHost.Services.GetRequiredService<IWorkStore>();
-sqlServerHost.Services.GetRequiredService<JobOperations>();
-var sqlServerSignalsBuilder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true });
-sqlServerSignalsBuilder.Services.AddSqlServerSignals(sqlServer, "fleet");
-using var sqlServerSignalsHost = sqlServerSignalsBuilder.Build();
-sqlServerSignalsHost.Services.GetRequiredService<IWorkSignals>().Subscribe(new SignalTopic("fleet.changed"), new FleetChanged()).Dispose();
-// Opening a connection to an unresolvable server runs SqlClient's connection and error paths.
-string? sqlServerError = null;
-try
-{
-    await sqlServerStore.MigrateAsync(CancellationToken.None);
-}
-catch (SqlException exception)
-{
-    sqlServerError = exception.Message;
-}
 var unlistedBuilder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true });
 unlistedBuilder.Services.AddInMemoryWorkStore(memory, "unlisted");
 unlistedBuilder.Services.AddWork(work => work.UseJson(SmokeJson.Default).AddJobDefinition(JobDefinition.Create<Unlisted>("feeds.unlisted")));
@@ -257,7 +229,6 @@ if (restored != lease || hosted.Length != 1 || !ReferenceEquals(hosted[0], workH
     || Sources.Report.Policy.Expect?.Deadline?.Calendar != Sources.BusinessDays.Name || !partitions.SequenceEqual(["tenant"]) || !sources.Contains("Corfedo.Work") || incidentHandlers.Single() is not IncidentNotifier
     || memoryClaim?.Lease.Epoch != 1 || completed?.Outcome != JobOutcome.Completed || ranChain?.Outcome != JobOutcome.Completed || ranChain.Steps.Count != 2
     || summary?.Result.Feed != "npm" || summary.Result.Runs != 1 || unlisted?.Contains("[JsonSerializable(typeof(Unlisted))]", StringComparison.Ordinal) != true || !renewed.Valid || expired || fired != 1 || signalsHost.Services.GetServices<IHostedService>().Any()
-    || sqlServerError is null || sqlServerHost.Services.GetServices<IHostedService>().Count() != 1
     || slot.Kind != CalendarSlotKind.Allowed || slot.Start != new DateTimeOffset(2027, 1, 4, 7, 0, 0, TimeSpan.Zero) || slot.End != new DateTimeOffset(2027, 1, 4, 17, 0, 0, TimeSpan.Zero))
 {
     Console.Error.WriteLine("smoke check failed");

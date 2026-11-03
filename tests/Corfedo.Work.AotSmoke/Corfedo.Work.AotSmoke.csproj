@@ -9,7 +9,6 @@
     <ProjectReference Include="../../src/Corfedo.Work/Corfedo.Work.csproj" />
     <ProjectReference Include="../../src/Corfedo.Work.InMemory/Corfedo.Work.InMemory.csproj" />
     <ProjectReference Include="../../src/Corfedo.Work.PostgreSql/Corfedo.Work.PostgreSql.csproj" />
-    <ProjectReference Include="../../src/Corfedo.Work.SqlServer/Corfedo.Work.SqlServer.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
 </Project>

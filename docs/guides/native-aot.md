@@ -1,8 +1,9 @@
 # Trimming and Native AOT
 
 `Corfedo.Work`, `Corfedo.Work.PostgreSql` and `Corfedo.Work.InMemory` are trimming- and Native AOT-compatible. The EF
-Core adapter is not, since EF Core supports Native AOT only partly, and neither is the conformance suite, which is a
-test library.
+Core adapter is not, since EF Core supports Native AOT only partly. Neither is the SQL Server provider:
+`Microsoft.Data.SqlClient` reports trimming and Native AOT warnings of its own, and refuses to open connections under
+`InvariantGlobalization`. The conformance suite is a test library and not compatible either.
 
 ## Job arguments and results
 
