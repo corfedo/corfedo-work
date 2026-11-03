@@ -62,7 +62,7 @@ jobs that are already queued.
   create a job each, as in Hangfire.
 - **Retries.** Attempts include the first run. Hangfire's default of 10 retries is `Attempts = 11`.
 - **Time zones.** Every cron schedule names its time zone.
-- **Database.** PostgreSQL is supported today; SQL Server is planned. The framework tables live in the `work` schema.
+- **Database.** PostgreSQL and SQL Server 2022 or later are supported. The framework tables live in the `work` schema.
 
 ## Switching over
 

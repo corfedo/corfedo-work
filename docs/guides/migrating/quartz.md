@@ -72,7 +72,7 @@ builder.Services.AddWork(work => work
 - **Retries.** Quartz leaves retries to the job. Corfedo Work retries a thrown exception after a backoff, three
   attempts by default (`JobPolicy.Attempts`, `Backoff`).
 - **State between runs.** There is no `[PersistJobDataAfterExecution]`. Keep state in your own tables.
-- **Database.** PostgreSQL is supported today; SQL Server is planned.
+- **Database.** PostgreSQL and SQL Server 2022 or later are supported.
 
 ## Switching over
 

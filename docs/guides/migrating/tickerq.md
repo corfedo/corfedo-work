@@ -70,7 +70,7 @@ For Native AOT, register a source-generated `JsonSerializerContext` with `work.U
 - **Policy per definition.** Attempts, backoff, timeouts and concurrency limits belong to the definition and are
   stored with its revision, so every replica applies the same policy.
 - **Time zones.** Every cron schedule names its time zone.
-- **Database.** PostgreSQL is supported today; SQL Server is planned. Redis and MongoDB are not supported.
+- **Database.** PostgreSQL and SQL Server 2022 or later are supported. Redis and MongoDB are not supported.
 
 ## Switching over
 

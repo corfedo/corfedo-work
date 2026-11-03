@@ -16,7 +16,7 @@
 
 **Background work for .NET that lives in your database and commits in your transactions.** You request work in the
 same transaction as the change that needs it, so a rollback leaves nothing behind. There is no broker, no scheduler
-process and no second database. PostgreSQL is supported today; SQL Server is planned.
+process and no second database. It runs on PostgreSQL and SQL Server.
 
 ## How it works
 
@@ -34,7 +34,7 @@ Jobs, cron schedules, leases on your own tables and reconciliation are all built
 ## A first job
 
 ```sh
-dotnet add package Corfedo.Work.PostgreSql
+dotnet add package Corfedo.Work.PostgreSql   # or Corfedo.Work.SqlServer
 ```
 
 **Define the job:** its arguments, a definition with a stable key, and a handler.
@@ -65,6 +65,7 @@ whenever the policy changes, so replicas on different releases agree on one poli
 ```csharp
 var dataSource = NpgsqlDataSource.Create(builder.Configuration.GetConnectionString("app")!);
 builder.Services.AddPostgreSqlWorkStore(dataSource);
+// or: builder.Services.AddSqlServerWorkStore(builder.Configuration.GetConnectionString("app")!);
 builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welcome));
 ```
 
@@ -138,6 +139,7 @@ public sealed class ImportRunner(AppDb db) : ILeaseHandler<long>
 | Package | Contents |
 |---|---|
 | `Corfedo.Work.PostgreSql` | The PostgreSQL store. Install it, and it brings in `Corfedo.Work`. |
+| `Corfedo.Work.SqlServer` | The SQL Server store, for SQL Server 2022 and later. Install it, and it brings in `Corfedo.Work`. |
 | `Corfedo.Work` | Jobs, leases, reconciliation, signals and the host integration. |
 | `Corfedo.Work.EntityFrameworkCore` | Optional: `DbContext` transactions, lease columns on entities, wake-ups on save. |
 | `Corfedo.Work.InMemory` | An in-memory store with a controllable clock, for tests. |
@@ -164,7 +166,8 @@ Each guide maps the concepts and shows one job rewritten:
 ## Status and license
 
 This is version 0.2.0, and the API may change before 1.0. The packages are trimming- and Native AOT-compatible, except
-the EF Core adapter, since EF Core supports Native AOT only partly, and the conformance suite, which is a test library.
+the EF Core adapter, since EF Core supports Native AOT only partly, the SQL Server store, since `Microsoft.Data.SqlClient`
+reports trimming and AOT warnings of its own, and the conformance suite, which is a test library.
 See [trimming and Native AOT](docs/guides/native-aot.md). Contributions are welcome through issues and pull requests;
 see [CONTRIBUTING](CONTRIBUTING.md).
 

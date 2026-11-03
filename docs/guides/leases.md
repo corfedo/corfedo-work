@@ -67,6 +67,34 @@ the columns and indexes.
 
 </details>
 
+<details>
+<summary>The columns and indexes for SQL Server</summary>
+
+```sql
+ALTER TABLE dbo.imports ADD
+    due_at datetime2(7),
+    lease_owner uniqueidentifier,
+    lease_epoch bigint NOT NULL DEFAULT 0,
+    lease_expires_at datetime2(7),
+    takeovers int NOT NULL DEFAULT 0,
+    failures int NOT NULL DEFAULT 0,
+    settled_epoch bigint NOT NULL DEFAULT 0,
+    settle_failures int NOT NULL DEFAULT 0,
+    settle_retry_at datetime2(7),
+    cancel_requested_at datetime2(7),
+    execution_id uniqueidentifier,
+    ended_completion_id uniqueidentifier,
+    ended_digest varbinary(64);
+CREATE INDEX ix_imports_due_at_due ON dbo.imports (due_at) WHERE lease_expires_at IS NULL;
+CREATE INDEX ix_imports_lease_expires_at_expiry ON dbo.imports (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
+```
+
+With expiry settlement or limits, `lease_outstanding` is a persisted computed column,
+`AS (CASE WHEN settled_epoch < lease_epoch THEN 1 END) PERSISTED`. The source is `StoreLocation.Table("dbo",
+"imports")`.
+
+</details>
+
 ## When a row runs
 
 `due_at` is when the row next needs a run. Null means no run is wanted.

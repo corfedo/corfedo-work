@@ -16,8 +16,10 @@ copyright assignment or additional rights through a contributor license agreemen
 
 ## Development
 
-Requires the .NET SDK pinned in [`global.json`](global.json) and Docker for the PostgreSQL tests, which start one
-`postgres:18.6` container per test process through Testcontainers and create a database per test class.
+Requires the .NET SDK pinned in [`global.json`](global.json) and Docker for the PostgreSQL and SQL Server tests, which
+start one `postgres:18.6` or SQL Server container per test process through Testcontainers and create a database per
+test class. The SQL Server tests use SQL Server 2022; `CORFEDO_WORK_SQLSERVER_IMAGE` chooses another image, such as
+`mcr.microsoft.com/mssql/server:2025-latest`.
 
 ```sh
 dev/check    # Release build, all tests, Native AOT smoke publish; fails on any warning
@@ -27,6 +29,16 @@ Testcontainers finds Docker through the usual environment variables. With colima
 
 ```sh
 export DOCKER_HOST=unix://<colima profile directory>/docker.sock
+export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
+```
+
+SQL Server images are published for `linux/amd64` only. On an Apple silicon Mac they run under Rosetta in a colima
+profile of their own, about three times slower than natively, so full suites belong on an x86_64 host:
+
+```sh
+colima start sqlserver --arch aarch64 --vm-type vz --vz-rosetta --cpu 4 --memory 6 --disk 30
+docker context use colima        # colima start made the new profile the current context; switch back
+export DOCKER_HOST=unix://$HOME/.colima/sqlserver/docker.sock
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
 ```
 

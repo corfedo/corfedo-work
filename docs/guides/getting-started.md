@@ -1,9 +1,10 @@
 # Getting started
 
-Corfedo Work needs the .NET 10 SDK and a PostgreSQL database. Install the package for your database:
+Corfedo Work needs the .NET 10 SDK and a PostgreSQL or SQL Server 2022 or later database. Install the package for
+your database:
 
 ```sh
-dotnet add package Corfedo.Work.PostgreSql
+dotnet add package Corfedo.Work.PostgreSql            # or Corfedo.Work.SqlServer
 dotnet add package Corfedo.Work.EntityFrameworkCore   # optional, with EF Core
 ```
 
@@ -11,13 +12,15 @@ dotnet add package Corfedo.Work.EntityFrameworkCore   # optional, with EF Core
 
 ```csharp
 builder.Services.AddPostgreSqlWorkStore(dataSource);   // framework tables in the "work" schema
+// or: builder.Services.AddSqlServerWorkStore(connectionString);
 builder.Services.AddWork(work => work
     .AddJob<SyncFeed, FeedSyncHandler>(Jobs.FeedSync)
     .AddRecurring(Jobs.FeedSync, new SyncFeed("all"), Schedule.Cron("0 3 * * *", "Europe/Warsaw")));
 ```
 
 At startup the host creates or upgrades its framework tables, stores definitions and schedules, and checks that your
-own tables have the columns and indexes their sources need.
+own tables have the columns and indexes their sources need. A SQL Server database must have
+`READ_COMMITTED_SNAPSHOT` on; see [production](production.md).
 
 A process runs only the work it registers. A process that only requests a job, such as a web API, registers its
 definition with `AddJobDefinition(Jobs.FeedSync)`, and the worker processes that register its handler run it.
@@ -35,7 +38,7 @@ await transaction.CommitAsync(ct);
 ```
 
 `jobs` is `JobOperations` from dependency injection. If the transaction rolls back, the job was never requested. See
-[transactions](transactions.md) for plain Npgsql and for the rules.
+[transactions](transactions.md) for plain Npgsql or SqlClient and for the rules.
 
 ## Next
 

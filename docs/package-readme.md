@@ -2,13 +2,13 @@
 
 Background work for .NET that lives in your database and commits in your transactions: jobs and cron schedules,
 leases on your own rows with fenced writes, reconciliation and commit-time wake-ups. A rollback leaves no work behind,
-and a crashed worker's work is picked up again. There is no broker and no scheduler process. PostgreSQL is supported
-today; SQL Server is planned.
+and a crashed worker's work is picked up again. There is no broker and no scheduler process. It runs on PostgreSQL
+and SQL Server.
 
 Install the package for your database, which brings in `Corfedo.Work`:
 
 ```sh
-dotnet add package Corfedo.Work.PostgreSql
+dotnet add package Corfedo.Work.PostgreSql   # or Corfedo.Work.SqlServer
 ```
 
 ```csharp
@@ -29,7 +29,7 @@ public sealed class SendWelcome : IJobHandler<WelcomeArgs>
 }
 
 // Program.cs
-builder.Services.AddPostgreSqlWorkStore(dataSource);
+builder.Services.AddPostgreSqlWorkStore(dataSource);   // or AddSqlServerWorkStore(connectionString)
 builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welcome));
 
 // In the transaction that creates the user:

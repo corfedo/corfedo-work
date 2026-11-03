@@ -1,7 +1,7 @@
 # Testing
 
-`Corfedo.Work.InMemory` runs the same semantics as the PostgreSQL store in one process, without a database, on a
-clock your test moves.
+`Corfedo.Work.InMemory` runs the same semantics as the PostgreSQL and SQL Server stores in one process, without a
+database, on a clock your test moves.
 
 ```sh
 dotnet add package Corfedo.Work.InMemory
@@ -32,6 +32,9 @@ clock.Advance(TimeSpan.FromHours(1));   // the job becomes due and runs
   keyFields, fields)`, and insert and read rows through the database.
 - **Waiting.** Background loops arm their timers when they get to them, so advance the clock in steps of the polling
   interval until the state you expect appears.
+
+Tests against a real SQL Server need a database created with `READ_COMMITTED_SNAPSHOT ON`; the store refuses
+others.
 
 A provider of another database proves the same behaviour by running the `Corfedo.Work.Conformance` suite in its own
 tests.

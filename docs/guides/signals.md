@@ -2,7 +2,7 @@
 
 Signals wake processes when committed state they wait for may have changed. The framework uses them to wake its
 workers, and your `BackgroundService`s can use them alone. `AddPostgreSqlSignals` creates no tables and needs no other
-registration.
+registration. `AddSqlServerSignals` creates one table, `signals`, in a schema named after the application.
 
 - **Sent at commit.** A signal sent in a transaction is delivered when it commits and never after a rollback.
 - **One connection per process.** All subscriptions of a process share one listening connection. The listener starts
@@ -55,10 +55,14 @@ sealed class OrderWorker(IWorkSignals signals) : BackgroundService, ISignalSubsc
 }
 ```
 
-With Npgsql directly, pass the `NpgsqlTransaction` itself.
+With Npgsql or SqlClient directly, pass the `NpgsqlTransaction` or `SqlTransaction` itself.
 
-PostgreSQL commits transactions that send notifications one at a time. Send a signal when something a subscriber waits
-for changes, once per topic and key in a transaction, not for every row. Listening needs a session-level connection;
-see [production](production.md).
+Send a signal when something a subscriber waits for changes, once per topic and key in a transaction, not for every
+row: PostgreSQL commits transactions that send notifications one at a time, and on SQL Server each signal is a row.
+Listening needs a session-level connection; see [production](production.md).
+
+On SQL Server a listener polls the signals table on the server, every 10 ms by default, so a signal arrives within the
+poll interval of its commit. `SqlServerSignalOptions` sets the interval and how long signals are kept (one minute);
+a listener that falls further behind resyncs its subscribers.
 
 The full semantics are in the [signals design](../design/signals.md).

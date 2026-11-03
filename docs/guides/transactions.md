@@ -6,12 +6,13 @@ leaves no work behind, and a job never runs before its data is committed.
 ## Getting the handle
 
 Operations take a `WorkTransaction`, a handle to your open transaction. An ADO.NET transaction converts to it, so you
-pass your `NpgsqlTransaction` as it is.
+pass your `NpgsqlTransaction` or `SqlTransaction` as it is.
 
 | You use | Handle |
 |---|---|
 | EF Core | `db.Database.WorkTransaction()`, after `db.Database.BeginTransactionAsync()` |
 | Npgsql | the `NpgsqlTransaction` itself |
+| SqlClient | the `SqlTransaction` itself |
 | Tests on the in-memory store | the transaction from `database.BeginAsync()` |
 
 ```csharp
@@ -30,8 +31,11 @@ The same handle works for jobs, leases, reconciliation and signals.
   begin one.
 - **Same database.** The transaction must be on the database the store uses. The store checks that it is a
   transaction of its provider, such as an `NpgsqlTransaction`.
-- **Read committed.** Claims and fenced writes inside your transaction require PostgreSQL's default isolation level,
-  READ COMMITTED, and refuse others.
+- **Read committed.** Claims and fenced writes inside your transaction require READ COMMITTED, the default isolation
+  level, and refuse others. On SQL Server the database reads committed snapshots (`READ_COMMITTED_SNAPSHOT ON`).
+- **A refusal ends the transaction.** When an operation refuses your transaction, it is rolled back. On SQL Server the
+  server ends it, and so does a deadlock (`SqlException` 1205): `Commit` then throws, and a command sent on the
+  connection afterwards runs outside any transaction. Start a new transaction instead of continuing.
 - **Fenced writes.** A handler that writes its results calls `run.GuardAsync(transaction)` first. It locks the row and
   checks that the run still holds it, so a worker that lost its lease cannot commit. See [leases](leases.md).
 
