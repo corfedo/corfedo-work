@@ -173,7 +173,7 @@ internal sealed class LeaseSql
     public string LockScan(string name, string top, string index, string scan, string locked, string order, string into, bool distinct = false)
     {
         var keys = string.Join(", ", Shape.Keys.Select((_, i) => "@s" + i));
-        var match = string.Join(" AND ", Shape.Keys.Select((k, i) => $"r.{Tsql.Quote(k.Name)} = @s{i}"));
+        var match = string.Join(" AND ", Shape.Keys.Select((k, i) => $"r.{Tsql.Quote(k.Name)} = {k.Value("@s" + i)}"));
         var element = KeyElement();
         var unseen = distinct ? $" AND CHARINDEX(N',' + {element}, {into} COLLATE {Tsql.Binary}) = 0" : "";
         return $"""
@@ -489,7 +489,7 @@ internal sealed class LeaseSql
         + "IF @lock_result < 0 THROW 51205, N'A lock request of the transaction was refused or chosen as a deadlock victim.', 1;\n";
 
     /// <summary><c>r.k0 = @k0 AND ...</c> for one key.</summary>
-    public string KeyMatch => string.Join(" AND ", Keys.Select((k, i) => $"{k} = @k{i}")) + (Job is null ? "" : " AND " + Scope);
+    public string KeyMatch => string.Join(" AND ", Keys.Select((k, i) => $"{k} = {Shape.Keys[i].Value("@k" + i)}")) + (Job is null ? "" : " AND " + Scope);
 
     /// <summary>Column name without the row alias, for SET clauses.</summary>
     public static string Bare(string column) => column[2..];

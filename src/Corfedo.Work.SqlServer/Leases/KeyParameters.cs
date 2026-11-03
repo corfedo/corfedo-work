@@ -21,10 +21,10 @@ internal sealed class ParameterKeyWriter(SqlParameterCollection parameters, IRea
     private void Add(object value)
     {
         var column = columns[next];
-        var parameter = new SqlParameter("@k" + next, column.Type) { Value = value };
-        if (column.Size != 0)
+        var parameter = new SqlParameter("@k" + next, column.ParameterType) { Value = value };
+        if (column.ParameterSize != 0)
         {
-            parameter.Size = column.Size;
+            parameter.Size = column.ParameterSize;
         }
         parameters.Add(parameter);
         next++;

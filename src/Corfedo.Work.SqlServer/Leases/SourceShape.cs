@@ -11,18 +11,61 @@ namespace Corfedo.Work.SqlServer.Leases;
 /// </summary>
 internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type, int Size, int CodePage = 0)
 {
-    private readonly Encoding? encoding = Type is SqlDbType.VarChar or SqlDbType.Char && Size > 0
-        ? CodePage == 65001 ? Encoding.UTF8 : CodePagesEncodingProvider.Instance.GetEncoding(CodePage) ?? Encoding.GetEncoding(CodePage)
+    /// <summary>
+    /// The column's code page, failing on characters it lacks, for <c>varchar</c> and <c>char</c> columns. SQL Server
+    /// converts such characters to a similar one or to <c>?</c>, which can be another record's key.
+    /// </summary>
+    private readonly Encoding? encoding = Type is SqlDbType.VarChar or SqlDbType.Char
+        ? CodePage == 65001
+            ? new UTF8Encoding(false, true)
+            : CodePagesEncodingProvider.Instance.GetEncoding(CodePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback)
+                ?? Encoding.GetEncoding(CodePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback)
         : null;
 
-    /// <summary>The declaration of a variable of the column's values: variables take no collation and compare in the column's.</summary>
-    public string VariableDeclaration => Declaration.Split(" COLLATE ")[0];
+    /// <summary>
+    /// Whether values are bound and held in variables as Unicode and converted to the column's type in its collation
+    /// where they meet the column. A non-Unicode parameter or variable takes the database's code page, which loses the
+    /// characters of a column in another one.
+    /// </summary>
+    private bool Unicode => encoding is not null;
+
+    /// <summary>The column's type without its collation.</summary>
+    private string ValueType => Declaration.Split(" COLLATE ")[0];
+
+    /// <summary>The parameter type of the column's values.</summary>
+    public SqlDbType ParameterType => Unicode ? SqlDbType.NVarChar : Type;
+
+    /// <summary>The parameter size of the column's values; 0 for types without one.</summary>
+    public int ParameterSize => Unicode && Size > 4000 ? -1 : Size;
+
+    /// <summary>The declaration of a variable of the column's values, which meets the column as <see cref="Value"/>.</summary>
+    public string VariableDeclaration => !Unicode ? ValueType
+        : (Type == SqlDbType.Char ? "nchar" : "nvarchar") + (Size is > 0 and <= 4000 ? $"({Size})" : "(max)");
+
+    /// <summary>The value of parameter or variable <paramref name="name"/> as the column's type, for comparison with it.</summary>
+    public string Value(string name) => Unicode ? $"CAST({name} COLLATE {Declaration.Split(" COLLATE ")[1]} AS {ValueType})" : name;
 
     /// <summary>
-    /// Whether the value fits the column. One that does not is no record's key, and SQL Server would truncate it,
+    /// Whether the value fits the column: no longer than it and, in <c>varchar</c> and <c>char</c> columns, only of
+    /// characters of its code page. One that does not is no record's key, and SQL Server would truncate or convert it,
     /// both as a parameter and read from JSON, to the key of another record.
     /// </summary>
-    public bool Fits(string value) => Size <= 0 || (encoding is null ? value.Length : encoding.GetByteCount(value)) <= Size;
+    public bool Fits(string value)
+    {
+        if (encoding is null || !value.AsSpan().ContainsAnyExceptInRange('\0', '\x7f'))
+        {
+            // The code pages of SQL Server collations encode ASCII in one byte each.
+            return Size <= 0 || value.Length <= Size;
+        }
+        try
+        {
+            return Size <= 0 || encoding.GetByteCount(value) <= Size;
+        }
+        catch (EncoderFallbackException)
+        {
+            return false;
+        }
+    }
 }
 
 /// <summary>
