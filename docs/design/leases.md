@@ -18,6 +18,7 @@ A lease source's records carry these fields next to the domain's own:
 | `Takeovers` | integer | Consecutive claims that took the record over from an expired lease. |
 | `Failures` | integer | Consecutive releases after a failed attempt. |
 | `SettledEpoch` | 64-bit integer | The latest epoch whose expiry was settled. Required for sources that settle expiry (`SettleExpiry`) and for sources with any store-enforced limit. |
+| `LeaseOutstanding` | stored computed integer, nullable | `CASE WHEN SettledEpoch < LeaseEpoch THEN 1 END`: 1 while a lease is not settled. Leads the settlement and partition indexes, so they pass over settled leases. Required where `SettledEpoch` is, except on the framework's job table. |
 | `SettleFailures`, `SettleRetryAt` | integer and timestamp, nullable | Consecutive failed settlements of the expired epoch and when the next may run. Required for sources that settle expiry. |
 | `CancelRequestedAt` | timestamp, nullable | Cancellation is requested for the record. |
 | `ExecutionId` | identifier, nullable | The current deliberate execution; kept across its attempts, replaced for a new one. The first claim of a record without one assigns one. Not used on reconciliation sources, which derive executions from revisions. |

@@ -98,8 +98,8 @@ public sealed class CallerTransactionIsolationTests(PostgreSqlDatabase database)
             CREATE TABLE {table} (
                 tenant text NOT NULL, id bigint NOT NULL, due_at timestamptz, lease_owner uuid, lease_epoch bigint NOT NULL DEFAULT 0,
                 lease_expires_at timestamptz, takeovers integer NOT NULL DEFAULT 0, failures integer NOT NULL DEFAULT 0,
-                settled_epoch bigint NOT NULL DEFAULT 0, cancel_requested_at timestamptz, execution_id uuid,
-                ended_completion_id uuid, ended_digest bytea, PRIMARY KEY (tenant, id));
+                settled_epoch bigint NOT NULL DEFAULT 0, lease_outstanding integer GENERATED ALWAYS AS (CASE WHEN settled_epoch < lease_epoch THEN 1 END) STORED,
+                cancel_requested_at timestamptz, execution_id uuid, ended_completion_id uuid, ended_digest bytea, PRIMARY KEY (tenant, id));
             INSERT INTO {table} (tenant, id, due_at) VALUES ('t', 1, clock_timestamp()), ('t', 2, clock_timestamp());
             """))
         {

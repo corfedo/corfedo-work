@@ -320,9 +320,12 @@ internal sealed class LeaseSql
     /// <summary>
     /// <see cref="Unsettled"/> on the row alias <paramref name="alias"/>. Application sources mark unsettled leases with
     /// their LeaseOutstanding column, which leads their settlement and limit indexes; the framework's job table carries
-    /// the epochs in indexes of its own.
+    /// the epochs in indexes of its own. The column is null once settled, so the condition tests for it as well and is
+    /// false then rather than unknown, under NOT and in select lists.
     /// </summary>
-    public string UnsettledOf(string alias) => Job is null ? $"{On(alias, Outstanding)} = 1" : $"{On(alias, Settled)} < {On(alias, Epoch)}";
+    public string UnsettledOf(string alias) => Job is null
+        ? $"({On(alias, Outstanding)} = 1 AND {On(alias, Outstanding)} IS NOT NULL)"
+        : $"{On(alias, Settled)} < {On(alias, Epoch)}";
 
     /// <summary>Settlement failures of the expired epoch; only on sources with <c>SettleExpiry</c>.</summary>
     public string SettleFailures { get; }

@@ -94,8 +94,9 @@ transactions (claim hooks, outcome hooks, expiry handlers) receive the handle an
 - **Domain records** belong to the application. Its own migrations add the lease and reconciliation fields; the EF
   package offers `HasLease(source)` and `HasReconciliation(source)` model helpers. They map the entity to the
   source's table, map each field as a property named after its column in Pascal case (`DueAt` for `due_at`; the
-  entity's own property of that name, or a shadow property), and add the partial indexes the source's claims, expiry
-  settlement and limits need. At startup the provider verifies that every registered source has its fields and the
+  entity's own property of that name, or a shadow property), and add the stored `LeaseOutstanding` column and the
+  filtered indexes the source's claims, expiry settlement and limits need, in one shape that PostgreSQL and SQL Server
+  both verify. At startup the provider verifies that every registered source has its fields and the
   indexes its claim statements need, and refuses to start otherwise.
 
 ## Conformance
@@ -477,10 +478,14 @@ The first provider.
 - Indexes a source needs, checked at startup: a unique index on the key fields; an index led by `DueAt` with the
   predicate `WHERE LeaseExpiresAt IS NULL`, since claims keep `DueAt` and held records would otherwise fill the front
   of a due-time index; an index led by `LeaseExpiresAt` (claims of expired leases and next due time); on sources that
-  settle expiry, an index led by `LeaseExpiresAt` with the predicate `WHERE LeaseExpiresAt IS NOT NULL AND
-  SettledEpoch < LeaseEpoch`, so settlement does not pass expired leases already settled; and, where used,
-  an index led by the partition field with the predicate `WHERE LeaseExpiresAt IS NOT NULL AND SettledEpoch <
-  LeaseEpoch` (partition and spread limits) and an index led by `LeaseOwner` (owner limit). Claim selection counts the
+  settle expiry or have store-enforced limits, the stored generated column `LeaseOutstanding`, `CASE WHEN SettledEpoch
+  < LeaseEpoch THEN 1 END`, and an index led by it and `LeaseExpiresAt` with the predicate `WHERE LeaseExpiresAt IS NOT
+  NULL`, so settlement and the next expiry do not pass expired leases already settled; and, where used, an index led
+  by `LeaseOutstanding` and the partition field with the same predicate (partition and spread limits) and an index led
+  by `LeaseOwner` (owner limit). The predicate is needed besides the column: a lease that ends clears `LeaseExpiresAt`
+  without settling. The column is null once a lease is settled, so statements test it with `= 1 AND ... IS NOT NULL`,
+  false rather than unknown under `NOT`. The framework's `jobs` table keeps indexes of its own over the epochs.
+  Claim selection counts the
   outstanding leases of every partition once per statement from the partition index, without reading the table, and
   leaves out saturated partitions with a hashed `NOT IN`, keeping records that hold an outstanding lease of their own,
   since claiming them replaces it; its cost grows with outstanding leases, which the processes' capacity bounds, not

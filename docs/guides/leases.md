@@ -62,7 +62,8 @@ CREATE INDEX ix_imports_due_at_due ON imports (due_at) WHERE lease_expires_at IS
 CREATE INDEX ix_imports_lease_expires_at_expiry ON imports (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
 ```
 
-Partition limits, expiry settlement and per-holder limits add an index each. Startup verifies the columns and indexes.
+Expiry settlement and limits add the stored generated column `lease_outstanding` and an index each. Startup verifies
+the columns and indexes.
 
 </details>
 

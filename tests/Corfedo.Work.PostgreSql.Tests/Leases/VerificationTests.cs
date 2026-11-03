@@ -19,25 +19,25 @@ public sealed class VerificationTests(PostgreSqlDatabase database) : IClassFixtu
     }
 
     [Fact]
-    public async Task PartitionLimitNeedsAPartitionIndexOverOutstandingLeases()
+    public async Task PartitionLimitNeedsAPartitionIndexLedByTheOutstandingColumn()
     {
         var policy = new LeasePolicy { Duration = TimeSpan.FromMinutes(1), PartitionLimit = 1 };
         var unheld = "CREATE INDEX ON {0} (due_at) WHERE lease_expires_at IS NULL";
         var plain = await SourceAsync("plain_partition_index", string.Format(null, unheld, "plain_partition_index") + "; CREATE INDEX ON plain_partition_index (tenant)", policy, "tenant");
         var outstanding = await SourceAsync(
             "outstanding_partition_index",
-            string.Format(null, unheld, "outstanding_partition_index") + "; CREATE INDEX ON outstanding_partition_index (tenant) WHERE settled_epoch < lease_epoch AND lease_expires_at IS NOT NULL",
+            string.Format(null, unheld, "outstanding_partition_index") + "; CREATE INDEX ON outstanding_partition_index (lease_outstanding, tenant) WHERE lease_expires_at IS NOT NULL",
             policy,
             "tenant");
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(plain, Cancel));
 
-        Assert.Contains("no index led by tenant WHERE lease_expires_at IS NOT NULL AND settled_epoch < lease_epoch", error.Message, StringComparison.Ordinal);
+        Assert.Contains("no index led by lease_outstanding, tenant WHERE lease_expires_at IS NOT NULL (partition and spread limits)", error.Message, StringComparison.Ordinal);
         await Store().VerifyAsync(outstanding, Cancel);
     }
 
     [Fact]
-    public async Task SettlingSourcesNeedAnExpiryIndexOverUnsettledLeases()
+    public async Task SettlingSourcesNeedASettlementIndexLedByTheOutstandingColumn()
     {
         var policy = new LeasePolicy { Duration = TimeSpan.FromMinutes(1), OwnerLimit = 1 };
         var due = "CREATE INDEX ON {0} (due_at) WHERE lease_expires_at IS NULL; CREATE INDEX ON {0} (lease_owner)";
@@ -46,8 +46,33 @@ public sealed class VerificationTests(PostgreSqlDatabase database) : IClassFixtu
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(all, Cancel));
 
-        Assert.Contains("no index led by lease_expires_at WHERE lease_expires_at IS NOT NULL AND settled_epoch < lease_epoch (expiry settlement)", error.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "no index led by lease_outstanding, lease_expires_at WHERE lease_expires_at IS NOT NULL (expiry settlement and next expiry)",
+            error.Message,
+            StringComparison.Ordinal);
         await Store().VerifyAsync(unsettled, Cancel);
+    }
+
+    [Theory]
+    [InlineData("integer GENERATED ALWAYS AS (CASE WHEN settled_epoch <= lease_epoch THEN 1 END) STORED", true)]
+    [InlineData("integer GENERATED ALWAYS AS (CASE WHEN settled_epoch < lease_epoch THEN 1 END) VIRTUAL", false)]
+    [InlineData("integer", true)]
+    public async Task TheOutstandingColumnMustBeTheStoredExpression(string declaration, bool indexed)
+    {
+        var table = "outstanding_" + Guid.NewGuid().ToString("N")[..8];
+        var source = await SourceAsync(
+            table,
+            $"CREATE INDEX ON {table} (due_at) WHERE lease_expires_at IS NULL; CREATE INDEX ON {table} (lease_owner)",
+            new LeasePolicy { Duration = TimeSpan.FromMinutes(1), OwnerLimit = 1 },
+            settlementIndex: indexed,
+            outstanding: declaration);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(source, Cancel));
+
+        Assert.Contains(
+            "field lease_outstanding must be a stored generated column, CASE WHEN \"settled_epoch\" < \"lease_epoch\" THEN 1 END",
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -94,16 +119,22 @@ public sealed class VerificationTests(PostgreSqlDatabase database) : IClassFixtu
 
     private ILeaseStore Store() => new PostgreSqlWorkStore(database.DataSource, "work", NullLoggerFactory.Instance, TimeProvider.System).Leases;
 
-    private async Task<LeaseSource<TestKey>> SourceAsync(string table, string dueIndex, LeasePolicy policy, string? partition = null, bool settlementIndex = true)
+    private async Task<LeaseSource<TestKey>> SourceAsync(
+        string table,
+        string dueIndex,
+        LeasePolicy policy,
+        string? partition = null,
+        bool settlementIndex = true,
+        string outstanding = "integer GENERATED ALWAYS AS (CASE WHEN settled_epoch < lease_epoch THEN 1 END) STORED")
     {
         await using (var command = database.DataSource.CreateCommand($"""
             CREATE TABLE {table} (
                 tenant text NOT NULL, id bigint NOT NULL, due_at timestamptz, lease_owner uuid, lease_epoch bigint NOT NULL DEFAULT 0,
                 lease_expires_at timestamptz, takeovers integer NOT NULL DEFAULT 0, failures integer NOT NULL DEFAULT 0,
-                settled_epoch bigint NOT NULL DEFAULT 0, cancel_requested_at timestamptz, execution_id uuid,
+                settled_epoch bigint NOT NULL DEFAULT 0, lease_outstanding {outstanding}, cancel_requested_at timestamptz, execution_id uuid,
                 ended_completion_id uuid, ended_digest bytea, PRIMARY KEY (tenant, id));
             CREATE INDEX ON {table} (lease_expires_at);
-            {(settlementIndex ? $"CREATE INDEX ON {table} (lease_expires_at) WHERE lease_expires_at IS NOT NULL AND settled_epoch < lease_epoch;" : "")}
+            {(settlementIndex ? $"CREATE INDEX ON {table} (lease_outstanding, lease_expires_at) WHERE lease_expires_at IS NOT NULL;" : "")}
             {dueIndex};
             """))
         {

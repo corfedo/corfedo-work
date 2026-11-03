@@ -121,12 +121,14 @@ public sealed class CallerTransactionIsolationTests(SqlServerDatabase database) 
             CREATE TABLE {table} (
                 tenant nvarchar(100) NOT NULL, id bigint NOT NULL, due_at datetime2(7), lease_owner uniqueidentifier, lease_epoch bigint NOT NULL DEFAULT 0,
                 lease_expires_at datetime2(7), takeovers int NOT NULL DEFAULT 0, failures int NOT NULL DEFAULT 0,
-                settled_epoch bigint NOT NULL DEFAULT 0, cancel_requested_at datetime2(7), execution_id uniqueidentifier,
-                ended_completion_id uniqueidentifier, ended_digest varbinary(64), PRIMARY KEY (tenant, id));
+                settled_epoch bigint NOT NULL DEFAULT 0, lease_outstanding AS (CASE WHEN settled_epoch < lease_epoch THEN 1 END) PERSISTED,
+                cancel_requested_at datetime2(7), execution_id uniqueidentifier, ended_completion_id uniqueidentifier, ended_digest varbinary(64),
+                PRIMARY KEY (tenant, id));
             ALTER TABLE {table} SET (LOCK_ESCALATION = DISABLE);
             CREATE INDEX {table}_due ON {table} (due_at) WHERE lease_expires_at IS NULL;
-            CREATE INDEX {table}_expiry ON {table} (lease_expires_at) INCLUDE (settled_epoch, lease_epoch) WHERE lease_expires_at IS NOT NULL;
-            CREATE INDEX {table}_owner ON {table} (lease_owner) INCLUDE (lease_expires_at, settled_epoch, lease_epoch) WHERE lease_expires_at IS NOT NULL;
+            CREATE INDEX {table}_expiry ON {table} (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
+            CREATE INDEX {table}_settlement ON {table} (lease_outstanding, lease_expires_at) WHERE lease_expires_at IS NOT NULL;
+            CREATE INDEX {table}_owner ON {table} (lease_owner) INCLUDE (lease_expires_at, lease_outstanding) WHERE lease_expires_at IS NOT NULL;
             INSERT INTO {table} (tenant, id, due_at) VALUES ('t', 1, SYSUTCDATETIME()), ('t', 2, SYSUTCDATETIME());
             CREATE TABLE {table}_marker (n int NOT NULL PRIMARY KEY);
             INSERT INTO {table}_marker (n) VALUES (1);

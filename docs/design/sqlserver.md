@@ -433,10 +433,10 @@ provider options; pruning is a maintenance statement.
 ## Findings while building the provider
 
 - Filtered indexes cannot compare two columns: `WHERE lease_expires_at IS NOT NULL AND settled_epoch < lease_epoch`
-  fails with 10735. The expiry and partition indexes of a source are therefore filtered `WHERE LeaseExpiresAt IS NOT
-  NULL` (or unfiltered for expiry) and carry `SettledEpoch` and `LeaseEpoch` as key or included columns; settlement and
-  limit counts pass settled expired leases inside the index. Their cost grows with expired, settled and not yet
-  reclaimed leases; it is to be measured with the provider.
+  fails with 10735. Sources that settle therefore carry the persisted computed column `lease_outstanding` (decision
+  "Outstanding leases"), and their settlement and partition indexes lead with it under `WHERE lease_expires_at IS NOT
+  NULL`; the owner index carries it. With 50 000 expired, settled, not reclaimed leases in 200 000 rows, the
+  settlement scan, next expiry, partition and owner counts each seek these indexes (2022, provider statements).
 - A locking scan (`UPDLOCK, ROWLOCK, READPAST`) keeps the `U` locks of rows it reads and filters out when the filter is
   evaluated outside the seek: a key lookup or a join (`NOT EXISTS`/`NOT IN` over a table variable) keeps them, a simple
   predicate on a column the index carries releases them. Of 1 000 due rows, 32 claimed: 95 key locks with the filter

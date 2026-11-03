@@ -27,7 +27,7 @@ public sealed class ClaimLockTests(SqlServerDatabase database) : IClassFixture<S
                 ended_completion_id uniqueidentifier, ended_digest varbinary(64), CONSTRAINT {Table}_key PRIMARY KEY (tenant, id));
             ALTER TABLE {Table} SET (LOCK_ESCALATION = DISABLE);
             CREATE INDEX {Table}_due ON {Table} (due_at) WHERE lease_expires_at IS NULL;
-            CREATE INDEX {Table}_expiry ON {Table} (lease_expires_at) INCLUDE (settled_epoch, lease_epoch) WHERE lease_expires_at IS NOT NULL;
+            CREATE INDEX {Table}_expiry ON {Table} (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
             INSERT INTO {Table} (tenant, id, due_at)
             SELECT 't', n, DATEADD(millisecond, -n, SYSUTCDATETIME()) FROM (SELECT TOP (1000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_columns) AS v;
             """, Cancel);

@@ -67,6 +67,13 @@ public static class WorkModelExtensions
         Counter<int>(entity, f.Takeovers);
         Counter<int>(entity, f.Failures);
         Counter<long>(entity, f.SettledEpoch);
+        if (source.Settles)
+        {
+            // The definition the stores verify: 1 while the lease is not settled, so the indexes below pass over settled ones.
+            entity.Property<int?>(Name(f.LeaseOutstanding))
+                .HasColumnName(f.LeaseOutstanding)
+                .HasComputedColumnSql($"CASE WHEN {Quote(f.SettledEpoch)} < {Quote(f.LeaseEpoch)} THEN 1 END", stored: true);
+        }
         Counter<int>(entity, f.SettleFailures);
         Field<DateTimeOffset?>(entity, f.SettleRetryAt);
         Field<DateTimeOffset?>(entity, f.CancelRequestedAt);
@@ -74,22 +81,21 @@ public static class WorkModelExtensions
         Field<Guid?>(entity, f.EndedCompletionId);
         Field<byte[]?>(entity, f.EndedDigest);
         var held = $"{Quote(f.LeaseExpiresAt)} IS NOT NULL";
-        var outstanding = $"{held} AND {Quote(f.SettledEpoch)} < {Quote(f.LeaseEpoch)}";
         Index(entity, source.Store, [f.DueAt], $"{Quote(f.LeaseExpiresAt)} IS NULL", "due");
         Index(entity, source.Store, [f.LeaseExpiresAt], held, "expiry");
         if (source.Settles)
         {
-            Index(entity, source.Store, [f.LeaseExpiresAt], outstanding, "settle");
+            Index(entity, source.Store, [f.LeaseOutstanding, f.LeaseExpiresAt], held, "settle");
         }
         if (source.Partition is { } partition && (source.Policy.PartitionLimit is not null || source.Policy.SpreadLimit is not null))
         {
             var property = entity.Metadata.GetProperties().FirstOrDefault(p => p.GetColumnName() == partition)
                 ?? throw new InvalidOperationException($"Lease source {source.Name}: map the partition column {partition} of {entity.Metadata.DisplayName()} before HasLease.");
-            entity.HasIndex([property.Name, Name(f.LeaseOwner)], IndexName(source.Store, partition, "partition")).HasFilter(outstanding);
+            entity.HasIndex([Name(f.LeaseOutstanding), property.Name, Name(f.LeaseOwner)], IndexName(source.Store, partition, "partition")).HasFilter(held);
         }
         if (source.Policy.OwnerLimit is not null)
         {
-            Index(entity, source.Store, [f.LeaseOwner], held, "owner");
+            Index(entity, source.Store, [f.LeaseOwner, f.LeaseOutstanding], held, "owner");
         }
     }
 

@@ -9,8 +9,10 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
 {
     private const string Indexes = """
         CREATE INDEX {0}_due ON {0} (due_at) WHERE lease_expires_at IS NULL;
-        CREATE INDEX {0}_expiry ON {0} (lease_expires_at) INCLUDE (settled_epoch, lease_epoch) WHERE lease_expires_at IS NOT NULL;
+        CREATE INDEX {0}_expiry ON {0} (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
         """;
+
+    private const string Settlement = "CREATE INDEX {0}_settlement ON {0} (lease_outstanding, lease_expires_at) WHERE lease_expires_at IS NOT NULL;";
 
     private static CancellationToken Cancel => TestContext.Current.CancellationToken;
 
@@ -27,7 +29,7 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
     {
         var source = await SourceAsync("plain_due_index", """
             CREATE INDEX {0}_due ON {0} (due_at);
-            CREATE INDEX {0}_expiry ON {0} (lease_expires_at) INCLUDE (settled_epoch, lease_epoch) WHERE lease_expires_at IS NOT NULL;
+            CREATE INDEX {0}_expiry ON {0} (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
             """);
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(source, Cancel));
@@ -36,30 +38,57 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
     }
 
     [Fact]
-    public async Task SettlingSourcesNeedTheEpochsInTheExpiryIndex()
+    public async Task SettlingSourcesNeedASettlementIndexLedByTheOutstandingColumn()
     {
-        var source = await SourceAsync("expiry_without_epochs", """
-            CREATE INDEX {0}_due ON {0} (due_at) WHERE lease_expires_at IS NULL;
-            CREATE INDEX {0}_expiry ON {0} (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
-            CREATE INDEX {0}_owner ON {0} (lease_owner);
-            """, new LeasePolicy { Duration = TimeSpan.FromMinutes(1), OwnerLimit = 1 });
+        var policy = new LeasePolicy { Duration = TimeSpan.FromMinutes(1), OwnerLimit = 1 };
+        var missing = await SourceAsync("no_settlement_index", Indexes + "CREATE INDEX {0}_owner ON {0} (lease_owner);", policy);
+        var settling = await SourceAsync("settlement_index", Indexes + Settlement + "CREATE INDEX {0}_owner ON {0} (lease_owner);", policy);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(source, Cancel));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(missing, Cancel));
 
-        Assert.Contains("no index led by lease_expires_at carrying settled_epoch and lease_epoch", error.Message, StringComparison.Ordinal);
+        Assert.Contains(
+            "no index led by lease_outstanding, lease_expires_at WHERE lease_expires_at IS NOT NULL (expiry settlement and next expiry)",
+            error.Message,
+            StringComparison.Ordinal);
+        await Store().VerifyAsync(settling, Cancel);
     }
 
     [Fact]
-    public async Task PartitionLimitNeedsAPartitionIndexOverHeldLeases()
+    public async Task PartitionLimitNeedsAPartitionIndexLedByTheOutstandingColumn()
     {
         var policy = new LeasePolicy { Duration = TimeSpan.FromMinutes(1), PartitionLimit = 1 };
-        var plain = await SourceAsync("plain_partition_index", Indexes + "CREATE INDEX {0}_tenant ON {0} (tenant);", policy, "tenant");
-        var held = await SourceAsync("held_partition_index", Indexes + "CREATE INDEX {0}_tenant ON {0} (tenant) INCLUDE (settled_epoch, lease_epoch) WHERE lease_expires_at IS NOT NULL;", policy, "tenant");
+        var plain = await SourceAsync("plain_partition_index", Indexes + Settlement + "CREATE INDEX {0}_tenant ON {0} (tenant);", policy, "tenant");
+        var held = await SourceAsync(
+            "held_partition_index",
+            Indexes + Settlement + "CREATE INDEX {0}_tenant ON {0} (lease_outstanding, tenant) WHERE lease_expires_at IS NOT NULL;",
+            policy,
+            "tenant");
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(plain, Cancel));
 
-        Assert.Contains("no index led by tenant WHERE lease_expires_at IS NOT NULL carrying settled_epoch and lease_epoch", error.Message, StringComparison.Ordinal);
+        Assert.Contains("no index led by lease_outstanding, tenant WHERE lease_expires_at IS NOT NULL (partition and spread limits)", error.Message, StringComparison.Ordinal);
         await Store().VerifyAsync(held, Cancel);
+    }
+
+    [Theory]
+    [InlineData("AS (CASE WHEN settled_epoch <= lease_epoch THEN 1 END) PERSISTED")]
+    [InlineData("AS (CASE WHEN settled_epoch < lease_epoch THEN 1 END)")]
+    [InlineData("int")]
+    public async Task TheOutstandingColumnMustBeThePersistedExpression(string declaration)
+    {
+        var table = "outstanding_" + Guid.NewGuid().ToString("N")[..8];
+        var source = await SourceAsync(
+            table,
+            Indexes + Settlement + "CREATE INDEX {0}_owner ON {0} (lease_owner);",
+            new LeasePolicy { Duration = TimeSpan.FromMinutes(1), OwnerLimit = 1 },
+            outstanding: declaration);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(source, Cancel));
+
+        Assert.Contains(
+            "field lease_outstanding must be a persisted computed column, CASE WHEN [settled_epoch] < [lease_epoch] THEN 1 END",
+            error.Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -94,13 +123,19 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
     private ILeaseStore Store(string? connectionString = null) =>
         new SqlServerWorkStore(connectionString ?? database.ConnectionString, "work", NullLoggerFactory.Instance, TimeProvider.System).Leases;
 
-    private async Task<LeaseSource<TestKey>> SourceAsync(string table, string indexes, LeasePolicy? policy = null, string? partition = null, bool escalation = true)
+    private async Task<LeaseSource<TestKey>> SourceAsync(
+        string table,
+        string indexes,
+        LeasePolicy? policy = null,
+        string? partition = null,
+        bool escalation = true,
+        string outstanding = "AS (CASE WHEN settled_epoch < lease_epoch THEN 1 END) PERSISTED")
     {
         await database.ExecuteAsync($"""
             CREATE TABLE {table} (
                 tenant nvarchar(100) NOT NULL, id bigint NOT NULL, due_at datetime2(7), lease_owner uniqueidentifier, lease_epoch bigint NOT NULL DEFAULT 0,
                 lease_expires_at datetime2(7), takeovers int NOT NULL DEFAULT 0, failures int NOT NULL DEFAULT 0,
-                settled_epoch bigint NOT NULL DEFAULT 0, cancel_requested_at datetime2(7), execution_id uniqueidentifier,
+                settled_epoch bigint NOT NULL DEFAULT 0, lease_outstanding {outstanding}, cancel_requested_at datetime2(7), execution_id uniqueidentifier,
                 ended_completion_id uniqueidentifier, ended_digest varbinary(64), PRIMARY KEY (tenant, id));
             {(escalation ? $"ALTER TABLE {table} SET (LOCK_ESCALATION = DISABLE);" : "")}
             {string.Format(null, indexes, table)}

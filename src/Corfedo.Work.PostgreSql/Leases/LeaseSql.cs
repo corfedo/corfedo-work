@@ -28,8 +28,11 @@ internal sealed class LeaseSql
         Failures = "r." + Quote(fields.Failures);
         Settled = "r." + Quote(fields.SettledEpoch);
         // Application sources mark unsettled leases with their LeaseOutstanding column, which leads their settlement and
-        // limit indexes; the framework's job table has indexes of its own over the epochs.
-        Unsettled = job is null ? $"r.{Quote(fields.LeaseOutstanding)} = 1" : $"{Settled} < {Epoch}";
+        // limit indexes; the framework's job table has indexes of its own over the epochs. The column is null once
+        // settled, so the condition tests for it as well and is false then rather than unknown, under NOT and in
+        // select lists.
+        var outstanding = "r." + Quote(fields.LeaseOutstanding);
+        Unsettled = job is null ? $"({outstanding} = 1 AND {outstanding} IS NOT NULL)" : $"{Settled} < {Epoch}";
         SettleFailures = "r." + Quote(fields.SettleFailures);
         SettleRetryAt = "r." + Quote(fields.SettleRetryAt);
         Cancel = "r." + Quote(fields.CancelRequestedAt);

@@ -123,7 +123,7 @@ public sealed class GenerationFenceIsolationTests(SqlServerDatabase database) : 
                 converged_generation bigint NOT NULL DEFAULT 0, PRIMARY KEY (tenant, id));
             ALTER TABLE dbo.{table} SET (LOCK_ESCALATION = DISABLE);
             CREATE INDEX {table}_due ON dbo.{table} (due_at) WHERE lease_expires_at IS NULL;
-            CREATE INDEX {table}_expiry ON dbo.{table} (lease_expires_at) INCLUDE (settled_epoch, lease_epoch) WHERE lease_expires_at IS NOT NULL;
+            CREATE INDEX {table}_expiry ON dbo.{table} (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
             CREATE INDEX {table}_generation ON dbo.{table} (attempted_generation);
             INSERT INTO dbo.{table} (tenant, id, due_at) VALUES ('t', 1, SYSUTCDATETIME());
             CREATE TABLE dbo.{table}_marker (n int NOT NULL);

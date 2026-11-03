@@ -10,7 +10,7 @@ internal sealed partial class PostgreSqlLeaseStore
     /// lease expiry (claims of expired leases and next due time), and an index led by the owner (owner limit). Sources
     /// that settle have the stored generated column <c>LeaseOutstanding</c>, <c>CASE WHEN SettledEpoch &lt; LeaseEpoch
     /// THEN 1 END</c>, an index led by it and the lease expiry over held leases (<c>WHERE LeaseExpiresAt IS NOT
-    /// NULL</c>, expiry settlement, store limits and next expiry), and where partition or spread limits are used an
+    /// NULL</c>, expiry settlement and next expiry), and where partition or spread limits are used an
     /// index led by it and the partition over held leases. Reconciliation sources also need their reconciliation fields
     /// and an index led by <c>AttemptedGeneration</c> over all records.
     /// </summary>
@@ -139,7 +139,7 @@ internal sealed partial class PostgreSqlLeaseStore
         bool HeldLedBy(string second) => indexes.Any(i => i.HeldOnly && i.Columns.Length > 1 && i.Columns[0] == f.LeaseOutstanding && i.Columns[1] == second);
         if (settles && !HeldLedBy(f.LeaseExpiresAt))
         {
-            problems.Add($"no index led by {f.LeaseOutstanding}, {f.LeaseExpiresAt} WHERE {f.LeaseExpiresAt} IS NOT NULL (expiry settlement, store limits and next expiry)");
+            problems.Add($"no index led by {f.LeaseOutstanding}, {f.LeaseExpiresAt} WHERE {f.LeaseExpiresAt} IS NOT NULL (expiry settlement and next expiry)");
         }
         if (limitsPartition && !HeldLedBy(source.Partition!))
         {

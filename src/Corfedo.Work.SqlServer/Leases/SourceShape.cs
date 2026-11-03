@@ -222,7 +222,7 @@ internal static class SourceCatalog
         Index? settlement = null;
         if (source.Settles && (settlement = HeldLedBy(f.LeaseExpiresAt)) is null)
         {
-            problems.Add($"no index led by {f.LeaseOutstanding}, {f.LeaseExpiresAt} WHERE {f.LeaseExpiresAt} IS NOT NULL (expiry settlement, store limits and next expiry)");
+            problems.Add($"no index led by {f.LeaseOutstanding}, {f.LeaseExpiresAt} WHERE {f.LeaseExpiresAt} IS NOT NULL (expiry settlement and next expiry)");
         }
         Index? partitionIndex = null;
         if (limitsPartition)
