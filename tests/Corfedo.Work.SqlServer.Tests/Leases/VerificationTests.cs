@@ -112,7 +112,7 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
             CREATE USER [{login}] FOR LOGIN [{login}];
             GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.escalating_readonly TO [{login}];
             """, Cancel);
-        var connectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString;
+        var connectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password, Pooling = false }.ConnectionString;
         try
         {
             var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store(connectionString).VerifyAsync(source, Cancel));
@@ -122,11 +122,17 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
         }
         finally
         {
-            // Logins belong to the server, which test processes may share. The store's pooled sessions are ended first.
+            // Logins belong to the server, which test processes may share. A login is dropped once its sessions have
+            // ended, which a closed connection's logout or KILL only requests.
             await database.ExecuteAsync($"""
-                DECLARE @kill nvarchar(max) = N'';
+                DECLARE @kill nvarchar(max) = N'', @waits int = 0;
                 SELECT @kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{login}';
                 EXEC (@kill);
+                WHILE EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE login_name = N'{login}') AND @waits < 100
+                BEGIN
+                    WAITFOR DELAY '00:00:00.020';
+                    SET @waits += 1;
+                END
                 DROP USER [{login}];
                 DROP LOGIN [{login}];
                 """, Cancel);
