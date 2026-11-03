@@ -486,6 +486,12 @@ provider options; pruning is a maintenance statement.
   waits (27 s): the slowest first pass took 0.8 s, and later passes took 31 ms at p90 and 152 ms at p99, against 142 ms
   and 666 ms before. The test server enables it. Whether production requires it, or the provider reduces its
   temporary objects, is open; the measurements in the validation decide.
+- A SQL authentication login costs about twice as much on 2025 as on 2022 (about 80 ms against 37 ms per `sqlcmd`
+  login on an idle container, with `PREEMPTIVE_OS_CRYPTOPS` and `PREEMPTIVE_OS_AUTHENTICATIONOPS` among 2025's top
+  waits under the suite). A connection pool that grows during a burst pays it per new connection: in the suite on 2025,
+  opens took up to 430 ms, and `J29_WaitsRegisteringWhileJobsCompleteAreWokenBySignals`, whose waiters are reread one
+  definition at a time, exceeded its 400 ms wake bound in about half of the full runs while passing alone. Signals
+  themselves were delivered within 50 ms of the commit.
 - A read that PostgreSQL serves from one snapshot of several statements (a chain with its steps and groups) is one
   statement on SQL Server, since RCSI gives each statement its own snapshot and snapshot isolation is not required of
   the database: the chain's steps and groups come back as `FOR JSON` columns of the chain's row. The unserved report
