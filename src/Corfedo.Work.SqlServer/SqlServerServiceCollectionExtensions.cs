@@ -1,0 +1,56 @@
+using Corfedo.Work.SqlServer.Signals;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace Corfedo.Work.SqlServer;
+
+public static class SqlServerServiceCollectionExtensions
+{
+    /// <summary>
+    /// Stores work in SQL Server through <paramref name="connectionString"/>, with the store's signals as the process's
+    /// <see cref="IWorkSignals"/>. Framework tables, including the signals table, live in <paramref name="schema"/>.
+    /// The database must read committed snapshots (<c>READ_COMMITTED_SNAPSHOT ON</c>); the store refuses to start
+    /// otherwise. <paramref name="signals"/> sets how the listener polls the signals table and how long signals are kept.
+    /// </summary>
+    public static IServiceCollection AddSqlServerWorkStore(this IServiceCollection services, string connectionString, string schema = "work", SqlServerSignalOptions? signals = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentException.ThrowIfNullOrWhiteSpace(schema);
+        var options = signals ?? new SqlServerSignalOptions();
+        options.Validate();
+        services.AddSingleton<IWorkStore>(provider => new SqlServerWorkStore(
+            connectionString,
+            schema,
+            options,
+            provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance,
+            provider.GetService<TimeProvider>() ?? TimeProvider.System,
+            WorkTelemetryOptions.From(provider)));
+        services.TryAddSingleton(provider => provider.GetRequiredService<IWorkStore>().Signals!);
+        return services.AddWorkSignals();
+    }
+
+    /// <summary>
+    /// Registers <see cref="IWorkSignals"/> over SQL Server for an application that uses signals without the other
+    /// layers. <paramref name="application"/> names the schema of the signals table, created when missing, as a
+    /// framework schema does; an application that later stores work uses its schema name.
+    /// </summary>
+    public static IServiceCollection AddSqlServerSignals(this IServiceCollection services, string connectionString, string application, SqlServerSignalOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+        ArgumentException.ThrowIfNullOrWhiteSpace(application);
+        var signalOptions = options ?? new SqlServerSignalOptions();
+        signalOptions.Validate();
+        services.TryAddSingleton<ISignalTransport>(provider => new SqlServerSignalTransport(
+            connectionString,
+            new SqlServerSignalSql(application),
+            signalOptions,
+            provider.GetService<TimeProvider>() ?? TimeProvider.System,
+            (provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance).CreateLogger("Corfedo.Work.SqlServer"),
+            WorkTelemetryOptions.From(provider)));
+        return services.AddWorkSignals();
+    }
+}

@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>SQL Server store for Corfedo Work, over Microsoft.Data.SqlClient: background jobs, cron schedules and leases in your SQL Server database, requested in your transactions and woken at commit through a signals table.</Description>
+    <PackageTags>$(PackageTags);sqlserver;sql-server;mssql</PackageTags>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Corfedo.Work/Corfedo.Work.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
+  </ItemGroup>
+</Project>

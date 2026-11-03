@@ -1,9 +1,9 @@
 # SQL Server provider
 
-**Status:** Investigated with proofs of concept; the provider is not built. This document records what SQL Server
-does for each guarantee in [providers](providers.md#required-guarantees), how the PostgreSQL provider's primitives
-translate, the measurements behind each choice and the decisions taken. It is the starting point of
-`Corfedo.Work.SqlServer`.
+**Status:** Investigated with proofs of concept; the provider is being built (stage 9 of
+[implementation](implementation.md)). This document records what SQL Server does for each guarantee in
+[providers](providers.md#required-guarantees), how the PostgreSQL provider's primitives translate, the measurements
+behind each choice and the decisions taken. It is the starting point of `Corfedo.Work.SqlServer`.
 
 The proofs of concept are small console programs outside the repository, built on `Microsoft.Data.SqlClient` 6.1.3,
 run against SQL Server 2022 (16.0.4305.5, CU27) and SQL Server 2025 (17.0.5035.5, CU10, compatibility level 170) with
@@ -413,6 +413,31 @@ provider options; pruning is a maintenance statement.
 - Table-valued input is copied into a local table variable before multi-statement use.
 - Framework tables disable lock escalation; sources whose tables escalate are refused.
 - Deadlock victims (1205) in provider transactions are retried.
+
+## Findings while building the provider
+
+- Filtered indexes cannot compare two columns: `WHERE lease_expires_at IS NOT NULL AND settled_epoch < lease_epoch`
+  fails with 10735. The expiry and partition indexes of a source are therefore filtered `WHERE LeaseExpiresAt IS NOT
+  NULL` (or unfiltered for expiry) and carry `SettledEpoch` and `LeaseEpoch` as key or included columns; settlement and
+  limit counts pass settled expired leases inside the index. Their cost grows with expired, settled and not yet
+  reclaimed leases; it is to be measured with the provider.
+- A locking scan (`UPDLOCK, ROWLOCK, READPAST`) keeps the `U` locks of rows it reads and filters out when the filter is
+  evaluated outside the seek: a key lookup or a join (`NOT EXISTS`/`NOT IN` over a table variable) keeps them, a simple
+  predicate on a column the index carries releases them. Of 1 000 due rows, 32 claimed: 95 key locks with the filter
+  column in the table only, 64 with it included in the index, 88 with a `NOT IN` over a table variable. Claim scans keep
+  their predicates on index columns; exclusions by table variable (saturated or busy partitions, stale pauses) leave the
+  rows they skip locked until the claim commits.
+- SET options inside a parameterized SqlClient command (run through `sp_executesql`) are restored when the batch ends
+  (`XACT_ABORT`, `LOCK_TIMEOUT` checked): batches set `NOCOUNT` and `XACT_ABORT` themselves without changing a caller's
+  session. A command without parameters runs as a plain batch, whose SET options persist, so every provider command
+  has at least one parameter.
+
+- `Microsoft.Data.SqlClient` 7.1.1, like every earlier version, depends on `System.Security.Cryptography.Pkcs` below the
+  versions that fix CVE-2026-84008 and CVE-2026-70162 (9.0.18 for 7.1.1); the provider references 10.0.13 directly, so
+  restore resolves the fixed version.
+- A source's first operation in a process reads its table in the catalog and verifies it as startup does: statements
+  bind key parameters to the key columns' exact types and name the source's indexes in `INDEX()` hints, so a source
+  without its indexes is refused by every operation, not only at startup.
 
 ## Effort and risks
 

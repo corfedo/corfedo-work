@@ -5,6 +5,7 @@
     <Project Path="src/Corfedo.Work.EntityFrameworkCore/Corfedo.Work.EntityFrameworkCore.csproj" />
     <Project Path="src/Corfedo.Work.InMemory/Corfedo.Work.InMemory.csproj" />
     <Project Path="src/Corfedo.Work.PostgreSql/Corfedo.Work.PostgreSql.csproj" />
+    <Project Path="src/Corfedo.Work.SqlServer/Corfedo.Work.SqlServer.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Corfedo.Work.AotSmoke/Corfedo.Work.AotSmoke.csproj" />
@@ -14,5 +15,6 @@
     <Project Path="tests/Corfedo.Work.Leases.Tests/Corfedo.Work.Leases.Tests.csproj" />
     <Project Path="tests/Corfedo.Work.PostgreSql.Tests/Corfedo.Work.PostgreSql.Tests.csproj" />
     <Project Path="tests/Corfedo.Work.Signals.Tests/Corfedo.Work.Signals.Tests.csproj" />
+    <Project Path="tests/Corfedo.Work.SqlServer.Tests/Corfedo.Work.SqlServer.Tests.csproj" />
   </Folder>
 </Solution>

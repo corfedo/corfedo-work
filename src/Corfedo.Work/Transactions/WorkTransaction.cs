@@ -42,4 +42,10 @@ internal sealed class DbWorkTransaction : WorkTransaction
 
     /// <summary>A savepoint name unique within the transaction.</summary>
     public string NextSavepoint() => "corfedo_work_" + Interlocked.Increment(ref savepoints);
+
+    /// <summary>
+    /// Set by a provider that checks the isolation level in the database, once it found the transaction at read
+    /// committed, so later operations in the transaction skip the check.
+    /// </summary>
+    public bool ReadCommitted { get; set; }
 }
