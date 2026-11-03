@@ -1,0 +1,442 @@
+# SQL Server provider
+
+**Status:** Investigated with proofs of concept; the provider is not built. This document records what SQL Server
+does for each guarantee in [providers](providers.md#required-guarantees), how the PostgreSQL provider's primitives
+translate, the measurements behind each choice and the decisions taken. It is the starting point of
+`Corfedo.Work.SqlServer`.
+
+The proofs of concept are small console programs outside the repository, built on `Microsoft.Data.SqlClient` 6.1.3,
+run against SQL Server 2022 (16.0.4305.5, CU27) and SQL Server 2025 (17.0.5035.5, CU10, compatibility level 170) with
+identical results. Numbers are from sk8 (AMD Ryzen 7 7700X, Docker, native x86_64) unless they say Mac (Apple M4 Pro,
+colima with Rosetta). The essential statements of each program are reproduced below.
+
+## Decisions
+
+| Decision | Choice |
+|---|---|
+| Dependencies | `Microsoft.Data.SqlClient` for the provider; `Testcontainers.MsSql` for its tests, as the PostgreSQL and EF Core tests use `Testcontainers.PostgreSql` (owner). |
+| Supported versions | SQL Server 2022 and 2025 (owner). Azure SQL Managed Instance and Azure SQL Database are not verified. |
+| Isolation | The database must run with `READ_COMMITTED_SNAPSHOT ON` (RCSI); the store refuses to start otherwise (owner). Without RCSI every read of other rows waits for their writers and the limit-scope pattern deadlocks with application transactions (see [isolation](#isolation-and-lock-then-evaluate)). Azure SQL Database runs with RCSI on by default; on SQL Server and Managed Instance it is enabled once per database. |
+| Signals | A framework signals table, written in the sending transaction and read below `MIN_ACTIVE_ROWVERSION()` by a server-side short poll (owner). Service Broker is not used: it is unavailable on Azure SQL Database, needs a queue and service per process created at runtime, and every send costs one `SEND` per listening process. See [signals](#signals). |
+| Identifiers | Ids are `uniqueidentifier` columns holding the same `Guid` value the application sees, so application tables, tools and EF Core mappings join on them without conversion. SQL Server orders `uniqueidentifier` by its last bytes first, so version-7 ids sort out of time order: inserts spread over the primary key instead of filling its last page. Every rule that locks rows "in id order" means SQL Server's order, produced by the statement's `ORDER BY` or, in .NET, by `SqlGuid` comparison, never by `Guid` comparison. Page splits and fragmentation of `jobs` and `job_runs` are measured at 1M and 10M jobs before the schema baseline is fixed. |
+| Lock escalation | Framework tables are created with `LOCK_ESCALATION = DISABLE`. Startup verification refuses a lease or reconciliation source whose table escalates (`sys.tables.lock_escalation_desc` other than `DISABLE`): one application statement locking more than about 5 000 of its rows would otherwise take a table lock, which `READPAST` cannot skip, and every claim of the source would wait for it. Applications add `ALTER TABLE ... SET (LOCK_ESCALATION = DISABLE)` to their migration. |
+
+## Local setup
+
+SQL Server images are published for `linux/amd64` only; Azure SQL Edge, the former arm64 option, was retired on
+30 September 2025. On an Apple silicon Mac the amd64 image runs under Rosetta in a colima VM:
+
+```sh
+colima start sqlserver --arch aarch64 --vm-type vz --vz-rosetta --cpu 4 --memory 6 --disk 30
+docker context use colima        # colima start makes the new profile the current context
+export DOCKER_HOST=unix://$HOME/.colima/sqlserver/docker.sock
+docker run -d --name mssql --platform linux/amd64 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD='<password>' \
+  -e MSSQL_PID=Developer -p 127.0.0.1:14331:1433 mcr.microsoft.com/mssql/server:2022-latest
+docker exec mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P '<password>' -Q 'SELECT 1'
+```
+
+QEMU is not needed: the VM registers Rosetta as the `x86_64` handler. SQL Server needs at least 2 GiB; under load the
+container used 2.4 GiB of the VM's 6.
+
+| | Mac (Rosetta) | sk8 (native) |
+|---|---|---|
+| Container start to first `SELECT 1` | 6.8 s (2022), 7.1 s (2025) | 2.8 s (2022), 3.4 s (2025) |
+| Claim pass, 1 worker, 8 records, p50 | 5.6 ms | 2.1 ms |
+| Claim and end, 8 workers | 1 690 claims/s | 5 000 claims/s |
+| Race of 16 workers for 180 s (claims, renewals, ends, stalled holders) | 277 000 claims, 0 errors, 0 invariant failures, no restart | |
+
+Full suites run on a native x86_64 host; the Mac is for small runs. Server-side the claim `UPDATE` takes 75 µs; the
+client-side pass is mostly round trips (begin, statement, commit) and the compilation of statement text that differs
+per call, which the provider avoids with parameterized statements and table-valued input.
+
+`Microsoft.Data.SqlClient` refuses to open connections under `InvariantGlobalization` (`NotSupportedException`). Its
+behaviour under trimming and Native AOT is not verified yet.
+
+## Isolation and lock, then evaluate
+
+Every case below was run with RCSI off and on: a session A holds a lock or an uncommitted change, session B runs the
+statement and waits.
+
+| Case | RCSI off | RCSI on |
+|---|---|---|
+| B's single `UPDATE ... WHERE expires > SYSUTCDATETIME()` waits 3 s on A's lock; the lease expires 1.5 s in | renews the expired lease | renews the expired lease |
+| The same `UPDATE` with `READCOMMITTEDLOCK` | renews the expired lease | renews the expired lease |
+| B locks the row in one statement and updates in the next statement of the same batch | correct: not renewed | correct: not renewed |
+| After A takes over the lease and commits: plain `SELECT` | waits, new owner | no wait, **old owner** |
+| `SELECT WITH (UPDLOCK, ROWLOCK)` or `WITH (READCOMMITTEDLOCK)` | waits, new owner | waits, new owner |
+| `SELECT WITH (UPDLOCK, ROWLOCK, READPAST)` | no wait, row skipped | no wait, row skipped |
+| Single `UPDATE` matched on the old owner | waits, matches nothing | waits, matches nothing |
+| B's single `UPDATE` waits on the record while A raises the source's generation; B's subquery reads the generation | correct | **trusts the generation read before the wait** |
+| The same subquery `WITH (READCOMMITTEDLOCK)`, or in the statement after the lock | correct | correct |
+| Counting a partition's outstanding leases while an application transaction has written one of them | **waits for it** (lock timeout 1222) | no wait, count 4 of 4 |
+| The same count `WITH (READPAST)` | no wait, **count 3 of 4** | count 4 of 4 |
+
+So:
+
+- `SYSUTCDATETIME()` is evaluated once per statement, before any lock wait inside it (one value over a statement of
+  1M rows). A clock reading taken after the lock is held is the clock of a statement that starts after the lock
+  statement. This is the PostgreSQL provider's design already (a lock statement, then the evaluating statement); it
+  carries over unchanged.
+- Under RCSI a statement reads the committed versions as of its own start, also after it waited on a lock, except
+  for the rows it locks itself (`UPDLOCK`, updates) and reads with `READCOMMITTEDLOCK`. Every condition that depends on
+  a lock is evaluated in a statement that starts after the lock statement, never in a subquery of the waiting
+  statement.
+- Without RCSI a read of any row waits for its writer. Claims read rows they do not lock (limit counts, generations,
+  pauses, definitions), so a claim would wait for application transactions, and the limit-scope pattern deadlocks:
+  the provider claim holds a candidate row and the partition's scope lock and counts the partition; an application
+  transaction has written another row of the partition and then claims in the same scope. Reproduced: the provider
+  claim was chosen as deadlock victim (1205). Under RCSI the count reads the committed version and the application
+  waits for the scope until the claim commits. `READPAST` does not help: it leaves locked rows out of the count. This
+  is why RCSI is required.
+- A `SNAPSHOT` transaction that locks a row changed after its snapshot started fails with 3960 (update conflict), as
+  a PostgreSQL repeatable-read transaction fails on a concurrent update.
+
+The store checks RCSI at startup:
+
+```sql
+SELECT is_read_committed_snapshot_on FROM sys.databases WHERE name = DB_NAME();
+```
+
+and refuses to start when it is 0, naming `ALTER DATABASE [<db>] SET READ_COMMITTED_SNAPSHOT ON`.
+
+### The caller's isolation level
+
+`sys.dm_exec_sessions.transaction_isolation_level` for `@@SPID` is 1 (read uncommitted), 2 (read committed; under
+RCSI this is the statement-snapshot level the provider needs), 3 (repeatable read), 4 (serializable) or 5
+(snapshot). A session sees its own row without `VIEW SERVER STATE`.
+
+| Check | Per round trip |
+|---|---|
+| `SELECT 1` | 0.17 ms |
+| `IF (SELECT transaction_isolation_level FROM sys.dm_exec_sessions WHERE session_id = @@SPID) <> 2 THROW ...` | 0.63–0.72 ms |
+| The same on `sys.dm_exec_requests` | 0.72 ms |
+
+The check costs about 0.45 ms of server time, too much for every fenced statement. `SqlTransaction.IsolationLevel`
+is free but wrong after `SET TRANSACTION ISOLATION LEVEL` in SQL (it reported `ReadCommitted` for a serializable
+transaction). The provider checks once per transaction, in the batch of the first operation that needs read committed,
+and records the result on the `WorkTransaction` handle, which exists once per transaction. This needs a provider slot
+on the handle in the core (an internal change; providers use the core's internals).
+
+### Claims race
+
+16 workers on 2 000 records with 300 ms leases: each claims up to 8 records, then renews, ends, or stalls past its
+lease so another worker takes over. Every transition is recorded with the old expiry and the store clock, and checked
+afterwards. With RCSI off and on: 0 claims of an unexpired lease, 0 renewals or ends of an expired lease, 0 gaps or
+repeats in each record's epochs, 0 deadlocks; 1 566 and 1 597 claims/s on the Mac.
+
+The claim pass of the POC, one batch in the provider's transaction:
+
+```sql
+DECLARE @c TABLE (id int PRIMARY KEY);
+INSERT @c SELECT TOP (@n) id FROM leases WITH (UPDLOCK, ROWLOCK, READPAST, INDEX(leases_due))
+    WHERE expires IS NULL AND due <= SYSUTCDATETIME() ORDER BY due;
+INSERT @c SELECT TOP (@n) id FROM leases WITH (UPDLOCK, ROWLOCK, READPAST, INDEX(leases_expiry))
+    WHERE expires IS NOT NULL AND expires <= SYSUTCDATETIME() AND id NOT IN (SELECT id FROM @c) ORDER BY expires;
+-- A new statement: its clock is read after the candidates are locked.
+UPDATE r SET owner = @owner, epoch = r.epoch + 1, expires = DATEADD(millisecond, @lease, SYSUTCDATETIME())
+OUTPUT inserted.id, inserted.epoch INTO @claimed
+FROM leases AS r JOIN @c AS c ON c.id = r.id
+WHERE r.due <= SYSUTCDATETIME() AND (r.expires IS NULL OR r.expires <= SYSUTCDATETIME());
+```
+
+A renewal, guard or end in the caller's transaction:
+
+```sql
+SELECT id FROM leases WITH (UPDLOCK, ROWLOCK) WHERE id = @id;
+UPDATE leases SET expires = DATEADD(millisecond, @lease, SYSUTCDATETIME())
+OUTPUT inserted.epoch INTO @renewed
+WHERE id = @id AND owner = @owner AND epoch = @epoch AND expires > SYSUTCDATETIME();
+```
+
+`READPAST` skips rows another transaction holds locked and never waits, under RCSI as well.
+
+### Locks a claim holds
+
+| Claim of 32 records | Locks held until commit |
+|---|---|
+| Index in the claim's order, no residual predicate | 64 key `U` (index and clustered key of each record), 3 page `IU` |
+| Same index, a residual predicate that filters half the rows read | 96 key `U`: rows read and filtered out stay locked |
+| No index in the claim's order (a sort) | table `X` (one per lock partition): every row read was locked and the locks escalated |
+
+The startup verification of each source's indexes is therefore mandatory, as on PostgreSQL, and claim predicates
+are kept in the index (filtered index predicates and key columns) so rows that are read and not claimed stay few:
+they remain `U`-locked until the claim commits, and a guard of such a row waits for it.
+
+## Fences and serialization points
+
+PostgreSQL uses transaction-scoped advisory locks for the generation fence, the definition fence, limit scopes,
+subject pauses and the schema migration lock. SQL Server's equivalent is `sp_getapplock` with
+`@LockOwner = 'Transaction'`.
+
+| Property | Result |
+|---|---|
+| Queueing | A holds `Shared`, B requests `Exclusive` and waits, C requests `Shared`: C waits behind B (timed out after 1 s) and B is granted when A commits. New shared requests queue behind a waiting exclusive one, which the generation and definition fences need. |
+| Outside a transaction | Returns -999; the provider calls it only inside one. |
+| Try-lock | `@LockTimeout = 0` returns -1 when busy, 0 or 1 when granted. |
+| Savepoints | `ROLLBACK TRANSACTION <savepoint>` releases applocks and row locks taken after the savepoint, as PostgreSQL releases a subtransaction's locks. |
+| `SET LOCK_TIMEOUT` | Expiry raises 1222 and ends the statement, not the transaction; rolling back to a savepoint and committing keeps earlier writes. This carries the planner's per-recurrence `lock_timeout` of 50 ms. |
+| Resource names | `@Resource` is `nvarchar(255)`; longer names are truncated silently, so two names equal in their first 255 characters share a lock. Names are compared case-sensitively. |
+| Hashing | The lock is keyed by a 32-bit hash of the name: of 200 000 random names, 6 merged into the lock of another name. A collision makes unrelated keys share a lock, which costs spurious waits; a deadlock needs two collisions taken in opposite orders. SQL Server's hash is not available, so fences are ordered by name, not by hash as on PostgreSQL. |
+| Cost | Inside one batch: 1 lock 0.28 ms per call (mostly the round trip), 10 locks 0.38 ms, 100 locks 1.2 ms, 1 000 locks 9 ms, about 9 µs per lock. As its own round trip 0.18 ms against 0.16 ms for `SELECT 1`. Mac: 20 µs per lock. |
+
+Lock names are fixed-length: a prefix and the SHA-256 of the framework schema and the key, so a long key never
+truncates into another one:
+
+```sql
+N'cw|merge|' + CONVERT(nvarchar(64), HASHBYTES('SHA2_256', CONVERT(varbinary(800), @definition) + 0x0A + CONVERT(varbinary(800), @merge_key)), 2)
+```
+
+### Refusing a transaction
+
+A fence refused for the transaction's isolation level must abort the caller's transaction, as `CWF01` does on
+PostgreSQL. `THROW` alone ends the batch but leaves the transaction committable: the caller's commit succeeded and
+kept its earlier write. Rolling back first, or `SET XACT_ABORT ON` before the `THROW`, aborts it: `@@TRANCOUNT` is 0
+and `SqlTransaction.Commit` fails with "This SqlTransaction has completed; it is no longer usable":
+
+```sql
+IF (SELECT transaction_isolation_level FROM sys.dm_exec_sessions WHERE session_id = @@SPID) <> 2
+BEGIN
+    IF @@TRANCOUNT > 0 ROLLBACK;
+    THROW 51001, N'Holder writes on superseding sources need READ COMMITTED isolation.', 1;
+END
+EXEC sp_getapplock @Resource = @fence, @LockMode = 'Shared', @LockOwner = 'Transaction';
+```
+
+This was tested as a batch. Inside a stored procedure a `ROLLBACK` also raises 266 (transaction count mismatch),
+which the provider's error mapping has to expect if the fence becomes a procedure.
+
+### Per-row try-locks
+
+PostgreSQL's claim tries each locked record's subject pause lock inside one statement
+(`pg_try_advisory_xact_lock_shared` in the `WHERE`). `sp_getapplock` is a procedure and cannot be called inside a
+statement, so the claim batch loops over the distinct subjects of its locked records, about 9 µs per subject:
+
+```sql
+DECLARE @i int = 0, @n int = (SELECT COUNT(*) FROM @subjects), @k nvarchar(255), @r int;
+WHILE @i < @n
+BEGIN
+    SELECT @k = lock_name FROM @subjects WHERE ord = @i;
+    EXEC @r = sp_getapplock @Resource = @k, @LockMode = 'Shared', @LockOwner = 'Transaction', @LockTimeout = 0;
+    IF @r < 0 INSERT @busy VALUES (@i);
+    SET @i += 1;
+END
+```
+
+## Merging
+
+PostgreSQL merges requests with `INSERT ... ON CONFLICT` on the partial unique index `jobs_merge (definition,
+merge_key) WHERE merge_key IS NOT NULL AND state = 0`. SQL Server has filtered unique indexes with the same
+definition. Variants were measured with 15 requesters and one completer that ends outstanding jobs, for 6–8 s each;
+requests hold each identity once, in key order:
+
+| Variant | 1 identity per request, 20 identities | 10 per request, 20 identities | 10 per request, 2 000 identities |
+|---|---|---|---|
+| `MERGE ... WITH (HOLDLOCK)` | 3 requests, 15 deadlocks | 105/s, 27 deadlocks | 56/s, 37 deadlocks |
+| `UPDATE` then `INSERT ... WHERE NOT EXISTS` under `UPDLOCK, SERIALIZABLE` | 107/s, 56 deadlocks | 15/s, 57 deadlocks | 762/s, 25 deadlocks |
+| Row first (below) without identity locks | 343/s, 5 deadlocks | 17/s, 51 deadlocks | 933/s, 0 deadlocks |
+| **Identity locks, then row first** | **1 886/s, 0 deadlocks**, p99 26 ms | 129/s, 2 deadlocks (see below) | **1 671/s, 0 deadlocks**, p99 22 ms |
+
+No variant created a second outstanding job of one identity: the filtered unique index guarantees it. The difference
+is deadlocks.
+
+- `MERGE ... WITH (HOLDLOCK)` read the clustered index under serializable range locks instead of seeking
+  `jobs_merge`, so it serialized every request.
+- The others deadlock on lock order across indexes. A request finds the outstanding job through `jobs_merge`, locking
+  its index key, and then locks the row; a completion locks the row by primary key and then the `jobs_merge` key it
+  removes. PostgreSQL has no such cycle because its row lock is on the tuple and index entries take no locks.
+- Without a global order, requests of several identities still deadlock with each other: locks on existing jobs
+  (taken in id order) and inserts (taken in key order) interleave.
+
+The working design takes one exclusive applock per identity in merge-key order first, a global order like
+PostgreSQL's sorted `ON CONFLICT` rounds. It then finds outstanding jobs without locks (an RCSI read), locks them by
+primary key, re-evaluates them in the next statement, and inserts the rest. An insert that meets a job committed in
+the meantime fails with 2601, and the round repeats:
+
+```sql
+SET XACT_ABORT OFF;
+-- Identity locks in merge-key order (@items.ord follows that order).
+WHILE @i < @n
+BEGIN
+    SELECT @lk = N'cw|merge|' + CONVERT(nvarchar(64), HASHBYTES('SHA2_256', CONVERT(varbinary(800), @def) + 0x0A + CONVERT(varbinary(800), merge_key)), 2)
+    FROM @items WHERE ord = @i;
+    EXEC sp_getapplock @Resource = @lk, @LockMode = 'Exclusive', @LockOwner = 'Transaction';
+    SET @i += 1;
+END
+WHILE @round < 10
+BEGIN
+    DELETE @found;
+    INSERT @found SELECT t.id, s.ord FROM @items AS s
+        JOIN jobs AS t WITH (INDEX(jobs_merge)) ON t.definition = @def AND t.merge_key = s.merge_key AND t.merge_key IS NOT NULL AND t.state = 0
+        WHERE NOT EXISTS (SELECT 1 FROM @done AS d WHERE d.ord = s.ord);
+    SELECT @round = @round FROM jobs AS t WITH (UPDLOCK, ROWLOCK, FORCESEEK) JOIN @found AS f ON t.id = f.id;
+    UPDATE t SET requests = t.requests + 1, due = CASE WHEN t.due < SYSUTCDATETIME() THEN t.due ELSE SYSUTCDATETIME() END
+    OUTPUT s.ord, 'M' INTO @done
+    FROM jobs AS t JOIN @found AS f ON t.id = f.id JOIN @items AS s ON s.ord = f.ord
+    WHERE t.state = 0 AND t.part = s.part;
+    BEGIN TRY
+        INSERT jobs (definition, merge_key, state, part, due)
+        SELECT @def, s.merge_key, 0, s.part, SYSUTCDATETIME() FROM @items AS s
+        WHERE NOT EXISTS (SELECT 1 FROM @done AS d WHERE d.ord = s.ord) AND NOT EXISTS (SELECT 1 FROM @found AS f WHERE f.ord = s.ord)
+        ORDER BY s.merge_key;
+        INSERT @done SELECT s.ord, 'I' FROM @items AS s
+        WHERE NOT EXISTS (SELECT 1 FROM @done AS d WHERE d.ord = s.ord) AND NOT EXISTS (SELECT 1 FROM @found AS f WHERE f.ord = s.ord);
+    END TRY
+    BEGIN CATCH
+        IF ERROR_NUMBER() NOT IN (2601, 2627) THROW;
+    END CATCH
+    IF NOT EXISTS (SELECT 1 FROM @items AS s WHERE NOT EXISTS (SELECT 1 FROM @done AS d WHERE d.ord = s.ord)) BREAK;
+    SET @round += 1;
+END
+```
+
+A completion takes no identity lock: it locks the job's row and then its index entry, and a request holding the
+identity lock waits for that row and then sees the job ended, so the two never wait for each other in a cycle. The 2
+deadlocks left with 10 hot identities per request came from the test's completer, which ended 5 jobs in one
+statement in random order: it and a request locked rows of the same jobs in different orders. Hence the rule for the
+provider: **every statement that locks several rows of one table locks them in primary-key order**, and the order of
+indexes within one row is the same on every path. Cancellation, chain operations and recurrence operations follow it.
+
+Further results:
+
+- A rerun that makes a terminal job outstanding while another job holds its identity fails with 2601, which maps to
+  "identity held" as SQLSTATE 23505 does on PostgreSQL.
+- `IGNORE_DUP_KEY` (the `DO NOTHING` analogue) is refused on filtered indexes (10618). A persisted computed column
+  that is the merge key while outstanding and a per-row value otherwise allows an unfiltered unique index with
+  `IGNORE_DUP_KEY`, but it deadlocked like the others and is not used.
+- Filtered indexes need `ANSI_NULLS`, `ANSI_PADDING`, `ANSI_WARNINGS`, `CONCAT_NULL_YIELDS_NULL` and
+  `QUOTED_IDENTIFIER` on and `NUMERIC_ROUNDABORT` off for writes to the table (an insert with `QUOTED_IDENTIFIER OFF`
+  failed with 1934). SqlClient sessions have them; `ARITHABORT` is off in SqlClient and implied by `ANSI_WARNINGS`. A
+  query with `state = @s` as a parameter still used `jobs_merge`.
+- Batch input: a fan-out of 50 000 new subjects took **68 s** when the multi-statement batch read the table-valued
+  parameter directly, with or without `OPTION (RECOMPILE)`; with the parameter first copied into a local table
+  variable (`DECLARE @items request_items; INSERT @items SELECT * FROM @p;`) it took **0.33 s**, and through `OPENJSON`
+  into a table variable 0.35 s (PostgreSQL: 0.7 s). Batch statements always copy their table-valued input into a
+  local table variable first. The identity locks add about 9 µs per item, about 0.45 s at 50 000; that sum is
+  estimated from the lock cost and still to be measured end to end.
+
+## Signals
+
+SQL Server has no `LISTEN/NOTIFY`. Measured with 4 listening connections, 100–300 signals each sent in a transaction
+that also updates a row, 5 ms apart:
+
+| | Service Broker | Signals table |
+|---|---|---|
+| Commit to delivery | p50 0.6 ms, p99 1.1 ms | poll 10 ms: p50 5.0 ms, p99 10.0 ms; poll 50 ms: p50 25 ms, p99 50 ms |
+| Delivered | all | all |
+| Rollback, rollback to a savepoint | not delivered | not delivered |
+| Short transactions per second, 8 clients, without a signal 6 550 | 804 (`SEND` to 4 listeners over shared dialogs) | 6 716 |
+| Listener round trips, 10 ms poll, 4 listeners, about 3 s | blocking `WAITFOR (RECEIVE)` | 735 (one per wake or per 2 s) |
+| Every process of the application | one queue and service per process, created at runtime; a send goes to each | every process reads the one table |
+| Azure SQL Database | not available | available |
+
+The signals table: a send is an insert in the sending transaction, so it becomes visible exactly when that
+transaction commits and disappears with a rollback, including a rollback to a savepoint:
+
+```sql
+CREATE TABLE work.signals (rv rowversion NOT NULL, topic varchar(64) NOT NULL, k nvarchar(512) NOT NULL);
+CREATE UNIQUE CLUSTERED INDEX signals_rv ON work.signals (rv);
+
+INSERT work.signals (topic, k) VALUES (@topic, @key);
+```
+
+A `rowversion` is assigned at write time, not at commit, so a reader that took every row above its last position
+would pass over a row whose transaction commits later. `MIN_ACTIVE_ROWVERSION()` is the lowest rowversion of any open
+transaction in the database: rows below it are committed or gone. The listener keeps its position and runs one
+batch that returns as soon as committed rows exist below the watermark, or after 2 s:
+
+```sql
+DECLARE @until datetime2 = DATEADD(second, 2, SYSUTCDATETIME()), @top binary(8);
+WHILE 1 = 1
+BEGIN
+    SET @top = MIN_ACTIVE_ROWVERSION();
+    IF EXISTS (SELECT 1 FROM work.signals WHERE rv > @last AND rv < @top) OR SYSUTCDATETIME() > @until BREAK;
+    WAITFOR DELAY '00:00:00.010';
+END;
+SELECT rv, topic, k FROM work.signals WHERE rv > @last AND rv < @top ORDER BY rv;
+```
+
+Against [signals](signals.md):
+
+1. On commit, never after a rollback: met.
+2. Every process of the application: met. Each application has its own framework schema and so its own table.
+3. Lossy, without order: met, and the table loses less than the contract allows. A listener's position survives a
+   reconnection; rows are pruned after a retention, and a listener that falls behind the oldest row resyncs.
+4. `Resync()` on subscription and reconnection: the listener starts at the current watermark and resyncs.
+5. Callbacks on the listener: unchanged.
+
+What it costs against `NOTIFY`: wake latency is the poll interval, and a connection per process sits in the
+server-side loop. And an open transaction that has written any `rowversion` column in the database (a signal, or an
+application table with a row-version concurrency token, as EF Core maps them) holds the watermark back, so signals
+committed after it are delivered only when it ends. They are delayed, never lost. Measured: with an open transaction
+that sent a signal first, 0 later committed signals were readable until it committed; with an open application update
+of another `rowversion` table, the signal committed after it was held back. The poll interval and the retention are
+provider options; pruning is a maintenance statement.
+
+## Statement translation
+
+| PostgreSQL (uses in the provider) | SQL Server |
+|---|---|
+| `clock_timestamp()` (127) | `SYSUTCDATETIME()` in a statement that starts after the lock statement. Statements that rely on PostgreSQL re-reading the clock after a lock wait inside one statement (`ON CONFLICT DO UPDATE`, the `WaitAsync` mark, single-statement transitions) are split into lock and evaluation. `datetime2(7)` has 100 ns precision. |
+| `now()` as a stable index bound and claim cutoff | A variable set from `SYSUTCDATETIME()` at the start of the batch. |
+| `FOR UPDATE` (55) / `SKIP LOCKED` (36) | `WITH (UPDLOCK, ROWLOCK)` / `WITH (UPDLOCK, ROWLOCK, READPAST)`, on an index in the claim's order. |
+| `RETURNING` (36) | `OUTPUT ... INTO` a table variable, then `SELECT`. `OUTPUT` without `INTO` is refused on tables with enabled triggers (334), and lease sources are application tables. |
+| `unnest` arrays (26) | A table-valued parameter (a framework table type) copied into a local table variable; `OPENJSON` where no table type fits. |
+| `ON CONFLICT` (22) | [Merging](#merging): identity applocks, row first, `TRY/CATCH` on 2601. For `occurrence` uniqueness the same pattern, with the recurrence's lock as the identity lock. |
+| `'infinity'` (19) | `9999-12-31T23:59:59.9999999` as a sentinel. `DATEADD` past it fails (517), so additions to a value that can be the sentinel are guarded. |
+| `pg_notify` (12) | An insert into the signals table, conditional inserts from `INSERT ... SELECT` over the matched rows. |
+| Data-modifying CTEs (6) | Several statements in one batch joined through table variables. |
+| `COLLATE "C"` | `Latin1_General_100_BIN2` on key columns. |
+| `interval` columns | `bigint` ticks. |
+| `uuid` | `uniqueidentifier` (see the decision on identifiers). |
+| `NULLS NOT DISTINCT` unique constraints | A plain unique index: SQL Server treats NULLs as equal in unique indexes (a second NULL failed with 2601). PostgreSQL's default (`NULLS DISTINCT`) needs a filtered index `WHERE col IS NOT NULL`. |
+| Partial indexes | Filtered indexes: simple comparisons, `IS [NOT] NULL` and `IN`, no `OR`, no functions; the session options above. |
+| `INCLUDE` indexes | Supported. |
+| `hashtextextended` advisory keys | Fixed-length names with SHA-256, ordered by name. |
+| `pg_try_advisory_xact_lock_shared` inside a statement | A T-SQL loop with `@LockTimeout = 0` (see [per-row try-locks](#per-row-try-locks)). |
+| `set_config('jit', 'off', true)` | Not applicable. Plans are cached per statement text; variable-size batches copy their input into table variables. |
+| `lock_timeout` in a savepoint | `SET LOCK_TIMEOUT 50`, error 1222, rollback to the savepoint. |
+| `SQLSTATE 23505` | Errors 2601 (unique index) and 2627 (unique constraint). |
+| Deadlock detection | Error 1205; the victim's transaction is rolled back. The provider retries its own transactions; in the caller's transaction the error reaches the caller. |
+
+## Rules for the provider
+
+- Require RCSI at startup; check the caller's isolation level once per transaction where read committed is required.
+- Lock in one statement, evaluate in the next; no condition that depends on a lock is evaluated inside the statement
+  that waits for it.
+- `READPAST` for every claim and settlement scan, on an index in its order, with the claim's predicate in the index.
+- Every statement that locks several rows of a table locks them in primary-key order.
+- Merge identities are serialized with exclusive applocks in merge-key order before any row lock.
+- Fences, limit scopes and subject pauses are applocks with fixed-length names; several of them are taken in name
+  order.
+- A refused fence rolls back before it throws.
+- `OUTPUT INTO` table variables only.
+- Table-valued input is copied into a local table variable before multi-statement use.
+- Framework tables disable lock escalation; sources whose tables escalate are refused.
+- Deadlock victims (1205) in provider transactions are retried.
+
+## Effort and risks
+
+The PostgreSQL provider is 8 154 lines. The SQL Server provider has the same structure and operations; it grows by
+splitting statements into lock and evaluation, the T-SQL loops for fences and subject try-locks, the merge rounds, the
+signals table with its listener and pruning, the RCSI and isolation checks, lock escalation settings and verification,
+deadlock retries and its schema scripts in T-SQL. Estimate: 9 000–11 000 lines, 1.1–1.35 times the PostgreSQL
+provider, plus a conformance provider and provisioning on `Testcontainers.MsSql` like the PostgreSQL tests.
+
+Conformance scenarios at risk, to be watched first:
+
+- Requests racing completions and cancellations of the same identities (lock order across indexes and rows).
+- Every operation that locks several rows: cancellation by subject, chains, `TriggerAsync`, `RemoveAsync`,
+  retention.
+- Claims next to large application writes on a source table (lock escalation; refused at startup unless disabled).
+- Wake latency in provider tests (poll interval instead of `NOTIFY`).
+- Large fan-outs and planner shapes for variable-size input.
+- Anything that assumes ids sort by time.
+- Planning with savepoints and lock timeouts.
+
+Core changes: none to the public contract. One internal change is needed: a provider slot on `WorkTransaction` to
+record the isolation check. Deadlock victims in the caller's transaction surface as `SqlException` 1205; whether the
+core reports them as a framework error type is a decision for the provider stage.
+
+Not verified yet: `Microsoft.Data.SqlClient` under trimming and Native AOT; `Testcontainers.MsSql` on the Mac; Azure
+SQL Database and Managed Instance; the end-to-end cost of identity locks in a 50 000-item fan-out; page splits of
+`uniqueidentifier` primary keys at 1M and 10M jobs.

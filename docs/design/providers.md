@@ -562,12 +562,12 @@ provider runs them on an `InMemoryClock`, and providers whose clock follows real
 
 ## Further providers
 
-Providers are added only when they can pass the suite. SQL Server is the likely second provider. MongoDB is used to
-challenge the contract before it is frozen; the notes below are a starting point, not evidence of equivalent
+Providers are added only when they can pass the suite. SQL Server is the second provider. MongoDB is used to
+challenge the contract before it is frozen; its notes below are a starting point, not evidence of equivalent
 semantics.
 
-- **SQL Server:** claims with `UPDLOCK, READPAST, ROWLOCK`; filtered unique indexes for merging; no commit-time
-  notification, so wake-up is polling and next-due timers.
+- **SQL Server:** investigated with proofs of concept; the translation of each guarantee, the measurements and the
+  decisions are in [SQL Server provider](sqlserver.md).
 - **MongoDB:** claims with conditional `findOneAndUpdate` per record, sorted by due time; partial unique indexes for
   merging; multi-document transactions, which need a replica set, for fan-out, guard, completion and hooks; the guard
   must write the document, because a read inside a transaction does not protect a later commit; change streams for

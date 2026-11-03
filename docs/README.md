@@ -36,6 +36,7 @@ readers who want the full semantics.
 | [Signals](design/signals.md) | Commit-time wake hints on topics for the framework and applications. |
 | [Hosting](design/hosting.md) | Registration, startup, processes, dispatch, shutdown and testing. |
 | [Store providers](design/providers.md) | The provider contract and its required guarantees, transactions, schema ownership, conformance. |
+| [SQL Server provider](design/sqlserver.md) | How SQL Server meets each guarantee, the statement translation, measurements and decisions. |
 | [Scenarios](design/scenarios.md) | Behaviour every layer and provider must show; the basis of the conformance suite. |
 | [Decisions](design/decisions.md) | Decisions taken and those still open. |
 | [Implementation](design/implementation.md) | Build order and status. |
