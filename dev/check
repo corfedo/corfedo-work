@@ -1,11 +1,48 @@
 #!/bin/sh
 # Builds Release, runs the tests and publishes the Native AOT smoke application.
-# Fails on any build, test, trimming or AOT warning. PostgreSQL tests need Docker; see the README.
+# Fails on any build, test, trimming or AOT warning. The PostgreSQL and SQL Server tests need Docker; see CONTRIBUTING.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
+sqlserver=
+log=
+cleanup() {
+  [ -n "$log" ] && rm -f "$log"
+  [ -n "$sqlserver" ] && docker rm -f "$sqlserver" >/dev/null
+  return 0
+}
+trap cleanup EXIT
+
 dotnet build Corfedo.Work.slnx -c Release
+
+# The test processes share one SQL Server: each would otherwise start a container of its own, and SQL Server sizes its
+# memory to the host. Tempdb keeps its metadata in memory-optimized tables, which takes a restart.
+if [ -z "${CORFEDO_WORK_SQLSERVER:-}" ]; then
+  password="Cw-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  sqlserver=$(docker run -d --platform linux/amd64 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$password" -p 127.0.0.1::1433 \
+    "${CORFEDO_WORK_SQLSERVER_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}")
+  sqlcmd() { docker exec "$sqlserver" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$password" -b -Q "$1" >/dev/null 2>&1; }
+  ready() {
+    tries=0
+    until sqlcmd "SELECT 1"; do
+      tries=$((tries + 1))
+      if [ "$tries" -ge 120 ]; then
+        echo "SQL Server did not start" >&2
+        docker logs "$sqlserver" >&2
+        exit 1
+      fi
+      sleep 1
+    done
+  }
+  ready
+  sqlcmd "ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON;"
+  docker restart "$sqlserver" >/dev/null
+  ready
+  port=$(docker port "$sqlserver" 1433/tcp | head -n 1 | sed 's/.*://')
+  export CORFEDO_WORK_SQLSERVER="Server=127.0.0.1,$port;User ID=sa;Password=$password;TrustServerCertificate=True"
+fi
+
 dotnet test Corfedo.Work.slnx -c Release --no-build
 
 case $(uname -s)-$(uname -m) in
@@ -16,7 +53,6 @@ case $(uname -s)-$(uname -m) in
 esac
 out=artifacts/aot-smoke/$rid
 log=$(mktemp)
-trap 'rm -f "$log"' EXIT
 # The smoke binary that runs below must come from this publish, not from an earlier one.
 rm -f "$out/Corfedo.Work.AotSmoke"
 status=0

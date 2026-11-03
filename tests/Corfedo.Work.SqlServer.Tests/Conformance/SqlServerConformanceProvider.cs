@@ -13,6 +13,8 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
 {
     private const string Schema = "app";
     private string connectionString = "";
+    private readonly SemaphoreSlim clockGate = new(1, 1);
+    private SqlConnection clock = null!;
     private int tables;
 
     public bool HasSignals => true;
@@ -28,9 +30,10 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
         connectionString = await server.CreateDatabaseAsync();
         await ExecuteAsync($"CREATE SCHEMA {Schema}", CancellationToken.None);
         await CreateStore().MigrateAsync(CancellationToken.None);
+        clock = await OpenAsync(CancellationToken.None);
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync() => clock.DisposeAsync();
 
     public void AddStore(IServiceCollection services) => services.AddSqlServerWorkStore(connectionString);
 
@@ -336,11 +339,23 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
         }
     }
 
+    /// <summary>
+    /// Reads the store's clock on a connection kept open for it, one caller at a time: a new connection may take a
+    /// login, which costs hundreds of milliseconds on SQL Server 2025 under the suite's load and would count as lag in
+    /// the scenarios that measure it.
+    /// </summary>
     public async Task<DateTimeOffset> NowAsync(CancellationToken cancellationToken)
     {
-        await using var connection = await OpenAsync(cancellationToken);
-        await using var command = new SqlCommand("SELECT SYSUTCDATETIME()", connection);
-        return new DateTimeOffset(DateTime.SpecifyKind((DateTime)(await command.ExecuteScalarAsync(cancellationToken))!, DateTimeKind.Utc));
+        await clockGate.WaitAsync(cancellationToken);
+        try
+        {
+            await using var command = new SqlCommand("SELECT SYSUTCDATETIME()", clock);
+            return new DateTimeOffset(DateTime.SpecifyKind((DateTime)(await command.ExecuteScalarAsync(cancellationToken))!, DateTimeKind.Utc));
+        }
+        finally
+        {
+            clockGate.Release();
+        }
     }
 
     /// <summary>The database's <c>Transactions/sec</c> counter, a running total of the transactions it started.</summary>

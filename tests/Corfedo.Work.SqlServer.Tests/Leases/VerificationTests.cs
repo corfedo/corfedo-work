@@ -113,11 +113,24 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
             GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.escalating_readonly TO [{login}];
             """, Cancel);
         var connectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString;
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store(connectionString).VerifyAsync(source, Cancel));
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store(connectionString).VerifyAsync(source, Cancel));
-
-        Assert.Contains("ALTER TABLE [dbo].[escalating_readonly] SET (LOCK_ESCALATION = DISABLE)", error.Message, StringComparison.Ordinal);
-        Assert.Equal("TABLE", (string?)await database.ScalarAsync("SELECT lock_escalation_desc FROM sys.tables WHERE object_id = OBJECT_ID(N'dbo.escalating_readonly')", Cancel));
+            Assert.Contains("ALTER TABLE [dbo].[escalating_readonly] SET (LOCK_ESCALATION = DISABLE)", error.Message, StringComparison.Ordinal);
+            Assert.Equal("TABLE", (string?)await database.ScalarAsync("SELECT lock_escalation_desc FROM sys.tables WHERE object_id = OBJECT_ID(N'dbo.escalating_readonly')", Cancel));
+        }
+        finally
+        {
+            // Logins belong to the server, which test processes may share. The store's pooled sessions are ended first.
+            await database.ExecuteAsync($"""
+                DECLARE @kill nvarchar(max) = N'';
+                SELECT @kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{login}';
+                EXEC (@kill);
+                DROP USER [{login}];
+                DROP LOGIN [{login}];
+                """, Cancel);
+        }
     }
 
     private ILeaseStore Store(string? connectionString = null) =>

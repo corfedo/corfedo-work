@@ -19,7 +19,9 @@ copyright assignment or additional rights through a contributor license agreemen
 Requires the .NET SDK pinned in [`global.json`](global.json) and Docker for the PostgreSQL and SQL Server tests, which
 start one `postgres:18.6` or SQL Server container per test process through Testcontainers and create a database per
 test class. The SQL Server tests use SQL Server 2022; `CORFEDO_WORK_SQLSERVER_IMAGE` chooses another image, such as
-`mcr.microsoft.com/mssql/server:2025-latest`.
+`mcr.microsoft.com/mssql/server:2025-latest`. `CORFEDO_WORK_SQLSERVER`, a connection string to `master`, makes the test
+processes share a running server instead; `dev/check` starts one for its run, since SQL Server sizes its memory to the
+host.
 
 ```sh
 dev/check    # Release build, all tests, Native AOT smoke publish; fails on any warning

@@ -6,8 +6,11 @@ using Testcontainers.MsSql;
 namespace Corfedo.Work.SqlServer.Tests.Provisioning;
 
 /// <summary>
-/// One SQL Server container per test process, published on a free host port. <c>CORFEDO_WORK_SQLSERVER_IMAGE</c>
-/// chooses the image, SQL Server 2022 by default.
+/// The SQL Server of a test process. <c>CORFEDO_WORK_SQLSERVER</c>, a connection string to <c>master</c>, names a
+/// running server that test processes share, as <c>dev/check</c> provides; without it the process starts a container
+/// of its own, published on a free host port, whose image <c>CORFEDO_WORK_SQLSERVER_IMAGE</c> chooses, SQL Server
+/// 2022 by default. A shared server keeps one buffer pool for all processes: SQL Server sizes its memory to the host,
+/// and a container per process ran a 30 GiB host out of memory.
 /// </summary>
 public sealed class SqlServerInstance : IAsyncLifetime
 {
@@ -15,15 +18,24 @@ public sealed class SqlServerInstance : IAsyncLifetime
         ? image
         : "mcr.microsoft.com/mssql/server:2022-latest";
 
-    private readonly MsSqlContainer container = new MsSqlBuilder(Image).Build();
+    private static readonly string? Shared = Environment.GetEnvironmentVariable("CORFEDO_WORK_SQLSERVER") is { Length: > 0 } shared ? shared : null;
+
+    private readonly MsSqlContainer? container = Shared is null ? new MsSqlBuilder(Image).Build() : null;
+    private readonly List<string> databases = [];
+
+    private string Master => Shared ?? container!.GetConnectionString();
 
     /// <summary>
     /// Starts the container with tempdb's metadata in memory-optimized tables: every provider batch declares table
     /// variables, whose creation otherwise contends on tempdb's system pages under the suite's concurrency. The setting
-    /// takes effect after a restart.
+    /// takes effect after a restart. A shared server is configured by whoever runs it.
     /// </summary>
     public async ValueTask InitializeAsync()
     {
+        if (container is null)
+        {
+            return;
+        }
         await container.StartAsync();
         await using (var connection = new SqlConnection(container.GetConnectionString()))
         {
@@ -35,7 +47,23 @@ public sealed class SqlServerInstance : IAsyncLifetime
         await container.StartAsync();
     }
 
-    public ValueTask DisposeAsync() => container.DisposeAsync();
+    /// <summary>Removes the container, or on a shared server the databases this process created.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (container is not null)
+        {
+            await container.DisposeAsync();
+            return;
+        }
+        SqlConnection.ClearAllPools();
+        await using var connection = new SqlConnection(Master);
+        await connection.OpenAsync();
+        foreach (var name in databases)
+        {
+            await using var command = new SqlCommand($"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}];", connection);
+            await command.ExecuteNonQueryAsync();
+        }
+    }
 
     /// <summary>
     /// Creates an empty database and returns its connection string. It reads committed snapshots, as the store
@@ -45,7 +73,11 @@ public sealed class SqlServerInstance : IAsyncLifetime
     public async Task<string> CreateDatabaseAsync(bool snapshotReads = true, CancellationToken cancellationToken = default)
     {
         var name = "t_" + Guid.NewGuid().ToString("N");
-        await using (var connection = new SqlConnection(container.GetConnectionString()))
+        lock (databases)
+        {
+            databases.Add(name);
+        }
+        await using (var connection = new SqlConnection(Master))
         {
             await connection.OpenAsync(cancellationToken);
             await using var command = new SqlCommand($"""
@@ -56,7 +88,7 @@ public sealed class SqlServerInstance : IAsyncLifetime
                 """, connection);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
-        return new SqlConnectionStringBuilder(container.GetConnectionString()) { InitialCatalog = name, MaxPoolSize = 200 }.ConnectionString;
+        return new SqlConnectionStringBuilder(Master) { InitialCatalog = name, MaxPoolSize = 200 }.ConnectionString;
     }
 }
 
