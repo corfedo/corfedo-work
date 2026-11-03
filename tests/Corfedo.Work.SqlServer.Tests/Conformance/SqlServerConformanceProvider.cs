@@ -505,3 +505,18 @@ public sealed class SqlServerLeaseLimitScenarios(SqlServerConformanceProvider pr
 
 public sealed class SqlServerRemoteHolderScenarios(SqlServerConformanceProvider provider)
     : RemoteHolderScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerReconcileRequestScenarios(SqlServerConformanceProvider provider)
+    : ReconcileRequestScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerReconcileResultScenarios(SqlServerConformanceProvider provider)
+    : ReconcileResultScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerReconcileInvalidationScenarios(SqlServerConformanceProvider provider)
+    : ReconcileInvalidationScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerReconcileSupersessionScenarios(SqlServerConformanceProvider provider)
+    : ReconcileSupersessionScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerReconcilePoolScenarios(SqlServerConformanceProvider provider)
+    : ReconcilePoolScenarios(provider), IClassFixture<SqlServerConformanceProvider>;

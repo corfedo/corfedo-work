@@ -16,7 +16,9 @@ public abstract class ReconcileInvalidationScenarios(IReconcileConformanceProvid
         {
             await InsertAsync(source, key, DueState.None, revision: 3);
         }
-        var hot = new TestKey("hot", 1);
+        // The requested record comes after the backlog in key order as in insertion order, so the generation index
+        // reaches it last whichever order a provider gives records of the same generation.
+        var hot = new TestKey("u", 1);
         await InsertAsync(source, hot);
         var client = await ClientAsync(source);
         var versions = await Provider.RecordVersionsAsync(source.Store, Cancel);

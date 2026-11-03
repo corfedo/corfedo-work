@@ -205,6 +205,13 @@ EXEC sp_getapplock @Resource = @fence, @LockMode = 'Shared', @LockOwner = 'Trans
 This was tested as a batch. Inside a stored procedure a `ROLLBACK` also raises 266 (transaction count mismatch),
 which the provider's error mapping has to expect if the fence becomes a procedure.
 
+The rolled-back transaction cannot be kept doomed past the batch, and SqlClient (7.1.1) treats a `SqlTransaction` the
+server ended as completed: `Commit` and `Rollback` throw, and a command given that transaction afterwards runs outside
+any transaction, with `@@TRANCOUNT` 0, so a write the caller issues after ignoring the refusal commits on its own. On
+PostgreSQL such a write fails in the aborted transaction. Every error that rolls the transaction back behaves the same
+way, a deadlock victim (1205) included. The provider accepts this: no write of the refused transaction commits and its
+commit fails; callers must not continue on a connection after a refusal as if the transaction were still open.
+
 ### Per-row try-locks
 
 PostgreSQL's claim tries each locked record's subject pause lock inside one statement
@@ -450,6 +457,9 @@ provider options; pruning is a maintenance statement.
 - A query whose predicate implies a filtered index's filter reads the filter's column from the table unless the index
   carries it, so a scan of `<due> WHERE <expires> IS NULL` looks up each row it passes; an index hint on a filtered
   index whose filter the query does not imply fails with 8622.
+- In an index without a unique key of its own, rows of equal key value are ordered by the clustered key, where
+  PostgreSQL's B-tree orders them by heap position; claims of stale records through the generation index therefore
+  reach records of one generation in key order, not in insertion order.
 - The signals table is a framework table: a database is migrated before clients run, including clients that are
   never started, since lease operations signal in their statements.
 - `Microsoft.Data.SqlClient` 7.1.1, like every earlier version, depends on `System.Security.Cryptography.Pkcs` below the
