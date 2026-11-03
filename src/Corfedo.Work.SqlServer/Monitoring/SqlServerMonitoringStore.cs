@@ -14,12 +14,7 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
     /// <summary>The columns <see cref="ReadIncident"/> reads, of an incident aliased <c>i</c>.</summary>
     private const string IncidentColumns = "i.id, i.kind, i.[definition], i.subject_kind, i.subject_id, i.date_set, i.job, i.opened_at, i.resolved_at";
 
-    /// <summary>The declaration of a table variable that receives <see cref="IncidentColumns"/> from an <c>OUTPUT</c> clause.</summary>
-    private const string IncidentTable =
-        $"TABLE (id uniqueidentifier NOT NULL, kind smallint NOT NULL, [definition] nvarchar(200) COLLATE {Tsql.Binary}, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary}, "
-        + $"date_set nvarchar(128) COLLATE {Tsql.Binary}, job uniqueidentifier, opened_at datetime2(7) NOT NULL, resolved_at datetime2(7))";
-
-    /// <summary>The <c>OUTPUT</c> list of <see cref="IncidentTable"/>.</summary>
+    /// <summary>The <c>OUTPUT</c> list of <see cref="IncidentColumns"/>.</summary>
     private const string IncidentOutput =
         "inserted.id, inserted.kind, inserted.[definition], inserted.subject_kind, inserted.subject_id, inserted.date_set, inserted.job, inserted.opened_at, inserted.resolved_at";
 
@@ -151,6 +146,18 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
         return list;
     }
 
+    /// <summary>Reads the incidents of the current result set and of every result set after it.</summary>
+    private static async Task<List<WorkIncident>> ReadIncidentSetsAsync(SqlDataReader reader, CancellationToken cancellationToken)
+    {
+        var list = new List<WorkIncident>();
+        do
+        {
+            list.AddRange(await ReadIncidentsAsync(reader, cancellationToken));
+        }
+        while (await reader.NextSetAsync(cancellationToken));
+        return list;
+    }
+
     /// <summary>The key's match on <paramref name="alias"/>: its subject in <c>@kind</c> and <c>@subject</c>, or no subject.</summary>
     private static string KeyMatch(string alias, Subject? subject) =>
         subject is null ? $"{alias}.subject_kind IS NULL AND {alias}.subject_id IS NULL" : $"{alias}.subject_kind = @kind AND {alias}.subject_id = @subject";
@@ -163,34 +170,34 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
     private static readonly (string Column, string Type)[] StateKey =
         [("[definition]", "nvarchar(200)"), ("subject_kind", "nvarchar(100)"), ("subject_id", "nvarchar(400)")];
 
-    /// <summary>The declaration of a table variable of <see cref="StateKey"/> keys.</summary>
-    private const string StateKeyTable = $"TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary})";
+    /// <summary>The key of <c>job_expectation_changes</c>.</summary>
+    private static readonly (string Column, string Type)[] ChangeKey = [("n", "bigint")];
 
-    /// <summary>The row of <paramref name="alias"/> has the key of <paramref name="key"/>, either a state row or a key table.</summary>
+    /// <summary>The row of <paramref name="alias"/> has the subject of <paramref name="key"/>, a state row or a row of keys.</summary>
     private static string SameKey(string alias, string key) =>
         $"{alias}.subject_kind IS NOT DISTINCT FROM {key}.subject_kind AND {alias}.subject_id IS NOT DISTINCT FROM {key}.subject_id";
 
     /// <summary>
-    /// Statements that resolve the open incidents (alias <c>i</c>) <paramref name="selection"/> selects, returning them
-    /// as <see cref="IncidentColumns"/>, or into <paramref name="into"/>, a table variable of <see cref="IncidentTable"/>:
-    /// they are found without locks, locked in primary-key order, waiting, and resolved at <paramref name="resolvedAt"/>
-    /// when they still match after the locks are held.
+    /// Statements that resolve the open incidents (alias <c>i</c>) <paramref name="selection"/> selects and return them
+    /// in one result set of <see cref="IncidentColumns"/>: they are found without locks, locked in primary-key order,
+    /// waiting, and resolved at <paramref name="resolvedAt"/> when they still match after the locks are held.
     /// </summary>
-    private string ResolveIncidents(string selection, string resolvedAt = "SYSUTCDATETIME()", string? into = "@resolved") => $"""
+    private string ResolveIncidents(string selection, string resolvedAt = "SYSUTCDATETIME()") => $"""
         DECLARE @open nvarchar(max) = (SELECT i.id FROM {incidents} AS i WHERE i.resolved_at IS NULL AND {selection} ORDER BY i.id FOR JSON PATH), @open_locked int;
         SELECT @open_locked = COUNT(*) FROM OPENJSON(@open) WITH (id uniqueidentifier '$.id') AS o INNER LOOP JOIN {incidents} AS i WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON i.id = o.id;
-        UPDATE i SET resolved_at = {resolvedAt}, due_at = COALESCE(i.due_at, SYSUTCDATETIME()) OUTPUT {IncidentOutput}{(into is null ? "" : " INTO " + into)}
+        UPDATE i SET resolved_at = {resolvedAt}, due_at = COALESCE(i.due_at, SYSUTCDATETIME()) OUTPUT {IncidentOutput}
         FROM OPENJSON(@open) WITH (id uniqueidentifier '$.id') AS o INNER LOOP JOIN {incidents} AS i WITH (FORCESEEK) ON i.id = o.id WHERE i.resolved_at IS NULL AND {selection};
 
         """;
 
     /// <summary>
-    /// A statement that opens an incident unless its key has one open of its kind, returning it as
-    /// <see cref="IncidentColumns"/>, or into <paramref name="into"/>, a table variable of <see cref="IncidentTable"/>,
-    /// with the columns <paramref name="columns"/> and the <c>VALUES</c> or <c>SELECT</c> <paramref name="values"/>.
+    /// A statement that opens an incident unless its key has one open of its kind and returns it in a result set of
+    /// <see cref="IncidentColumns"/>, with the columns <paramref name="columns"/> and the <c>VALUES</c>
+    /// <paramref name="values"/>. Run in a loop, it returns one result set per run; <see cref="ReadIncidentSetsAsync"/>
+    /// reads them.
     /// </summary>
-    private string OpenIncident(string columns, string values, string? into = "@opened") =>
-        Tsql.IgnoreUnique($"INSERT INTO {incidents} ({columns}) OUTPUT {IncidentOutput}{(into is null ? "" : " INTO " + into)} {values};");
+    private string OpenIncident(string columns, string values) =>
+        Tsql.IgnoreUnique($"INSERT INTO {incidents} ({columns}) OUTPUT {IncidentOutput} {values};");
 
     /// <summary>
     /// Statements that run <paramref name="update"/> of one state row and, when it changed none, <paramref name="insert"/>;

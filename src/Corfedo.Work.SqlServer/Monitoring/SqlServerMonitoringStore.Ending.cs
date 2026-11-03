@@ -42,7 +42,7 @@ internal sealed partial class SqlServerMonitoringStore
             IF @failures > @limit
             BEGIN
                 {OpenIncident("id, kind, [definition], subject_kind, subject_id, job, opened_at, due_at",
-                    $"VALUES (NEWID(), {(int)WorkIncidentKind.FailsAtMostInARow}, @definition, @kind, @subject, @job, @ended, SYSUTCDATETIME())", into: null)}
+                    $"VALUES (NEWID(), {(int)WorkIncidentKind.FailsAtMostInARow}, @definition, @kind, @subject, @job, @ended, SYSUTCDATETIME())")}
             END
             """,
             [
@@ -82,7 +82,7 @@ internal sealed partial class SqlServerMonitoringStore
         List<WorkIncident> resolved;
         await using (var command = Tsql.Command(work, $"""
             {whole}UPDATE s SET {Update} FROM {states} AS s WHERE s.[definition] = @definition AND {KeyMatch("s", subject)} AND {Applies};
-            {ResolveIncidents(resolve, "GREATEST(@ended, i.opened_at)", into: null)}
+            {ResolveIncidents(resolve, "GREATEST(@ended, i.opened_at)")}
             """,
             [Tsql.Text("@definition", definition, 200), Tsql.Time("@ended", endedAt), .. SubjectParameters(subject)]))
         await using (var reader = await command.ReaderAsync(cancellationToken))

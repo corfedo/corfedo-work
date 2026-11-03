@@ -26,18 +26,21 @@ internal sealed partial class SqlServerMonitoringStore
         + $"AND r.subject_id = {row}.subject_id AND r.paused = 0)))";
 
     /// <summary>
-    /// Statements that clear the windows of the rows of the keys in the table variable <c>@gone</c> of
-    /// <see cref="StateKeyTable"/>, which the transaction holds, into <c>@cleared</c>, and resolve their keys' open
-    /// <see cref="WorkIncidentKind.CompletesBy"/> incidents into <c>@resolved</c>; the definition is <c>@definition</c>.
+    /// Statements that clear the windows of the rows of <c>@definition</c> with the subjects of <paramref name="gone"/>, a
+    /// row source with <c>subject_kind</c> and <c>subject_id</c> whose rows exist and the transaction holds, counting them
+    /// in <c>@cleared</c>, and resolve their keys' open <see cref="WorkIncidentKind.CompletesBy"/> incidents, returned
+    /// as by <see cref="ResolveIncidents"/>.
     /// </summary>
-    private string ClearWindows => $"""
-        DECLARE @cleared TABLE (subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
+    private string ClearWindows(string gone) => $"""
         UPDATE s SET deadline_at = NULL, window_start = NULL, met_at = NULL, first_after = NULL, last_after = NULL, whole = 0, revision = NULL
-        OUTPUT inserted.subject_kind, inserted.subject_id INTO @cleared
-        FROM @gone AS g INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = g.[definition] AND {SameKey("s", "g")};
-        DECLARE @resolved {IncidentTable};
-        {ResolveIncidents($"i.[definition] = @definition AND i.kind = {(int)WorkIncidentKind.CompletesBy} AND EXISTS (SELECT 1 FROM @cleared AS c WHERE {SameKey("i", "c")})")}
+        FROM {gone} AS g INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = @definition AND {SameKey("s", "g")};
+        DECLARE @cleared int = @@ROWCOUNT;
+        {ResolveIncidents($"i.[definition] = @definition AND i.kind = {(int)WorkIncidentKind.CompletesBy} AND EXISTS (SELECT 1 FROM {gone} AS c WHERE {SameKey("i", "c")})")}
         """;
+
+    /// <summary>The keys of the JSON array <c>@keys</c> that <see cref="KeysJson"/> writes, as a row source of their subjects.</summary>
+    private const string Keys =
+        $"OPENJSON(@keys) WITH (n int '$.n', subject_kind nvarchar(100) COLLATE {Tsql.Binary} '$.k', subject_id nvarchar(400) COLLATE {Tsql.Binary} '$.i')";
 
     /// <summary>
     /// Deletes the queued changes locked without waiting and, in the same transaction, reads each key in a new statement,
@@ -53,12 +56,10 @@ internal sealed partial class SqlServerMonitoringStore
             var deleted = 0;
             var keys = new HashSet<(string? Kind, string? Id)>();
             await using (var delete = Tsql.Command(work, $"""
-                DECLARE @queued TABLE (n bigint NOT NULL PRIMARY KEY);
+                DECLARE @queued nvarchar(max) = N'';
                 {Tsql.LockEach("queued_scan", "@limit", $"SELECT q.n FROM {keyChanges} AS q WITH (INDEX(job_expectation_changes_definition)) WHERE q.[definition] = @definition",
-                    keyChanges, [("n", "bigint")], "1 = 1", "@queued")}
-                DECLARE @deleted TABLE (subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
-                DELETE c OUTPUT deleted.subject_kind, deleted.subject_id INTO @deleted FROM @queued AS q INNER LOOP JOIN {keyChanges} AS c WITH (FORCESEEK) ON c.n = q.n;
-                SELECT subject_kind, subject_id FROM @deleted;
+                    keyChanges, ChangeKey, "1 = 1", "@queued")}
+                DELETE c OUTPUT deleted.subject_kind, deleted.subject_id FROM {Tsql.KeyRows("@queued", ChangeKey)} AS q INNER LOOP JOIN {keyChanges} AS c WITH (FORCESEEK) ON c.n = q.n;
                 """,
                 Tsql.Text("@definition", definition, 200),
                 Tsql.Int32("@limit", limit)))
@@ -87,15 +88,11 @@ internal sealed partial class SqlServerMonitoringStore
         var start = new List<(string? Kind, string? Id)>();
         var clear = new List<(string? Kind, string? Id)>();
         await using (var read = Tsql.Command(work, $"""
-            DECLARE @k TABLE (n int NOT NULL PRIMARY KEY, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
-            INSERT INTO @k (n, subject_kind, subject_id) SELECT n, k, i FROM OPENJSON(@keys) WITH (n int '$.n', k nvarchar(100) '$.k', i nvarchar(400) '$.i');
-            DECLARE @held TABLE (n int NOT NULL PRIMARY KEY, tracked bit NOT NULL, whole bit NOT NULL);
-            INSERT INTO @held (n, tracked, whole)
-            SELECT k.n, {Tsql.Bit("s.deadline_at IS NOT NULL")}, s.whole FROM @k AS k
-            INNER LOOP JOIN {states} AS s WITH (UPDLOCK, ROWLOCK, READPAST, FORCESEEK) ON s.[definition] = @definition AND {SameKey("s", "k")};
+            DECLARE @held nvarchar(max) = (SELECT k.n, {Tsql.Bit("s.deadline_at IS NOT NULL")} AS tracked, s.whole FROM {Keys} AS k
+                INNER LOOP JOIN {states} AS s WITH (UPDLOCK, ROWLOCK, READPAST, FORCESEEK) ON s.[definition] = @definition AND {SameKey("s", "k")} FOR JSON PATH);
             SELECT k.subject_kind, k.subject_id, {Tsql.Bit(HasUnpausedRecurrence("k"))}, {Tsql.Bit("h.n IS NOT NULL")}, h.tracked, h.whole,
                 {Tsql.Bit($"EXISTS (SELECT 1 FROM {states} AS s WHERE s.[definition] = @definition AND {SameKey("s", "k")})")}
-            FROM @k AS k LEFT JOIN @held AS h ON h.n = k.n ORDER BY k.n;
+            FROM {Keys} AS k LEFT JOIN OPENJSON(@held) WITH (n int '$.n', tracked bit '$.tracked', whole bit '$.whole') AS h ON h.n = k.n ORDER BY k.n;
             """,
             Tsql.Text("@definition", definition, 200),
             Tsql.Json("@keys", KeysJson(keys))))
@@ -133,17 +130,10 @@ internal sealed partial class SqlServerMonitoringStore
         {
             // A row created meanwhile, by the ending transaction of a failure, takes up the deadline unless it has one.
             await using var command = Tsql.Command(work, $"""
-                DECLARE @k TABLE (n int NOT NULL PRIMARY KEY, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
-                INSERT INTO @k (n, subject_kind, subject_id) SELECT n, k, i FROM OPENJSON(@keys) WITH (n int '$.n', k nvarchar(100) '$.k', i nvarchar(400) '$.i');
-                DECLARE @n int = 0, @count int = (SELECT COUNT(*) FROM @k), @kind nvarchar(100), @subject nvarchar(400), @upsert_inserted bit;
-                WHILE @n < @count
-                BEGIN
-                    SELECT @kind = subject_kind, @subject = subject_id FROM @k WHERE n = @n;
-                    {Upsert(
-                        $"UPDATE s SET {StartWindow} FROM {states} AS s WHERE s.[definition] = @definition AND s.subject_kind IS NOT DISTINCT FROM @kind AND s.subject_id IS NOT DISTINCT FROM @subject AND s.deadline_at IS NULL;",
-                        $"INSERT INTO {states} ([definition], subject_kind, subject_id, deadline_at, window_start, revision) VALUES (@definition, @kind, @subject, COALESCE(@deadline, {Tsql.NeverLiteral}), @window_start, @revision);")}
-                    SET @n += 1;
-                END
+                DECLARE @kind nvarchar(100), @subject nvarchar(400), @upsert_inserted bit;
+                {Tsql.EachRow("start", "@keys", [("@kind", "nvarchar(100)", "k"), ("@subject", "nvarchar(400)", "i")], Upsert(
+                    $"UPDATE s SET {StartWindow} FROM {states} AS s WHERE s.[definition] = @definition AND s.subject_kind IS NOT DISTINCT FROM @kind AND s.subject_id IS NOT DISTINCT FROM @subject AND s.deadline_at IS NULL;",
+                    $"INSERT INTO {states} ([definition], subject_kind, subject_id, deadline_at, window_start, revision) VALUES (@definition, @kind, @subject, COALESCE(@deadline, {Tsql.NeverLiteral}), @window_start, @revision);"))}
                 """,
                 [Tsql.Text("@definition", definition, 200), Tsql.Json("@keys", KeysJson(start)), .. WindowParameters(window, revision)]);
             await command.NonQueryAsync(cancellationToken);
@@ -154,10 +144,7 @@ internal sealed partial class SqlServerMonitoringStore
         }
         List<WorkIncident> resolved;
         await using (var command = Tsql.Command(work, $"""
-            DECLARE @gone {StateKeyTable};
-            INSERT INTO @gone ([definition], subject_kind, subject_id) SELECT @definition, k, i FROM OPENJSON(@keys) WITH (k nvarchar(100) '$.k', i nvarchar(400) '$.i');
-            {ClearWindows}
-            SELECT {IncidentColumns} FROM @resolved AS i;
+            {ClearWindows(Keys)}
             """,
             Tsql.Text("@definition", definition, 200),
             Tsql.Json("@keys", KeysJson(clear))))
@@ -205,13 +192,10 @@ internal sealed partial class SqlServerMonitoringStore
         var changes = await InTransactionAsync(async work =>
         {
             await using var command = Tsql.Command(work, $"""
-                DECLARE @held TABLE (kept bit NOT NULL);
-                INSERT INTO @held (kept) SELECT {Tsql.Bit(HasUnpausedRecurrence("s"))} FROM {states} AS s WITH (UPDLOCK, ROWLOCK, READPAST) WHERE {alone} AND s.whole = 1;
-                DECLARE @gone {StateKeyTable};
-                UPDATE s SET whole = 0 FROM {states} AS s WHERE {alone} AND EXISTS (SELECT 1 FROM @held WHERE kept = 1);
-                INSERT INTO @gone ([definition], subject_kind, subject_id) SELECT @definition, NULL, NULL FROM @held WHERE kept = 0;
-                {ClearWindows}
-                SELECT {IncidentColumns} FROM @resolved AS i;
+                DECLARE @kept bit;
+                SELECT @kept = {Tsql.Bit(HasUnpausedRecurrence("s"))} FROM {states} AS s WITH (UPDLOCK, ROWLOCK, READPAST) WHERE {alone} AND s.whole = 1;
+                UPDATE s SET whole = 0 FROM {states} AS s WHERE {alone} AND @kept = 1;
+                {ClearWindows("(SELECT CAST(NULL AS nvarchar(100)) AS subject_kind, CAST(NULL AS nvarchar(400)) AS subject_id WHERE @kept = 0)")}
                 """,
                 Tsql.Text("@definition", definition, 200));
             await using var reader = await command.ReaderAsync(cancellationToken);
@@ -240,25 +224,22 @@ internal sealed partial class SqlServerMonitoringStore
         return await InTransactionAsync(async work =>
         {
             await using var command = Tsql.Command(work, $"""
-                DECLARE @k TABLE (n int IDENTITY NOT NULL PRIMARY KEY, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
-                IF EXISTS (SELECT 1 FROM {recurrences} AS r WHERE r.[definition] = @definition AND r.subject_kind IS NULL AND r.paused = 0)
-                    AND NOT EXISTS (SELECT 1 FROM {states} AS e WHERE e.[definition] = @definition AND e.subject_kind IS NULL AND e.subject_id IS NULL AND e.deadline_at IS NOT NULL)
-                    INSERT INTO @k (subject_kind, subject_id) VALUES (NULL, NULL);
-                INSERT INTO @k (subject_kind, subject_id)
-                SELECT DISTINCT TOP (@limit) r.subject_kind, r.subject_id FROM {recurrences} AS r WITH (INDEX(job_recurrences_subject))
-                WHERE r.[definition] = @definition AND r.subject_kind IS NOT NULL AND r.paused = 0
-                AND NOT EXISTS (SELECT 1 FROM {states} AS e WHERE e.[definition] = @definition AND e.subject_kind = r.subject_kind AND e.subject_id = r.subject_id AND e.deadline_at IS NOT NULL)
-                ORDER BY r.subject_kind, r.subject_id;
-                DECLARE @n int = 1, @count int = (SELECT COUNT(*) FROM @k), @kind nvarchar(100), @subject nvarchar(400), @upsert_inserted bit;
-                WHILE @n <= @count
-                BEGIN
-                    SELECT @kind = subject_kind, @subject = subject_id FROM @k WHERE n = @n;
-                    {Upsert(
-                        $"UPDATE s SET whole = 0, {StartWindow} FROM {states} AS s WHERE s.[definition] = @definition AND s.subject_kind IS NOT DISTINCT FROM @kind AND s.subject_id IS NOT DISTINCT FROM @subject;",
-                        $"INSERT INTO {states} ([definition], subject_kind, subject_id, deadline_at, window_start, revision) VALUES (@definition, @kind, @subject, COALESCE(@deadline, {Tsql.NeverLiteral}), @window_start, @revision);")}
-                    SET @n += 1;
-                END
-                SELECT @count;
+                DECLARE @k nvarchar(max) = (SELECT k.subject_kind, k.subject_id FROM (
+                    SELECT 0 AS o, CAST(NULL AS nvarchar(100)) AS subject_kind, CAST(NULL AS nvarchar(400)) AS subject_id
+                    WHERE EXISTS (SELECT 1 FROM {recurrences} AS r WHERE r.[definition] = @definition AND r.subject_kind IS NULL AND r.paused = 0)
+                        AND NOT EXISTS (SELECT 1 FROM {states} AS e WHERE e.[definition] = @definition AND e.subject_kind IS NULL AND e.subject_id IS NULL AND e.deadline_at IS NOT NULL)
+                    UNION ALL
+                    SELECT 1, x.subject_kind, x.subject_id FROM (
+                        SELECT DISTINCT TOP (@limit) r.subject_kind, r.subject_id FROM {recurrences} AS r WITH (INDEX(job_recurrences_subject))
+                        WHERE r.[definition] = @definition AND r.subject_kind IS NOT NULL AND r.paused = 0
+                        AND NOT EXISTS (SELECT 1 FROM {states} AS e WHERE e.[definition] = @definition AND e.subject_kind = r.subject_kind AND e.subject_id = r.subject_id AND e.deadline_at IS NOT NULL)
+                        ORDER BY r.subject_kind, r.subject_id) AS x) AS k
+                ORDER BY k.o, k.subject_kind, k.subject_id FOR JSON PATH, INCLUDE_NULL_VALUES);
+                DECLARE @kind nvarchar(100), @subject nvarchar(400), @upsert_inserted bit;
+                {Tsql.EachRow("expected", "@k", [("@kind", "nvarchar(100)", "subject_kind"), ("@subject", "nvarchar(400)", "subject_id")], Upsert(
+                    $"UPDATE s SET whole = 0, {StartWindow} FROM {states} AS s WHERE s.[definition] = @definition AND s.subject_kind IS NOT DISTINCT FROM @kind AND s.subject_id IS NOT DISTINCT FROM @subject;",
+                    $"INSERT INTO {states} ([definition], subject_kind, subject_id, deadline_at, window_start, revision) VALUES (@definition, @kind, @subject, COALESCE(@deadline, {Tsql.NeverLiteral}), @window_start, @revision);"))}
+                SELECT @expected_n;
                 """,
                 [Tsql.Text("@definition", definition, 200), Tsql.Int32("@limit", limit), .. WindowParameters(window, revision)]);
             return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
@@ -277,22 +258,21 @@ internal sealed partial class SqlServerMonitoringStore
         var (count, resolved) = await InTransactionAsync(async work =>
         {
             await using var command = Tsql.Command(work, $"""
-                DECLARE @gone {StateKeyTable};
+                DECLARE @gone nvarchar(max) = N'';
                 {Tsql.LockEach("unexpected_scan", "@limit",
                     $"SELECT s.[definition], s.subject_kind, s.subject_id FROM {states} AS s WITH (INDEX(job_expectation_states_deadline)) "
                     + $"WHERE s.[definition] = @definition AND s.deadline_at IS NOT NULL AND {Unexpected("s")}",
                     states, StateKey, $"r.deadline_at IS NOT NULL AND {Unexpected("r")}", "@gone", nullable: true)}
-                {ClearWindows}
-                SELECT COUNT(*) FROM @cleared;
-                SELECT {IncidentColumns} FROM @resolved AS i;
+                {ClearWindows(Tsql.KeyRows("@gone", StateKey))}
+                SELECT @cleared;
                 """,
                 Tsql.Text("@definition", definition, 200),
                 Tsql.Int32("@limit", limit));
             await using var reader = await command.ReaderAsync(cancellationToken);
-            await reader.NextRowAsync(cancellationToken);
-            var cleared = reader.GetInt32(0);
+            var resolved = await ReadIncidentsAsync(reader, cancellationToken);
             await reader.NextSetAsync(cancellationToken);
-            return (cleared, await ReadIncidentsAsync(reader, cancellationToken));
+            await reader.NextRowAsync(cancellationToken);
+            return (reader.GetInt32(0), resolved);
         }, cancellationToken);
         WorkTelemetry.Count(resolved.Count == 0 ? IncidentChanges.None : new IncidentChanges([], resolved));
         return count;

@@ -64,32 +64,27 @@ internal sealed partial class SqlServerMonitoringStore
     public async ValueTask<MonitoringGauges> GetGaugesAsync(CancellationToken cancellationToken)
     {
         const string Due = "j.lease_expires_at IS NULL AND j.due_at IS NOT NULL AND j.paused = 0";
+        const string Level = $"OPENJSON(@level) WITH ([definition] nvarchar(200) COLLATE {Tsql.Binary} '$.definition', version int '$.version')";
         await using var connection = await leases.OpenAsync(cancellationToken);
         await using var command = Tsql.Command(connection, null, $"""
             SELECT i.kind, COUNT_BIG(*) FROM {incidents} AS i WHERE i.resolved_at IS NULL GROUP BY i.kind;
-            DECLARE @level TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, version int NOT NULL);
-            DECLARE @next TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, version int NOT NULL);
-            DECLARE @oldest TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, due_at datetime2(7) NOT NULL);
-            INSERT INTO @level ([definition], version)
-            SELECT d.[key], m.version FROM {definitions} AS d
-            CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {Due} ORDER BY j.args_version) AS m
-            WHERE m.version IS NOT NULL;
-            WHILE EXISTS (SELECT 1 FROM @level)
+            DECLARE @oldest nvarchar(max) = N'', @found nvarchar(max), @level nvarchar(max);
+            SET @level = (SELECT d.[key] AS [definition], m.version FROM {definitions} AS d
+                CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {Due} ORDER BY j.args_version) AS m
+                WHERE m.version IS NOT NULL FOR JSON PATH);
+            WHILE @level IS NOT NULL
             BEGIN
-                INSERT INTO @oldest ([definition], due_at)
-                SELECT l.[definition], o.due_at FROM @level AS l
-                CROSS APPLY (SELECT TOP (1) j.due_at AS due_at FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version = l.version AND {Due} ORDER BY j.due_at) AS o
-                WHERE o.due_at IS NOT NULL;
-                DELETE FROM @next;
-                INSERT INTO @next ([definition], version)
-                SELECT l.[definition], m.version FROM @level AS l
-                CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {Due} ORDER BY j.args_version) AS m
-                WHERE m.version IS NOT NULL;
-                DELETE FROM @level;
-                INSERT INTO @level ([definition], version) SELECT [definition], version FROM @next;
+                SET @found = (SELECT l.[definition], o.due_at FROM {Level} AS l
+                    CROSS APPLY (SELECT TOP (1) j.due_at AS due_at FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version = l.version AND {Due} ORDER BY j.due_at) AS o
+                    FOR JSON PATH);
+                IF @found IS NOT NULL SET @oldest = @oldest + N',' + SUBSTRING(@found, 2, LEN(@found) - 2);
+                SET @level = (SELECT l.[definition], m.version FROM {Level} AS l
+                    CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {Due} ORDER BY j.args_version) AS m
+                    FOR JSON PATH);
             END
             SELECT d.[key], {Tsql.Micros("o.due_at", "SYSUTCDATETIME()")} FROM {definitions} AS d
-            LEFT JOIN (SELECT [definition], MIN(due_at) AS due_at FROM @oldest GROUP BY [definition]) AS o ON o.[definition] = d.[key];
+            LEFT JOIN (SELECT [definition], MIN(due_at) AS due_at FROM OPENJSON(N'[' + STUFF(@oldest, 1, 1, N'') + N']')
+                WITH ([definition] nvarchar(200) COLLATE {Tsql.Binary} '$.definition', due_at datetime2(7) '$.due_at') GROUP BY [definition]) AS o ON o.[definition] = d.[key];
             """);
         await using var reader = await command.ReaderAsync(cancellationToken);
         var open = new Dictionary<WorkIncidentKind, long>();

@@ -45,19 +45,18 @@ internal sealed partial class SqlServerMonitoringStore
         string Completions(string bound, string comparison, string aggregate) =>
             $"(SELECT {aggregate}(x.c) FROM (VALUES (s.met_at), (s.first_after), (s.last_after)) AS x (c) WHERE x.c {comparison} {bound})";
         const string Bound = "COALESCE(v.n, " + Tsql.NeverLiteral + ")";
+        const string Moves = "OPENJSON(@moves) WITH (w datetime2(7) '$.w', n datetime2(7) '$.n')";
         return await InTransactionAsync(async work =>
         {
             await using var command = Tsql.Command(work, $"""
-                DECLARE @v TABLE (w datetime2(7) NOT NULL PRIMARY KEY, n datetime2(7));
-                INSERT INTO @v (w, n) SELECT w, n FROM OPENJSON(@moves) WITH (w datetime2(7) '$.w', n datetime2(7) '$.n');
-                DECLARE @moved {StateKeyTable};
+                DECLARE @moved nvarchar(max) = N'';
                 {Tsql.LockEach("moved_scan", "2147483647",
-                    $"SELECT s.[definition], s.subject_kind, s.subject_id FROM {states} AS s WHERE {Selection("s")} AND s.window_start IN (SELECT w FROM @v)",
-                    states, StateKey, $"{Selection("r")} AND r.window_start IN (SELECT w FROM @v)", "@moved", nullable: true)}
+                    $"SELECT s.[definition], s.subject_kind, s.subject_id FROM {states} AS s WHERE {Selection("s")} AND s.window_start IN (SELECT w FROM {Moves})",
+                    states, StateKey, $"{Selection("r")} AND r.window_start IN (SELECT w FROM {Moves})", "@moved", nullable: true)}
                 UPDATE s SET deadline_at = {Bound}, revision = @revision,
                     met_at = {Completions(Bound, "<", "MIN")}, first_after = {Completions(Bound, ">=", "MIN")}, last_after = {Completions(Bound, ">=", "MAX")}
-                FROM @moved AS m INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = m.[definition] AND {SameKey("s", "m")}
-                JOIN @v AS v ON v.w = s.window_start;
+                FROM {Tsql.KeyRows("@moved", StateKey)} AS m INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = m.[definition] AND {SameKey("s", "m")}
+                JOIN {Moves} AS v ON v.w = s.window_start;
                 SELECT @@ROWCOUNT;
                 """,
                 Tsql.Text("@definition", definition, 200),
@@ -92,13 +91,13 @@ internal sealed partial class SqlServerMonitoringStore
             var rows = new List<(Subject? Subject, ExpectationStep Step)>();
             await using (var select = Tsql.Command(work, $"""
                 DECLARE @now datetime2(7) = SYSUTCDATETIME();
-                DECLARE @due {StateKeyTable};
+                DECLARE @due nvarchar(max) = N'';
                 {Tsql.LockEach("deadline_scan", "@limit",
                     $"SELECT s.[definition], s.subject_kind, s.subject_id FROM {states} AS s WITH (INDEX(job_expectation_states_deadline)) "
                     + "WHERE s.[definition] = @definition AND s.deadline_at IS NOT NULL AND s.deadline_at <= @now ORDER BY s.deadline_at",
                     states, StateKey, "r.deadline_at <= @now", "@due", nullable: true)}
                 SELECT s.subject_kind, s.subject_id, s.deadline_at, s.window_start, s.met_at, s.first_after, s.last_after, SYSUTCDATETIME()
-                FROM @due AS d INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = d.[definition] AND {SameKey("s", "d")}
+                FROM {Tsql.KeyRows("@due", StateKey)} AS d INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = d.[definition] AND {SameKey("s", "d")}
                 ORDER BY s.deadline_at;
                 """,
                 Tsql.Text("@definition", definition, 200),
@@ -117,33 +116,21 @@ internal sealed partial class SqlServerMonitoringStore
             {
                 var missed = rows.SelectMany(r => r.Step.Missed.Select(m => (r.Subject, Missed: m))).ToArray();
                 await using var command = Tsql.Command(work, $"""
-                    DECLARE @v TABLE (n int NOT NULL PRIMARY KEY, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary}, deadline_at datetime2(7), window_start datetime2(7),
-                        met_at datetime2(7), first_after datetime2(7), last_after datetime2(7));
-                    INSERT INTO @v SELECT n, k, i, d, w, m, f, l FROM OPENJSON(@windows) WITH (
-                        n int '$.n', k nvarchar(100) '$.k', i nvarchar(400) '$.i', d datetime2(7) '$.d', w datetime2(7) '$.w', m datetime2(7) '$.m', f datetime2(7) '$.f', l datetime2(7) '$.l');
                     UPDATE s SET deadline_at = COALESCE(v.deadline_at, {Tsql.NeverLiteral}), window_start = v.window_start, met_at = v.met_at, first_after = v.first_after, last_after = v.last_after
-                    FROM @v AS v INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = @definition AND {SameKey("s", "v")};
-                    DECLARE @m TABLE (n int NOT NULL PRIMARY KEY, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary}, opened datetime2(7) NOT NULL, resolved datetime2(7));
-                    INSERT INTO @m SELECT n, k, i, o, r FROM OPENJSON(@missed) WITH (n int '$.n', k nvarchar(100) '$.k', i nvarchar(400) '$.i', o datetime2(7) '$.o', r datetime2(7) '$.r');
-                    DECLARE @opened {IncidentTable};
-                    DECLARE @n int = 0, @count int = (SELECT COUNT(*) FROM @m), @kind nvarchar(100), @subject nvarchar(400), @at datetime2(7), @resolved_at datetime2(7);
-                    WHILE @n < @count
-                    BEGIN
-                        SELECT @kind = subject_kind, @subject = subject_id, @at = opened, @resolved_at = resolved FROM @m WHERE n = @n;
-                        {OpenIncident("id, kind, [definition], subject_kind, subject_id, opened_at, resolved_at, due_at",
-                            $"VALUES (NEWID(), {(int)WorkIncidentKind.CompletesBy}, @definition, @kind, @subject, @at, @resolved_at, SYSUTCDATETIME())")}
-                        SET @n += 1;
-                    END
-                    SELECT {IncidentColumns} FROM @opened AS i;
+                    FROM OPENJSON(@windows) WITH (subject_kind nvarchar(100) COLLATE {Tsql.Binary} '$.k', subject_id nvarchar(400) COLLATE {Tsql.Binary} '$.i', deadline_at datetime2(7) '$.d',
+                        window_start datetime2(7) '$.w', met_at datetime2(7) '$.m', first_after datetime2(7) '$.f', last_after datetime2(7) '$.l') AS v
+                    INNER LOOP JOIN {states} AS s WITH (FORCESEEK) ON s.[definition] = @definition AND {SameKey("s", "v")};
+                    DECLARE @kind nvarchar(100), @subject nvarchar(400), @at datetime2(7), @resolved_at datetime2(7);
+                    {Tsql.EachRow("missed", "@missed", [("@kind", "nvarchar(100)", "k"), ("@subject", "nvarchar(400)", "i"), ("@at", "datetime2(7)", "o"), ("@resolved_at", "datetime2(7)", "r")],
+                        OpenIncident("id, kind, [definition], subject_kind, subject_id, opened_at, resolved_at, due_at",
+                            $"VALUES (NEWID(), {(int)WorkIncidentKind.CompletesBy}, @definition, @kind, @subject, @at, @resolved_at, SYSUTCDATETIME())"))}
                     """,
                     Tsql.Text("@definition", definition, 200),
                     Tsql.Json("@windows", Json(writer =>
                     {
-                        var n = 0;
                         foreach (var (subject, step) in rows)
                         {
                             writer.WriteStartObject();
-                            writer.WriteNumber("n", n++);
                             WriteSubject(writer, subject);
                             SqlServerJobStore.WriteTime(writer, "d", Deadline(step.Window.Deadline));
                             SqlServerJobStore.WriteTime(writer, "w", step.Window.WindowStart);
@@ -155,11 +142,9 @@ internal sealed partial class SqlServerMonitoringStore
                     })),
                     Tsql.Json("@missed", Json(writer =>
                     {
-                        var n = 0;
                         foreach (var (subject, deadline) in missed)
                         {
                             writer.WriteStartObject();
-                            writer.WriteNumber("n", n++);
                             WriteSubject(writer, subject);
                             SqlServerJobStore.WriteTime(writer, "o", deadline.At);
                             SqlServerJobStore.WriteTime(writer, "r", deadline.ResolvedAt);
@@ -169,7 +154,7 @@ internal sealed partial class SqlServerMonitoringStore
                 List<WorkIncident> inserted;
                 await using (var reader = await command.ReaderAsync(cancellationToken))
                 {
-                    inserted = await ReadIncidentsAsync(reader, cancellationToken);
+                    inserted = await ReadIncidentSetsAsync(reader, cancellationToken);
                 }
                 if (inserted.Count > 0)
                 {

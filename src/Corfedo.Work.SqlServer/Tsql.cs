@@ -165,6 +165,30 @@ internal static class Tsql
     public static string KeyRows(string list, IReadOnlyList<(string Column, string Type)> key) =>
         $"OPENJSON(N'[' + STUFF({list}, 1, 1, N'') + N']') WITH ({string.Join(", ", key.Select(k => $"[{Bare(k.Column)}] {k.Type}{(k.Type.StartsWith("nvarchar", StringComparison.Ordinal) ? " COLLATE " + Binary : "")} '$.{Bare(k.Column)}'"))})";
 
+    /// <summary>
+    /// Statements that run <paramref name="body"/> once for each object of the JSON array <paramref name="array"/>, an
+    /// nvarchar(max) expression, in array order, with <paramref name="columns"/> set from the object's properties into
+    /// variables the batch declares; a null array runs nothing. The objects are joined once into a list separated by
+    /// U+001E, which JSON text escapes inside strings, and the list is read once from start to end, so n objects cost
+    /// O(n). <c>@{prefix}_n</c> counts the objects done.
+    /// </summary>
+    public static string EachRow(string prefix, string array, IReadOnlyList<(string Variable, string Type, string Property)> columns, string body) => $"""
+        DECLARE @{prefix}_rows nvarchar(max) = (SELECT STRING_AGG(CAST(value AS nvarchar(max)), NCHAR(30)) WITHIN GROUP (ORDER BY CAST([key] AS int)) FROM OPENJSON({array})),
+            @{prefix}_at int = 1, @{prefix}_end int, @{prefix}_n int = 0;
+        DECLARE @{prefix}_length int = COALESCE(DATALENGTH(@{prefix}_rows) / 2, 0);
+        WHILE @{prefix}_at <= @{prefix}_length
+        BEGIN
+            SET @{prefix}_end = CHARINDEX(NCHAR(30), @{prefix}_rows COLLATE {Binary}, @{prefix}_at);
+            IF @{prefix}_end = 0 SET @{prefix}_end = @{prefix}_length + 1;
+            SELECT {string.Join(", ", columns.Select(c => $"{c.Variable} = [{c.Property}]"))}
+            FROM OPENJSON(SUBSTRING(@{prefix}_rows, @{prefix}_at, @{prefix}_end - @{prefix}_at)) WITH ({string.Join(", ", columns.Select(c => $"[{c.Property}] {c.Type} '$.{c.Property}'"))});
+            {body}
+            SET @{prefix}_at = @{prefix}_end + 1;
+            SET @{prefix}_n += 1;
+        END
+
+        """;
+
     /// <summary>A column name without its brackets.</summary>
     private static string Bare(string column) => column.Trim('[', ']');
 

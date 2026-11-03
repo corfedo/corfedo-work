@@ -76,12 +76,12 @@ internal sealed class SqlServerProcessStore(string connectionString, string sche
         // its definitions and calendars.
         await using var command = Tsql.Command(connection, null, Tsql.OwnTransaction($"""
             DECLARE @cutoff datetime2(7) = {Tsql.AddTicks("SYSUTCDATETIME()", "-@retention")};
-            DECLARE @expired TABLE (owner uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @expired (owner) SELECT TOP (@limit) r.owner FROM {processes} AS r WITH (UPDLOCK, ROWLOCK, READPAST)
-            WHERE r.stopped_at < @cutoff OR (r.stopped_at IS NULL AND {Tsql.AddTicks("r.heartbeat_at", "r.stale_after")} < @cutoff)
-            ORDER BY r.owner;
-            DELETE p FROM {processes} AS p JOIN @expired AS e ON e.owner = p.owner;
-            """) + "SELECT COUNT(*) FROM @expired;",
+            DECLARE @expired nvarchar(max) = (SELECT TOP (@limit) r.owner FROM {processes} AS r WITH (UPDLOCK, ROWLOCK, READPAST)
+                WHERE r.stopped_at < @cutoff OR (r.stopped_at IS NULL AND {Tsql.AddTicks("r.heartbeat_at", "r.stale_after")} < @cutoff)
+                ORDER BY r.owner FOR JSON PATH);
+            DELETE p FROM OPENJSON(@expired) WITH (owner uniqueidentifier '$.owner') AS e INNER LOOP JOIN {processes} AS p WITH (FORCESEEK) ON p.owner = e.owner;
+            DECLARE @deleted int = @@ROWCOUNT;
+            """) + "SELECT @deleted;",
             Tsql.Ticks("@retention", retention),
             Tsql.Int32("@limit", limit));
         return (int)(await command.ScalarAsync(cancellationToken))!;
