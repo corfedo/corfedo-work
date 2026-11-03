@@ -52,10 +52,10 @@ internal static class SourceCatalog
     /// compare two columns; where partition or spread limits are used an index led by the partition with
     /// <c>WHERE LeaseExpiresAt IS NOT NULL</c> carrying SettledEpoch and LeaseEpoch, and LeaseOwner for spread limits;
     /// an index led by the owner for owner limits; and on reconciliation sources an index led by AttemptedGeneration
-    /// without a filter. The table must not escalate locks: a table lock would hold off every claim, which skips only
-    /// locked rows.
+    /// without a filter. The table must not escalate locks, since a table lock would hold off every claim, which skips
+    /// only locked rows: the store disables escalation on a table that has it.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The table, a field or an index is missing, has the wrong type, or the table escalates locks.</exception>
+    /// <exception cref="InvalidOperationException">The table, a field or an index is missing or has the wrong type, or the table escalates locks and the store could not disable it.</exception>
     public static async Task<SourceShape> ReadAsync<TKey>(string connectionString, LeaseSource<TKey> source, CancellationToken cancellationToken)
         where TKey : notnull
     {
@@ -78,22 +78,22 @@ internal static class SourceCatalog
                 WHERE ic.object_id = @id ORDER BY ic.index_id, ic.is_included_column, ic.key_ordinal, ic.index_column_id;
                 """,
                 Tsql.Text("@table", table, 600));
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-            escalation = await reader.ReadAsync(cancellationToken) ? reader.GetString(0) : null;
-            await reader.NextResultAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            escalation = await reader.NextRowAsync(cancellationToken) ? reader.GetString(0) : null;
+            await reader.NextSetAsync(cancellationToken);
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 columns[reader.GetString(0)] = new Column(reader.GetString(1), reader.GetInt16(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetBoolean(4));
             }
-            await reader.NextResultAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
             var names = new Dictionary<int, (string Name, bool Unique, string? Filter, bool Clustered)>();
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 names[reader.GetInt32(0)] = (reader.GetString(1), reader.GetBoolean(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetBoolean(4));
             }
-            await reader.NextResultAsync(cancellationToken);
+            await reader.NextSetAsync(cancellationToken);
             var keys = new Dictionary<int, (List<string> Keys, List<string> Included)>();
-            while (await reader.ReadAsync(cancellationToken))
+            while (await reader.NextRowAsync(cancellationToken))
             {
                 var id = reader.GetInt32(0);
                 if (!keys.TryGetValue(id, out var lists))
@@ -113,9 +113,9 @@ internal static class SourceCatalog
             throw new InvalidOperationException($"Lease source {source.Name}: table {table} does not exist.");
         }
         var problems = new List<string>();
-        if (escalation != "DISABLE")
+        if (escalation != "DISABLE" && await DisableEscalationAsync(connectionString, table, cancellationToken) is { } refused)
         {
-            problems.Add($"the table escalates locks ({escalation}); claims skip locked rows and cannot skip a table lock, so disable it with ALTER TABLE {table} SET (LOCK_ESCALATION = DISABLE)");
+            problems.Add($"the table escalates locks ({escalation}) and the store could not disable it ({refused}); claims skip locked rows and cannot skip a table lock, so disable it with ALTER TABLE {table} SET (LOCK_ESCALATION = DISABLE)");
         }
         void Require(string column, bool notNull, params string[] types)
         {
@@ -253,6 +253,31 @@ internal static class SourceCatalog
         var partitionDeclaration = partitionColumn is null ? "nvarchar(4000)" : Declaration(partitionColumn);
         return new SourceShape(keyColumns, Tsql.Quote(keyIndex!.Name), partitionDeclaration, due!.Name, expiry!.Name, partitionIndex?.Name, ownerIndex?.Name, generationIndex?.Name);
     }
+
+    /// <summary>
+    /// Disables lock escalation on the table, once in its life; returns SQL Server's reason when it cannot, such as a
+    /// login without ALTER permission on the table. The schema lock the change takes is waited for at most
+    /// <see cref="EscalationLockTimeout"/>, so a long transaction on the table does not hold the application's queries
+    /// behind the request.
+    /// </summary>
+    private static async Task<string?> DisableEscalationAsync(string connectionString, string table, CancellationToken cancellationToken)
+    {
+        await using var connection = await Tsql.OpenAsync(connectionString, cancellationToken);
+        await using var command = Tsql.Command(connection, null,
+            $"SET LOCK_TIMEOUT {Tsql.Number((long)EscalationLockTimeout.TotalMilliseconds)}; ALTER TABLE {table} SET (LOCK_ESCALATION = DISABLE);");
+        try
+        {
+            await command.NonQueryAsync(cancellationToken);
+            return null;
+        }
+        catch (SqlException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return exception.Message;
+        }
+    }
+
+    /// <summary>The longest wait for the schema lock that disabling lock escalation takes.</summary>
+    private static readonly TimeSpan EscalationLockTimeout = TimeSpan.FromSeconds(1);
 
     private static KeyColumn KeyOf(string name, Column column) => column.Type switch
     {

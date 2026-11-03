@@ -1,5 +1,6 @@
 using Corfedo.Work.Conformance;
 using Corfedo.Work.SqlServer.Tests.Provisioning;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Corfedo.Work.SqlServer.Tests.Leases;
@@ -62,16 +63,36 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
     }
 
     [Fact]
-    public async Task ATableThatEscalatesLocksIsRefused()
+    public async Task VerificationDisablesLockEscalationOnASourceTable()
     {
         var source = await SourceAsync("escalating", Indexes, escalation: false);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store().VerifyAsync(source, Cancel));
+        await Store().VerifyAsync(source, Cancel);
 
-        Assert.Contains("SET (LOCK_ESCALATION = DISABLE)", error.Message, StringComparison.Ordinal);
+        Assert.Equal("DISABLE", (string?)await database.ScalarAsync("SELECT lock_escalation_desc FROM sys.tables WHERE object_id = OBJECT_ID(N'dbo.escalating')", Cancel));
     }
 
-    private ILeaseStore Store() => new SqlServerWorkStore(database.ConnectionString, "work", NullLoggerFactory.Instance, TimeProvider.System).Leases;
+    [Fact]
+    public async Task ALoginThatCannotAlterAnEscalatingTableIsRefusedWithTheStatement()
+    {
+        var source = await SourceAsync("escalating_readonly", Indexes, escalation: false);
+        var login = "reader_" + Guid.NewGuid().ToString("N")[..8];
+        var password = "Pw-" + Guid.NewGuid().ToString("N");
+        await database.ExecuteAsync($"""
+            CREATE LOGIN [{login}] WITH PASSWORD = '{password}', CHECK_POLICY = OFF;
+            CREATE USER [{login}] FOR LOGIN [{login}];
+            GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.escalating_readonly TO [{login}];
+            """, Cancel);
+        var connectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password }.ConnectionString;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Store(connectionString).VerifyAsync(source, Cancel));
+
+        Assert.Contains("ALTER TABLE [dbo].[escalating_readonly] SET (LOCK_ESCALATION = DISABLE)", error.Message, StringComparison.Ordinal);
+        Assert.Equal("TABLE", (string?)await database.ScalarAsync("SELECT lock_escalation_desc FROM sys.tables WHERE object_id = OBJECT_ID(N'dbo.escalating_readonly')", Cancel));
+    }
+
+    private ILeaseStore Store(string? connectionString = null) =>
+        new SqlServerWorkStore(connectionString ?? database.ConnectionString, "work", NullLoggerFactory.Instance, TimeProvider.System).Leases;
 
     private async Task<LeaseSource<TestKey>> SourceAsync(string table, string indexes, LeasePolicy? policy = null, string? partition = null, bool escalation = true)
     {
