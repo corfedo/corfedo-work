@@ -4,7 +4,8 @@ Signals wake processes when committed state they wait for may have changed. The 
 workers, and your `BackgroundService`s can use them alone. `AddPostgreSqlSignals` creates no tables and needs no other
 registration. `AddSqlServerSignals` creates one table, `signals`, in a schema named after the application.
 
-- **Sent at commit.** A signal sent in a transaction is delivered when it commits and never after a rollback.
+- **Sent at commit.** A signal sent in a transaction is delivered when it commits and never after a rollback. On
+  PostgreSQL a signal sent after a savepoint that is rolled back to still arrives if the transaction commits.
 - **One connection per process.** All subscriptions of a process share one listening connection. The listener starts
   with the first subscription.
 - **Reconnects are covered.** After it starts listening and after every reconnection, each subscriber gets
@@ -58,8 +59,12 @@ sealed class OrderWorker(IWorkSignals signals) : BackgroundService, ISignalSubsc
 With Npgsql or SqlClient directly, pass the `NpgsqlTransaction` or `SqlTransaction` itself.
 
 Send a signal when something a subscriber waits for changes, once per topic and key in a transaction, not for every
-row: PostgreSQL commits transactions that send notifications one at a time, and on SQL Server each signal is a row.
-Listening needs a session-level connection; see [production](production.md).
+row: every signal reaches every listening process, and on SQL Server each signal is a row. Listening needs a
+session-level connection; see [production](production.md).
+
+On PostgreSQL each process sends the signals of committed transactions together, at most every 2 ms, so a signal
+arrives about 2–3 ms after its commit, and signals with the same topic and key from transactions that commit close
+together may arrive as one.
 
 On SQL Server a listener polls the signals table on the server, every 10 ms by default, so a signal arrives within the
 poll interval of its commit. `SqlServerSignalOptions` sets the interval and how long signals are kept (one minute);

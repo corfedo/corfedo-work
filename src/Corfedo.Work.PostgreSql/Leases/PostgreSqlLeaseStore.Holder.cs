@@ -1,3 +1,4 @@
+using Corfedo.Work.PostgreSql.Signals;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -96,12 +97,14 @@ internal sealed partial class PostgreSqlLeaseStore
             Interval(due.Delay),
             Bool(failed)));
         batch.BatchCommands.Add(KeyCommand(
-            $"SELECT pg_notify(${k + 3}, ${k + 4}) FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NULL "
+            $"{PostgreSqlSignalSql.Rows($"${k + 3}")} FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NULL "
             + $"AND {sql.Owner} = ${k + 1} AND {sql.Epoch} = ${k + 2}{(sql.Policy.HasStoreLimits ? "" : $" AND {sql.Due} IS NOT NULL")}",
             source,
             lease.Key,
-            [Uuid(lease.Owner.Value), Int64(lease.Epoch), .. Signal(WorkTopics.Due, source.Name)]));
-        await batch.ExecuteNonQueryAsync(cancellationToken);
+            Uuid(lease.Owner.Value),
+            Int64(lease.Epoch),
+            Signal(WorkTopics.Due, source.Name)));
+        await signals.ExecuteAsync(batch, cancellationToken);
         return batch.BatchCommands[update].RecordsAffected == 1;
     }
 

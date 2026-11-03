@@ -54,14 +54,18 @@ internal sealed partial class PostgreSqlJobStore
                 $"WITH flagged AS (UPDATE {recurrences} SET paused = $4 WHERE definition = $1 AND subject_kind = $2 AND subject_id = $3 AND paused <> $4 RETURNING 1), "
                 + $"queued AS (INSERT INTO {changes} (definition, subject_kind, subject_id) SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM flagged) RETURNING definition) "
                 + NotifyMonitor("queued", 5),
-                [Text(definition), Text(subject.Kind), Text(subject.Id), Bool(paused), .. MonitorSignal(source)]));
+                Text(definition),
+                Text(subject.Kind),
+                Text(subject.Id),
+                Bool(paused),
+                MonitorSignal(source)));
             batch.BatchCommands.Add(Command(
                 $"UPDATE {sql.Table} SET paused = $4 WHERE definition = $1 AND subject_kind = $2 AND subject_id = $3 AND state = 0 AND paused <> $4",
                 Text(definition),
                 Text(subject.Kind),
                 Text(subject.Id),
                 Bool(paused)));
-            await batch.ExecuteNonQueryAsync(cancellationToken);
+            await signals.ExecuteAsync(batch, cancellationToken);
         }
         if (!paused)
         {
@@ -124,8 +128,8 @@ internal sealed partial class PostgreSqlJobStore
         {
             await using var notify = new NpgsqlCommand($"WITH queued AS (SELECT $1::text AS definition) {NotifyMonitor("queued", 2)}", connection, transaction);
             notify.Parameters.Add(Text(definition));
-            notify.Parameters.AddRange(MonitorSignal(source));
-            await notify.ExecuteNonQueryAsync(cancellationToken);
+            notify.Parameters.Add(MonitorSignal(source));
+            await signals.ExecuteAsync(notify, cancellationToken);
         }
         if (repaired[2] > 0)
         {

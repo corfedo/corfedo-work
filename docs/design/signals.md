@@ -50,14 +50,16 @@ A signal is a **topic** and a **key**. It says that state named by the key may h
 **Contract,** checked by the conformance suite for every provider with signals, and by provider tests where a rule
 depends on the transport's connection:
 
-1. A signal sent in a transaction is delivered after that transaction commits and not at all if it rolls back,
-   including a rollback to a savepoint taken before the send. A signal sent without a transaction is delivered when
-   the send returns.
+1. A signal sent in a transaction is delivered after that transaction commits and not at all if it rolls back. A
+   signal sent after a savepoint that is rolled back to may still be delivered when the transaction commits, as a
+   spurious wake: the PostgreSQL provider delivers it, the in-memory and SQL Server providers discard it. A signal
+   sent without a transaction is delivered when the send returns.
 2. Delivery reaches every subscriber of the topic in every process of the same application (R19), the sender's
    process included, and no other application.
 3. Signals may be lost: while a listener is disconnected, when a process crashes after commit, under overload. Signals
-   with the same topic and key sent in one transaction may arrive as one. A subscriber may receive a signal for a
-   change it cannot see yet or no longer sees. There is no order across transactions.
+   with the same topic and key may arrive as one when they are sent in one transaction or in transactions that
+   commit close together. A subscriber may receive a signal for a change it cannot see yet or no longer sees. There
+   is no order across transactions.
 4. After its subscription starts listening, and after every reconnection, each subscriber gets `Resync()`. A
    subscriber reads the state it waits for after its first `Resync()`, so a change committed before it listened is
    read, and a change after is signalled.
@@ -140,16 +142,50 @@ connection.
 - The channel name is at most 63 bytes, so the schema (or the application of `AddPostgreSqlSignals`) is at most 50
   bytes. The store and the transport refuse a longer one on construction: `pg_notify` refuses a longer channel, which
   would fail every notifying commit, while `LISTEN` truncates it and would listen on another channel.
-- `SendAsync` with a transaction runs `pg_notify` in it; without one, on its own connection.
-- Statements of the provider that signal keep sending from inside the statement, as today, through one internal SQL
-  builder (`PostgreSqlSignalSql`) that produces `pg_notify(channel, topic || ' ' || key)` for a key expression. A
-  signal that depends on the rows a statement matches stays in that statement, at no extra round trip.
-- PostgreSQL delivers one notification for identical payloads on one channel in one transaction, which is rule 3's
-  merging.
+- `SendAsync` with a transaction records the signal with the transaction's id and sends it once the transaction has
+  committed ([batched sending](#batched-sending)); without one, it runs `pg_notify` on its own connection, delivered
+  when the send returns.
+- Statements of the provider that signal return signal rows, the transaction's id (`pg_current_xact_id()`) and a
+  payload, built by one internal SQL builder (`PostgreSqlSignalSql`) for a payload expression. A signal that depends on
+  the rows a statement matches stays in that statement: the provider reads its rows in the statement's round trip.
+- A batch notifies each distinct payload once, which is rule 3's merging.
 - The listening connection is a dedicated session (transaction-mode poolers need a direct connection for it, as
   today), never holds a transaction open, probes a quiet connection every 30 seconds and reconnects after 1 second.
   A listener inside a long transaction would hold back the notification queue, and once the queue is full, notifying
   commits fail.
+
+### Batched sending
+
+A transaction that notifies takes a database-wide lock when it commits and holds it until its commit is flushed to
+disk: PostgreSQL delivers notifications in commit order through one queue, so notifying commits run one at a time and
+lose group commit. On PostgreSQL 18.6 (Ryzen 7700X, NVMe, fsync on) single-row transactions commit at 16 400 per
+second at 8 clients and 48 500 at 64 without a notification, and at 3 900 and 3 800 with one in the transaction, while
+the database uses under one core and nearly every active backend waits on that lock.
+
+So each process sends the signals of committed transactions in batches (`PostgreSqlSignalSender`):
+
+- A send records the transaction's id and the payload in the process; nothing is notified inside the transaction.
+- One statement per batch reads the status of each recorded transaction once (`pg_xact_status`), notifies the distinct
+  payloads of committed ones, drops those of rolled-back ones and returns those still running. Reading each status
+  once matters: a transaction that commits between two reads would be neither notified nor kept.
+- Batches start at least 2 ms apart, and a signal is first checked 2 ms after it is recorded. A transaction still
+  running is checked again after twice its last wait, at most 1 second, so a long transaction costs a few checks.
+- The status is all the sender needs, so it sends for transactions the application commits itself, without a commit
+  callback.
+- A failed batch is dropped and logged (`signals.send_failed`); listeners that lost their connection resync when they
+  reconnect. Disposing the transport sends the signals of committed transactions once more.
+
+Through `IWorkSignals`, transactions that insert a row and send one signal commit at 14 200 per second at 8 clients,
+31 800 at 32 and 39 100 at 64, against 3 900 at each notifying in the transaction; with one client both reach about
+2 400. The median wake falls from 2, 8 and 16 ms to 2–3 ms. Most of what remains to a transaction without a signal
+(16 400, 36 700 and 40 700) is the send's round trip, which reads the transaction id: the same round trip without a
+signal commits at 14 600, 32 200 and 39 500. At 3 000 commits per second batching halves the WAL flushes of notifying
+in the transaction and takes 15–20% less database CPU. Each listening backend reads the queue in a transaction of its
+own for every notifying transaction, so a batch also replaces one listener transaction per signal with one per batch.
+
+What it gives up: a signal recorded in a process that crashes before the batch is lost (rule 3), a transaction id
+does not tell a rollback to a savepoint apart (rule 1), the first wake comes up to about 3 ms later than a notification
+in the transaction, and a transaction that signals gets a transaction id if it had none.
 
 ### In memory
 
@@ -159,11 +195,10 @@ subscription.
 
 ### Sending cost
 
-Any notification serializes the commits of notifying transactions: on PostgreSQL 18.6 with 8 clients, single-row
-transactions commit at 16 300 per second without one and 4 040 with one; a second notification in a transaction that
-already notifies costs nothing ([providers](providers.md#postgresql)). The layer's documentation states the rule the
-framework already follows: send on transitions somebody waits for (for jobs, only the ends a caller waits for), at most
-once per topic and key per transaction, and never as a per-row log of changes.
+On PostgreSQL a signal costs a statement or a returned row in the sending transaction and a payload in the next batch;
+every listening process reads each batch. On SQL Server each signal is a row. The layer's documentation states the
+rule the framework follows: send on transitions somebody waits for (for jobs, only the ends a caller waits for), at
+most once per topic and key per transaction, and never as a per-row log of changes.
 
 ## Expected state
 
@@ -179,7 +214,7 @@ keep passing unchanged. New scenarios:
 
 | Scenario | Situation | Expected |
 |---|---|---|
-| S-1 | A signal is sent in a committed transaction, another in a rolled-back one, a third before a savepoint that is rolled back to. | Subscribers of the topic in two processes receive the first and third; nobody receives the second. |
+| S-1 | In one transaction a signal is sent, a savepoint taken, a second signal sent, the savepoint rolled back to, a third signal sent, and the transaction committed; a fourth is sent in a rolled-back transaction. | Subscribers of the topic in two processes receive the first and third; nobody receives the fourth; the second may arrive. |
 | S-2 | A signal is sent without a transaction. | Delivered once the send returns. |
 | S-3 | Two applications share a database and use the same topic and key. | Each receives only its own. |
 | S-4 | The same topic and key are sent several times in one transaction. | At least one delivery, at most as many as sent. |
@@ -200,12 +235,14 @@ count sessions. S-1 needs savepoints in the fixture's application transaction (`
   the problem; and a wake-up needs no durability, since polling covers a lost one.
 - **Signals carrying data.** Turns a lossy hint into a message bus without delivery guarantees. Applications that need
   the data use their outbox and send a signal so the consumer reads it promptly.
-- **Operations returning their signals as data, sent by the layer after the statement.** It would let a transport
-  outside the store's database send them after commit, but costs a round trip on claims, ends and settlements, whose
-  signals depend on the rows a statement matches. Not taken while every transport is the store's own.
+- **`NOTIFY` in the sending transaction.** Delivery is exact on commit, savepoints included, at about 0.4 ms after
+  commit, but notifying transactions commit one at a time ([batched sending](#batched-sending)).
+- **Operations returning their signals to the layer, which sends them through any transport.** The PostgreSQL
+  provider reads signal rows in the statement's round trip and sends them itself; handing them to the layer would let
+  a transport outside the store's database send them. Not taken while every transport is the store's own.
 - **A separate transport such as Redis.** The contract (rules 3 and 4) admits a transport that publishes after commit:
   a crash before publishing loses a signal, which polling covers, and a publish for a rolled-back change is a
   spurious wake. It conflicts with the design rule that everything runs against the store the application already
   uses, and needs the alternative above. Reconsidered when a deployment needs transaction-mode pooling for every
-  connection, or when measured `NOTIFY` commit serialization limits a workload.
+  connection.
 - **A channel per topic.** See [PostgreSQL](#postgresql).

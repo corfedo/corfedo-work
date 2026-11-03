@@ -33,6 +33,116 @@ public sealed class SignalTests(PostgreSqlDatabase database) : IClassFixture<Pos
         Assert.Empty(invoices.Keys);
     }
 
+    /// <summary>A signal is sent once its transaction commits, however long after the send that is.</summary>
+    [Fact]
+    public async Task ASignalIsSentWhenItsLongTransactionCommitsAndNeverWhenItRollsBack()
+    {
+        var store = new PostgreSqlWorkStore(database.DataSource, "signals_long", NullLoggerFactory.Instance, TimeProvider.System);
+        await using var signals = new WorkSignals(store.Signals);
+        var orders = new Recorder();
+        using var subscription = signals.Subscribe(Orders, orders);
+        await EventuallyAsync(() => orders.Resyncs == 1, "the listener connects");
+
+        await using (var connection = await database.DataSource.OpenConnectionAsync(Cancel))
+        {
+            await using var committed = await connection.BeginTransactionAsync(Cancel);
+            await signals.SendAsync(committed, Orders, "committed", Cancel);
+            await Task.Delay(300, Cancel);
+            Assert.Empty(orders.Keys);
+            await committed.CommitAsync(Cancel);
+        }
+        await using (var connection = await database.DataSource.OpenConnectionAsync(Cancel))
+        {
+            await using var rolledBack = await connection.BeginTransactionAsync(Cancel);
+            await signals.SendAsync(rolledBack, Orders, "rolled-back", Cancel);
+            await Task.Delay(300, Cancel);
+            await rolledBack.RollbackAsync(Cancel);
+        }
+
+        await EventuallyAsync(() => orders.Keys.Contains("committed"), "the committed signal arrives");
+        await Task.Delay(300, Cancel);
+        Assert.Equal(["committed"], orders.Keys);
+    }
+
+    /// <summary>
+    /// Every signal of many transactions committing at once arrives, also of those still running when a batch first
+    /// checks them.
+    /// </summary>
+    [Fact]
+    public async Task EverySignalOfConcurrentlyCommittingTransactionsArrives()
+    {
+        var store = new PostgreSqlWorkStore(database.DataSource, "signals_concurrent", NullLoggerFactory.Instance, TimeProvider.System);
+        await using var signals = new WorkSignals(store.Signals);
+        var orders = new Recorder();
+        using var subscription = signals.Subscribe(Orders, orders);
+        await EventuallyAsync(() => orders.Resyncs == 1, "the listener connects");
+
+        await Task.WhenAll(Enumerable.Range(0, 8).Select(writer => Task.Run(async () =>
+        {
+            await using var connection = await database.DataSource.OpenConnectionAsync(Cancel);
+            for (var i = 0; i < 50; i++)
+            {
+                await using var transaction = await connection.BeginTransactionAsync(Cancel);
+                await signals.SendAsync(transaction, Orders, $"{writer}:{i}", Cancel);
+                // Some transactions are still running at their first check and commit during later batches.
+                if (i % 3 == 0)
+                {
+                    await Task.Delay(Random.Shared.Next(1, 4), Cancel);
+                }
+                await transaction.CommitAsync(Cancel);
+            }
+        }, Cancel)));
+
+        await EventuallyAsync(() => orders.Keys.Distinct().Count() == 400, "every committed signal arrives");
+    }
+
+    /// <summary>Transactions that commit close together send the same topic and key once per batch.</summary>
+    [Fact]
+    public async Task SignalsWithTheSameKeyFromTransactionsCommittedCloseTogetherArriveMerged()
+    {
+        var store = new PostgreSqlWorkStore(database.DataSource, "signals_merged", NullLoggerFactory.Instance, TimeProvider.System);
+        await using var signals = new WorkSignals(store.Signals);
+        var orders = new Recorder();
+        using var subscription = signals.Subscribe(Orders, orders);
+        await EventuallyAsync(() => orders.Resyncs == 1, "the listener connects");
+
+        await using (var connection = await database.DataSource.OpenConnectionAsync(Cancel))
+        {
+            for (var i = 0; i < 50; i++)
+            {
+                await using var transaction = await connection.BeginTransactionAsync(Cancel);
+                await signals.SendAsync(transaction, Orders, "same", Cancel);
+                await transaction.CommitAsync(Cancel);
+            }
+        }
+
+        await EventuallyAsync(() => !orders.Keys.IsEmpty, "the signal arrives");
+        await Task.Delay(300, Cancel);
+        Assert.InRange(orders.Keys.Count, 1, 49);
+    }
+
+    /// <summary>Disposing the transport sends the signals of committed transactions it holds instead of dropping them.</summary>
+    [Fact]
+    public async Task DisposingTheTransportSendsTheSignalsOfCommittedTransactions()
+    {
+        var listening = new PostgreSqlWorkStore(database.DataSource, "signals_dispose", NullLoggerFactory.Instance, TimeProvider.System);
+        await using var signals = new WorkSignals(listening.Signals);
+        var orders = new Recorder();
+        using var subscription = signals.Subscribe(Orders, orders);
+        await EventuallyAsync(() => orders.Resyncs == 1, "the listener connects");
+        var sending = new PostgreSqlWorkStore(database.DataSource, "signals_dispose", NullLoggerFactory.Instance, TimeProvider.System);
+
+        await using (var connection = await database.DataSource.OpenConnectionAsync(Cancel))
+        {
+            await using var transaction = await connection.BeginTransactionAsync(Cancel);
+            await sending.Signals.SendAsync(transaction, Orders, "last", Cancel);
+            await transaction.CommitAsync(Cancel);
+        }
+        await ((IAsyncDisposable)sending.Signals).DisposeAsync();
+
+        await EventuallyAsync(() => orders.Keys.Contains("last"), "the committed signal arrives");
+    }
+
     /// <summary>The channel name is at most 63 bytes: <c>pg_notify</c> refuses longer ones and <c>LISTEN</c> truncates them.</summary>
     [Fact]
     public void ASchemaLongerThanItsSignalChannelAllowsIsRefused()

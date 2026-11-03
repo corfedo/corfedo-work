@@ -12,7 +12,7 @@ namespace Corfedo.Work.PostgreSql.Jobs;
 /// Job definitions, requests, transitions and cancellation on the framework's job table. Statements of one definition
 /// use the statements of its lease source, so they carry the same definition scope as claims.
 /// </summary>
-internal sealed partial class PostgreSqlJobStore(NpgsqlDataSource dataSource, PostgreSqlLeaseStore leases, PostgreSqlCalendarStore calendars, PostgreSqlMonitoringStore monitoring, string schema, PostgreSqlSignalSql signals, ILogger logger, WorkTelemetryOptions telemetry) : IJobStore
+internal sealed partial class PostgreSqlJobStore(NpgsqlDataSource dataSource, PostgreSqlLeaseStore leases, PostgreSqlCalendarStore calendars, PostgreSqlMonitoringStore monitoring, string schema, PostgreSqlSignalSender signals, ILogger logger, WorkTelemetryOptions telemetry) : IJobStore
 {
     private readonly string definitions = LeaseSql.Quote(schema) + ".job_definitions";
     private readonly string recurrences = LeaseSql.Quote(schema) + ".job_recurrences";
@@ -42,14 +42,14 @@ internal sealed partial class PostgreSqlJobStore(NpgsqlDataSource dataSource, Po
     /// <summary>
     /// The query that ends a statement queueing expected keys: it signals monitoring loops when the transaction commits,
     /// if <paramref name="queued"/>, a CTE of the queued rows' definitions, is not empty and the definition expects
-    /// completions, the only expectation whose keys a recurrence decides. The channel and payload are parameters
-    /// <paramref name="channel"/> and the next.
+    /// completions, the only expectation whose keys a recurrence decides. The payload is parameter
+    /// <paramref name="payload"/>; the statement returns signal rows.
     /// </summary>
-    private string NotifyMonitor(string queued, int channel) =>
-        $"SELECT pg_notify(${channel}, ${channel + 1}) FROM {definitions} AS d WHERE d.key = (SELECT q.definition FROM {queued} AS q LIMIT 1) AND d.expect_time IS NOT NULL";
+    private string NotifyMonitor(string queued, int payload) =>
+        $"{PostgreSqlSignalSql.Rows($"${payload}")} FROM {definitions} AS d WHERE d.key = (SELECT q.definition FROM {queued} AS q LIMIT 1) AND d.expect_time IS NOT NULL";
 
-    /// <summary>The channel and payload parameters of <see cref="NotifyMonitor"/>.</summary>
-    private NpgsqlParameter[] MonitorSignal(LeaseSource<JobId> source) => leases.Signal(WorkTopics.Monitor, source.Name);
+    /// <summary>The payload parameter of <see cref="NotifyMonitor"/>.</summary>
+    private static NpgsqlParameter MonitorSignal(LeaseSource<JobId> source) => PostgreSqlLeaseStore.Signal(WorkTopics.Monitor, source.Name);
 
     /// <summary>The copied pause flag of a new job: whether its subject has a stored pause.</summary>
     private string PausedCopy(string definition, string subjectKind, string subjectId) =>
@@ -60,7 +60,7 @@ internal sealed partial class PostgreSqlJobStore(NpgsqlDataSource dataSource, Po
     {
         foreach (var owner in owners.Distinct())
         {
-            await signals.NotifyAsync(work.Connection, work.Transaction, WorkTopics.Cancel, WorkTopics.CancelKey(new OwnerId(owner), source.Name), cancellationToken);
+            await signals.SendAsync(work.Connection, work.Transaction, WorkTopics.Cancel, WorkTopics.CancelKey(new OwnerId(owner), source.Name), cancellationToken);
         }
     }
 

@@ -348,11 +348,10 @@ The first provider.
   it disabled, against 0.14 ms without the CTE; the difference is mostly planning the larger statement. `jobs_ended`
   adds 0.01 ms to it. A page of 50 entries of a subject takes 0.02–0.06 ms, a page of 1 000 0.2 ms from the start or
   after a cursor 3 000 entries in, and the entries of one job 0.015 ms. The waiter's reread takes 0.02 ms for one job,
-  0.13–0.21 ms for 100 and 1.8 ms for 1 000. Any notification serializes the commits of notifying transactions: with 8
-  clients, single-row terminal transactions commit at 16 300 per second without one and 4 040 with one, and a second
-  notification in a transaction that already notifies costs nothing; with one client the difference is 0.02 ms. With
-  0%, 1%, 10% and 100% of the ends waited for, they commit at 16 600, 16 700, 15 200 and 3 700–4 100 per second. The
-  mark takes 0.34 ms with one client and 0.5 ms with 8.
+  0.13–0.21 ms for 100 and 1.8 ms for 1 000. A notification in the transaction serializes the commits of notifying
+  transactions: with 8 clients, single-row terminal transactions commit at 16 300 per second without one and 4 040
+  with one, which is why signals are sent in batches after commit ([signals](signals.md#batched-sending)). The mark
+  takes 0.34 ms with one client and 0.5 ms with 8.
 - Monitoring measurements, PostgreSQL 18.6, 1M jobs over 10 definitions with 25 000 subjects each (75% terminal, 5 000
   held per definition) and 20 000 recurrences of one definition with `CompletesBy`: the terminal statement executes in
   0.044 ms with or without expectations, its join to `job_definitions` reading one buffer; the expectation statements
@@ -463,11 +462,12 @@ The first provider.
   12 000 items: 172 ms against 171 ms at 12 000, within noise at 50 000, 1 636 ms against 1 530 ms at 100 000. A
   `set_config('jit', 'off', true)` command added to the claim batch made no measurable difference.
 - Clock: `clock_timestamp()` for every time.
-- Signals ([signals](signals.md)): `NOTIFY` in the sending transaction, delivered on commit, on one channel per
-  application, `corfedo_work:<schema>`, with the topic, a space and the key as payload. The channel name is at most
+- Signals ([signals](signals.md)): `NOTIFY` on one channel per application, `corfedo_work:<schema>`, with the topic,
+  a space and the key as payload, sent by each process in batches for the transactions that have committed, which it
+  finds by their transaction ids. The channel name is at most
   63 bytes, since `pg_notify` refuses longer ones and `LISTEN` truncates them, so the schema is at most 50 bytes and a
-  longer one is refused when the store is created. Statements that signal depending on the rows they match send from
-  inside the statement through one payload builder. A dedicated session-level connection listens and never runs a
+  longer one is refused when the store is created. Statements that signal depending on the rows they match return
+  signal rows, the transaction id and a payload from one payload builder, read in the statement's round trip. A dedicated session-level connection listens and never runs a
   transaction, so transaction-mode connection poolers need a direct connection for it. The listener probes a quiet
   connection with a query and reconnects when it fails; every subscriber then resyncs, since signals sent meanwhile
   are lost. Schedules, releases, cleared cancellations and settlements send `work.due`; on sources with

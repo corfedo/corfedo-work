@@ -26,11 +26,11 @@ internal sealed partial class PostgreSqlLeaseStore
             Interval(due.Delay),
             new NpgsqlParameter { Value = execution is { } id ? id : DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid }));
         batch.BatchCommands.Add(KeyCommand(
-            $"SELECT pg_notify(${k + 1}, ${k + 2}) FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Due} IS NOT NULL",
+            $"{PostgreSqlSignalSql.Rows($"${k + 1}")} FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Due} IS NOT NULL",
             source,
             key,
             Signal(WorkTopics.Due, source.Name)));
-        await batch.ExecuteNonQueryAsync(cancellationToken);
+        await signals.ExecuteAsync(batch, cancellationToken);
         return batch.BatchCommands[0].RecordsAffected == 1;
     }
 
@@ -44,7 +44,7 @@ internal sealed partial class PostgreSqlLeaseStore
             source,
             key,
             $"COALESCE({sql.Cancel}, clock_timestamp())",
-            k => $"SELECT pg_notify(${k + 1}, {PostgreSqlSignalSql.CancelExpression(sql.Owner, $"${k + 2}")}) FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NOT NULL",
+            k => $"{PostgreSqlSignalSql.Rows(PostgreSqlSignalSql.CancelExpression(sql.Owner, $"${k + 1}"))} FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NOT NULL",
             Text(source.Name),
             cancellationToken);
     }
@@ -58,7 +58,7 @@ internal sealed partial class PostgreSqlLeaseStore
             source,
             key,
             "NULL",
-            k => $"SELECT pg_notify(${k + 1}, ${k + 2}) FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)}",
+            k => $"{PostgreSqlSignalSql.Rows($"${k + 1}")} FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)}",
             PostgreSqlSignalSql.PayloadParameter(WorkTopics.Due, source.Name),
             cancellationToken);
     }
@@ -78,8 +78,8 @@ internal sealed partial class PostgreSqlLeaseStore
         var k = sql.KeyCount;
         await using var batch = new NpgsqlBatch(work.Connection, work.Transaction);
         batch.BatchCommands.Add(KeyCommand($"UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.Cancel)} = {value} WHERE {sql.KeyMatch(1)}", source, key));
-        batch.BatchCommands.Add(KeyCommand(notify(k), source, key, signals.ChannelParameter(), payload));
-        await batch.ExecuteNonQueryAsync(cancellationToken);
+        batch.BatchCommands.Add(KeyCommand(notify(k), source, key, payload));
+        await signals.ExecuteAsync(batch, cancellationToken);
         return batch.BatchCommands[0].RecordsAffected == 1;
     }
 

@@ -7,7 +7,7 @@ using static Corfedo.Work.PostgreSql.Leases.PostgreSqlLeaseStore;
 namespace Corfedo.Work.PostgreSql.Reconcile;
 
 /// <summary>Requests, results and invalidation of reconciliation sources, on the statements of their lease sources.</summary>
-internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, PostgreSqlLeaseStore leases, PostgreSqlSignalSql signals) : IReconcileStore
+internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, PostgreSqlLeaseStore leases, PostgreSqlSignalSender signals) : IReconcileStore
 {
     /// <summary>
     /// Locks the record, then increments the requested revision and schedules it, with a clock reading taken after the
@@ -50,10 +50,10 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
         }
         batch.BatchCommands.Add(schedule);
         batch.BatchCommands.Add(KeyCommand(
-            $"SELECT pg_notify(${k + 1}, ${k + 2}) FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL",
+            $"{PostgreSqlSignalSql.Rows($"${k + 1}")} FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL",
             source.Leases,
             key,
-            leases.Signal(WorkTopics.Due, source.Name)));
+            Signal(WorkTopics.Due, source.Name)));
         var found = false;
         OwnerId? superseded = null;
         await using (var reader = await batch.ExecuteReaderAsync(cancellationToken))
@@ -67,10 +67,11 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
                     superseded = new OwnerId(reader.GetGuid(1));
                 }
             }
+            await signals.ReadAsync(reader, cancellationToken);
         }
         if (superseded is { } owner)
         {
-            await signals.NotifyAsync(work.Connection, work.Transaction, WorkTopics.Cancel, WorkTopics.CancelKey(owner, source.Name), cancellationToken);
+            await signals.SendAsync(work.Connection, work.Transaction, WorkTopics.Cancel, WorkTopics.CancelKey(owner, source.Name), cancellationToken);
         }
         return found;
     }
@@ -155,12 +156,17 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
         batch.BatchCommands.Add(update);
         // A completed record is claimable again or frees a slot of the source's limits.
         batch.BatchCommands.Add(KeyCommand(
-            $"SELECT pg_notify(${k + 3}, ${k + 4}) FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NULL "
+            $"{PostgreSqlSignalSql.Rows($"${k + 3}")} FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NULL "
             + $"AND {sql.Owner} = ${k + 1} AND {sql.Epoch} = ${k + 2}{(sql.Policy.HasStoreLimits ? "" : $" AND {sql.Due} IS NOT NULL")}",
             source,
             lease.Key,
-            [Uuid(lease.Owner.Value), PostgreSqlLeaseStore.Int64(lease.Epoch), .. leases.Signal(WorkTopics.Due, source.Name)]));
-        await (await ExecuteFencedAsync(batch, cancellationToken)).DisposeAsync();
+            Uuid(lease.Owner.Value),
+            PostgreSqlLeaseStore.Int64(lease.Epoch),
+            Signal(WorkTopics.Due, source.Name)));
+        await using (var reader = await ExecuteFencedAsync(batch, cancellationToken))
+        {
+            await signals.ReadAsync(reader, cancellationToken);
+        }
         return update.RecordsAffected == 1;
     }
 
@@ -201,13 +207,15 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
         batch.BatchCommands.Add(new NpgsqlBatchCommand(
             $"INSERT INTO {sql.Generations} AS g (source, generation) VALUES ({sql.GenerationName}, 1) "
             + "ON CONFLICT (source) DO UPDATE SET generation = g.generation + 1 RETURNING g.generation"));
-        batch.BatchCommands.Add(Command("SELECT pg_notify($1, $2)", leases.Signal(WorkTopics.Due, source.Name)));
+        batch.BatchCommands.Add(Command(PostgreSqlSignalSql.Rows("$1"), Signal(WorkTopics.Due, source.Name)));
         await using var reader = await batch.ExecuteReaderAsync(cancellationToken);
         if (sql.Supersedes)
         {
             await reader.NextResultAsync(cancellationToken);
         }
         await reader.ReadAsync(cancellationToken);
-        return reader.GetInt64(0);
+        var generation = reader.GetInt64(0);
+        await signals.ReadAsync(reader, cancellationToken);
+        return generation;
     }
 }

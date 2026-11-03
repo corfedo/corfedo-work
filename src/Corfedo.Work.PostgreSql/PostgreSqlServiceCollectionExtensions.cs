@@ -42,12 +42,17 @@ public static class PostgreSqlServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(dataSource);
         var sql = PostgreSqlSignalSql.For(application);
-        services.TryAddSingleton<ISignalTransport>(provider => new PostgreSqlSignalTransport(
-            dataSource,
-            sql,
-            provider.GetService<TimeProvider>() ?? TimeProvider.System,
-            (provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance).CreateLogger("Corfedo.Work.PostgreSql"),
-            WorkTelemetryOptions.From(provider)));
+        services.TryAddSingleton<ISignalTransport>(provider =>
+        {
+            var logger = (provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance).CreateLogger("Corfedo.Work.PostgreSql");
+            var telemetry = WorkTelemetryOptions.From(provider);
+            return new PostgreSqlSignalTransport(
+                dataSource,
+                new PostgreSqlSignalSender(dataSource, sql, logger, telemetry),
+                provider.GetService<TimeProvider>() ?? TimeProvider.System,
+                logger,
+                telemetry);
+        });
         return services.AddWorkSignals();
     }
 }

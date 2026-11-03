@@ -6,7 +6,7 @@ using NpgsqlTypes;
 
 namespace Corfedo.Work.PostgreSql.Leases;
 
-internal sealed partial class PostgreSqlLeaseStore(NpgsqlDataSource dataSource, string schema, PostgreSqlSignalSql signals, ILogger logger, WorkTelemetryOptions telemetry) : ILeaseStore
+internal sealed partial class PostgreSqlLeaseStore(NpgsqlDataSource dataSource, string schema, PostgreSqlSignalSender signals, ILogger logger, WorkTelemetryOptions telemetry) : ILeaseStore
 {
     private readonly ConcurrentDictionary<object, LeaseSql> statements = new();
 
@@ -45,15 +45,15 @@ internal sealed partial class PostgreSqlLeaseStore(NpgsqlDataSource dataSource, 
 
     internal static TimeSpan Seconds(double seconds) => seconds <= 0 ? TimeSpan.Zero : TimeSpan.FromSeconds(seconds);
 
-    /// <summary>The application's signal format, for statements that signal.</summary>
-    internal PostgreSqlSignalSql Signals => signals;
+    /// <summary>The application's signal sender, for statements that signal.</summary>
+    internal PostgreSqlSignalSender Signals => signals;
 
-    /// <summary>The channel and payload parameters of a statement's <c>pg_notify</c>.</summary>
-    internal NpgsqlParameter[] Signal(SignalTopic topic, string key) => [signals.ChannelParameter(), PostgreSqlSignalSql.PayloadParameter(topic, key)];
+    /// <summary>The payload parameter of a statement's signal rows.</summary>
+    internal static NpgsqlParameter Signal(SignalTopic topic, string key) => PostgreSqlSignalSql.PayloadParameter(topic, key);
 
     /// <summary>Signals listeners when the transaction commits; a rollback discards the signal.</summary>
     internal Task NotifyAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, SignalTopic topic, string key, CancellationToken cancellationToken) =>
-        signals.NotifyAsync(connection, transaction, topic, key, cancellationToken);
+        signals.SendAsync(connection, transaction, topic, key, cancellationToken);
 
     /// <summary>The SQLSTATE of a generation fence refused for the transaction's isolation level.</summary>
     private const string FenceRefused = "CWF01";

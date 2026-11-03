@@ -5,14 +5,17 @@ using Npgsql;
 namespace Corfedo.Work.PostgreSql.Signals;
 
 /// <summary>
-/// Signals over <c>NOTIFY</c>: sent inside the changing transaction and delivered on commit, so rolled-back changes wake
-/// nobody. The listener holds a dedicated session-level connection that never runs a transaction, since a listener
+/// Signals over <c>NOTIFY</c>. A signal sent in a transaction is recorded with it and sent by
+/// <see cref="PostgreSqlSignalSender"/> once the transaction has committed, so rolled-back changes wake nobody; one
+/// sent without a transaction is notified at once. The listener holds a dedicated session-level connection that never runs a transaction, since a listener
 /// inside a long transaction holds back the notification queue and, once it is full, notifying commits fail. A
 /// connection quiet for <see cref="Probe"/> is checked with a query, so a silently broken connection is replaced
 /// instead of losing signals until the process restarts.
 /// </summary>
-internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSource, PostgreSqlSignalSql sql, TimeProvider time, ILogger logger, WorkTelemetryOptions telemetry) : ISignalTransport
+internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSource, PostgreSqlSignalSender sender, TimeProvider time, ILogger logger, WorkTelemetryOptions telemetry) : ISignalTransport, IAsyncDisposable
 {
+    private readonly PostgreSqlSignalSql sql = sender.Sql;
+
     private static readonly TimeSpan Reconnect = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan Probe = TimeSpan.FromSeconds(30);
 
@@ -21,7 +24,7 @@ internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSou
         if (transaction is not null)
         {
             var work = PostgreSqlTransaction.From(transaction);
-            await sql.NotifyAsync(work.Connection, work.Transaction, topic, key, cancellationToken);
+            await sender.SendAsync(work.Connection, work.Transaction, topic, key, cancellationToken);
             return;
         }
         await using var command = dataSource.CreateCommand("SELECT pg_notify($1, $2)");
@@ -71,6 +74,9 @@ internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSou
             }
         }
     }
+
+    /// <summary>Sends the signals of transactions that have committed before the process stops.</summary>
+    public ValueTask DisposeAsync() => sender.DisposeAsync();
 
     [LoggerMessage(EventId = 3, EventName = "signals.listen_failed", Level = LogLevel.Warning, Message = "Listening for work signals failed; reconnecting: {Error}")]
     private static partial void LogListenFailed(ILogger logger, Exception? exception, string error);

@@ -161,8 +161,8 @@ internal sealed partial class PostgreSqlJobStore
             update.Parameters.Add(Nullable(digest, NpgsqlDbType.Bytea));
             update.Parameters.Add(Nullable(schedule.Calendar, NpgsqlDbType.Text));
             update.Parameters.Add(Nullable(schedule.Calendar is null ? null : (short)schedule.Closed, NpgsqlDbType.Smallint));
-            update.Parameters.AddRange(MonitorSignal(source));
-            await update.ExecuteNonQueryAsync(cancellationToken);
+            update.Parameters.Add(MonitorSignal(source));
+            await signals.ExecuteAsync(update, cancellationToken);
         }
         await NotifyPlanAsync(work, source, cancellationToken);
         return created ? RecurrenceOutcome.Created : RecurrenceOutcome.Replaced;
@@ -196,8 +196,9 @@ internal sealed partial class PostgreSqlJobStore
             $"WITH removed AS (DELETE FROM {recurrences} WHERE id = $1 RETURNING definition, subject_kind, subject_id), "
             + $"queued AS (INSERT INTO {changes} (definition, subject_kind, subject_id) SELECT * FROM removed RETURNING definition) "
             + NotifyMonitor("queued", 2),
-            [Uuid(recurrence.Id), .. MonitorSignal(source)]));
-        await batch.ExecuteNonQueryAsync(cancellationToken);
+            Uuid(recurrence.Id),
+            MonitorSignal(source)));
+        await signals.ExecuteAsync(batch, cancellationToken);
         return true;
     }
 

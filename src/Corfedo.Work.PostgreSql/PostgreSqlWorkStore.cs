@@ -29,8 +29,8 @@ public sealed class PostgreSqlWorkStore : IWorkStore
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
         this.dataSource = dataSource;
         this.schema = schema;
-        var signals = PostgreSqlSignalSql.For(schema);
         var logger = loggerFactory.CreateLogger("Corfedo.Work.PostgreSql");
+        var signals = new PostgreSqlSignalSender(dataSource, PostgreSqlSignalSql.For(schema), logger, telemetry);
         var leases = new PostgreSqlLeaseStore(dataSource, schema, signals, logger, telemetry);
         Leases = leases;
         Reconcile = new PostgreSqlReconcileStore(dataSource, leases, signals);
