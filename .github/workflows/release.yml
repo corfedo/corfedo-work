@@ -20,7 +20,10 @@ jobs:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
+      # Full history: the release notes cover the commits since the previous tag.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -39,6 +42,10 @@ jobs:
             *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
             *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
           esac
+
+      - name: Release notes
+        id: notes
+        uses: corfedo/.github/actions/release-notes@main
 
       - name: Restore
         run: dotnet restore Corfedo.Work.slnx --locked-mode
@@ -72,7 +79,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           prerelease: ${{ steps.version.outputs.prerelease }}
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.path }}
           fail_on_unmatched_files: true
           files: |
             artifacts/packages/*.nupkg

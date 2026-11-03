@@ -14,6 +14,13 @@ Signed-off-by: Your Name <you@example.com>
 `git commit -s` adds it. Contributors retain their copyright. Contributions are licensed under Apache-2.0; no
 copyright assignment or additional rights through a contributor license agreement are requested.
 
+## Commit messages
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) as described in the
+[organization contributing guide](https://github.com/corfedo/.github/blob/main/CONTRIBUTING.md#commit-messages), for
+example `fix(sqlserver): report cancelled commands as OperationCanceledException`. Release notes are generated from
+them.
+
 ## Development
 
 Requires the .NET SDK pinned in [`global.json`](global.json) and Docker for the PostgreSQL and SQL Server tests, which
