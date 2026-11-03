@@ -403,7 +403,8 @@ provider options; pruning is a maintenance statement.
 - Require RCSI at startup; check the caller's isolation level once per transaction where read committed is required.
 - Lock in one statement, evaluate in the next; no condition that depends on a lock is evaluated inside the statement
   that waits for it.
-- `READPAST` for every claim and settlement scan, on an index in its order, with the claim's predicate in the index.
+- Claim and settlement scans read an index in their order without locks and lock each row they keep through its key
+  with `READPAST`; rows are locked through the key before any other index on every path.
 - Every statement that locks several rows of a table locks them in primary-key order.
 - Merge identities are serialized with exclusive applocks in merge-key order before any row lock.
 - Fences, limit scopes and subject pauses are applocks with fixed-length names; several of them are taken in name
@@ -432,6 +433,25 @@ provider options; pruning is a maintenance statement.
   session. A command without parameters runs as a plain batch, whose SET options persist, so every provider command
   has at least one parameter.
 
+- Rows are locked through their key, before any other index, on every path. A locking scan of a secondary index
+  (`UPDLOCK, ROWLOCK, READPAST` on the expiry index, then a lookup of the row) locks the index entry first and then
+  waits for the row when another transaction holds it, which deadlocked against a claim that held the row and
+  updated that index entry (reproduced in the racing-settlement scenario). Claim and settlement scans therefore read
+  the index without locks through a `FORWARD_ONLY READ_ONLY` cursor and lock each row they find with a single-row
+  `UPDLOCK, ROWLOCK, READPAST` statement on the key, which also evaluates the row's latest committed version. A
+  set-based form (`TOP (@n)` over the unlocked index joined to the locked key) was rejected: on small tables the
+  optimizer sorts after the join, even with `LOOP JOIN` and `FAST 1`, and then locks every candidate row (900 of
+  1 000); at 200 000 rows it kept the index order. The cursor reads only as far as needed whatever plan it gets: a
+  claim of 32 among 1 000 due rows holds 32 key locks. Its cost on the Mac was 1.24 ms against 0.61 ms for the
+  set-based form per pass of 32 over 200 000 due rows; it is measured again in the validation.
+- Statements over a set of keys (`@keys`) join it to the table with `INNER LOOP JOIN ... WITH (INDEX(<key>),
+  FORCESEEK)`. Without it, an update of a few keys on a small table scanned the table and waited for every row other
+  claims held, and two such claims deadlocked on each other's rows.
+- A query whose predicate implies a filtered index's filter reads the filter's column from the table unless the index
+  carries it, so a scan of `<due> WHERE <expires> IS NULL` looks up each row it passes; an index hint on a filtered
+  index whose filter the query does not imply fails with 8622.
+- The signals table is a framework table: a database is migrated before clients run, including clients that are
+  never started, since lease operations signal in their statements.
 - `Microsoft.Data.SqlClient` 7.1.1, like every earlier version, depends on `System.Security.Cryptography.Pkcs` below the
   versions that fix CVE-2026-84008 and CVE-2026-70162 (9.0.18 for 7.1.1); the provider references 10.0.13 directly, so
   restore resolves the fixed version.

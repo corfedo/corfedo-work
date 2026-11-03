@@ -19,10 +19,15 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
 
     public bool ConcurrentTransactions => true;
 
+    /// <summary>
+    /// Creates the database with the framework schema already migrated, as a deployment migrates before clients run:
+    /// the signals table is a framework table, and processes that are never started send signals too.
+    /// </summary>
     public async ValueTask InitializeAsync()
     {
         connectionString = await server.CreateDatabaseAsync();
         await ExecuteAsync($"CREATE SCHEMA {Schema}", CancellationToken.None);
+        await CreateStore().MigrateAsync(CancellationToken.None);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -485,3 +490,18 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
         }
     }
 }
+
+public sealed class SqlServerLeaseClaimScenarios(SqlServerConformanceProvider provider)
+    : LeaseClaimScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerLeaseHolderScenarios(SqlServerConformanceProvider provider)
+    : LeaseHolderScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerLeaseTakeoverScenarios(SqlServerConformanceProvider provider)
+    : LeaseTakeoverScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerLeaseLimitScenarios(SqlServerConformanceProvider provider)
+    : LeaseLimitScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerRemoteHolderScenarios(SqlServerConformanceProvider provider)
+    : RemoteHolderScenarios(provider), IClassFixture<SqlServerConformanceProvider>;

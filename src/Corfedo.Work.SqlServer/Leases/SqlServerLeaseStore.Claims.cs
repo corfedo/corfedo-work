@@ -259,33 +259,37 @@ internal sealed partial class SqlServerLeaseStore
         text.Append($"DECLARE @n int = {count};\n");
         // Claims do not clear DueAt, so held records keep their due times. Unheld records come from the index on DueAt
         // that leaves held records out, on job sources one range per accepted argument version, expired leases from the
-        // index on LeaseExpiresAt in expiry order; each scan is bounded by @now and read in its index's order, so it
-        // locks only the rows it reads, and every candidate is re-evaluated with a later clock reading once locked. Up
-        // to the limit is locked from each; the claim keeps the earliest due within the limit. READPAST skips rows other
-        // transactions hold. On reconciliation sources, records of an older generation than the current one come from
-        // the index on AttemptedGeneration, in index order; claims interleave them with records due by time. The scans
-        // overlap (a record can be due by time and of an older generation), so each record is kept once.
-        void Scan(string index, string range, string order)
+        // index on LeaseExpiresAt in expiry order; each scan is bounded by @now and read in its index's order without
+        // locks, and each row it finds is locked through the key and kept when its latest committed version is
+        // claimable by the clock reading of its lock statement; every candidate is evaluated again with a later clock
+        // reading once locked. Up to the limit is locked from each; the claim keeps the earliest due within the limit.
+        // READPAST skips rows other transactions hold. On reconciliation sources, records of an older generation than
+        // the current one come from the index on AttemptedGeneration, in index order; claims interleave them with
+        // records due by time. The scans overlap (a record can be due by time and of an older generation), so each
+        // record is kept once.
+        text.Append(sql.ScanVariables);
+        var scans = 0;
+        void Scan(string top, string index, Func<string, string> range, string locked, string order) =>
+            text.Append(sql.LockScan("scan" + scans++, top, index, range("x"), $"{range("r")} AND {locked}", order, "@c", sql.KeyColumns, sql.KeyList));
+        string Unheld(string a) => sql.Job is null
+            ? $"{LeaseSql.On(a, sql.Expires)} IS NULL"
+            : $"{LeaseSql.On(a, sql.Expires)} IS NULL AND {LeaseSql.On(a, sql.Due)} IS NOT NULL AND {a}.[paused] = 0";
+        for (var i = 0; i < sql.DueRanges.Count; i++)
         {
-            text.Append($"INSERT INTO @c ({sql.KeyColumns}) SELECT TOP (@n) {sql.KeyList} FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, READPAST, INDEX({Tsql.Quote(index)})) "
-                + $"WHERE {range} AND {claimable} AND NOT EXISTS (SELECT 1 FROM @c AS u WHERE {sql.KeyJoin}) ORDER BY {order};\n");
+            var v = i;
+            Scan("@n", sql.Shape.DueIndex, a => $"{sql.DueRangesOf(a)[v]} AND {sql.ScopeOf(a)} AND {Unheld(a)} AND {LeaseSql.On(a, sql.Due)} <= @now", claimable, LeaseSql.On("x", sql.Due));
         }
-        var unheld = sql.Job is null ? $"{sql.Expires} IS NULL" : $"{sql.Expires} IS NULL AND {sql.Due} IS NOT NULL AND r.[paused] = 0";
-        foreach (var range in sql.DueRanges)
-        {
-            Scan(sql.Shape.DueIndex, $"{range} AND {sql.Scope} AND {unheld} AND {sql.Due} <= @now", sql.Due);
-        }
-        Scan(sql.Shape.ExpiryIndex, $"{sql.Scope} AND {sql.Expires} IS NOT NULL AND {sql.Expires} <= @now", sql.Expires);
+        Scan("@n", sql.Shape.ExpiryIndex, a => $"{sql.ScopeOf(a)} AND {LeaseSql.On(a, sql.Expires)} IS NOT NULL AND {LeaseSql.On(a, sql.Expires)} <= @now", claimable, LeaseSql.On("x", sql.Expires));
         if (sql.Reconcile is not null)
         {
-            Scan(sql.Shape.GenerationIndex!, $"{sql.AttemptedGeneration} < {sql.Generation}", sql.AttemptedGeneration);
+            Scan("@n", sql.Shape.GenerationIndex!, a => $"{LeaseSql.On(a, sql.AttemptedGeneration)} < {sql.Generation}", claimable, LeaseSql.On("x", sql.AttemptedGeneration));
         }
         if (policy.OwnerLimit is not null)
         {
             // The owner's own claimable outstanding leases, from the owner index: replacing one takes no free slot, so
             // they are candidates even when the owner has none. Saturated partitions keep them for the same reason.
-            text.Append($"INSERT INTO @c ({sql.KeyColumns}) SELECT TOP (@limit) {sql.KeyList} FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, READPAST, INDEX({Tsql.Quote(sql.Shape.OwnerIndex!)})) "
-                + $"WHERE {sql.Owner} = @owner AND {sql.OutstandingCondition} AND {claimable} AND NOT EXISTS (SELECT 1 FROM @c AS u WHERE {sql.KeyJoin}) ORDER BY {sql.Due};\n");
+            Scan("@limit", sql.Shape.OwnerIndex!, a => $"{LeaseSql.On(a, sql.Owner)} = @owner AND {LeaseSql.On(a, sql.Expires)} IS NOT NULL",
+                $"{sql.OutstandingCondition} AND {claimable}", LeaseSql.On("x", sql.Due));
         }
         text.Append("SELECT @now;\n");
         text.Append($"SELECT {sql.KeyColumns} FROM @c;\n");
@@ -313,7 +317,7 @@ internal sealed partial class SqlServerLeaseStore
     {
         // Rows are locked in key order, the order every multi-row lock of the source takes.
         await using var command = KeysCommand(work.Connection, work.Transaction, sql, source, keys,
-            $"SELECT {sql.KeyList} FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, READPAST) JOIN @keys AS u ON {sql.KeyJoin} ORDER BY {sql.KeyList};");
+            $"SELECT {sql.KeyList} FROM {sql.KeyedRows("UPDLOCK, ROWLOCK, READPAST")} ORDER BY {sql.KeyColumns};");
         var locked = new List<TKey>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
@@ -543,7 +547,7 @@ internal sealed partial class SqlServerLeaseStore
         await using var command = KeysCommand(work.Connection, work.Transaction, sql, source, locked, $"""
             DECLARE @subjects TABLE (i int IDENTITY(0, 1) PRIMARY KEY, name nvarchar(255) COLLATE {Tsql.Binary} NOT NULL);
             DECLARE @busy TABLE (name nvarchar(255) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY);
-            INSERT INTO @subjects (name) SELECT s.name FROM (SELECT DISTINCT {sql.SubjectLock} AS name FROM {sql.Table} AS r JOIN @keys AS u ON {sql.KeyJoin}
+            INSERT INTO @subjects (name) SELECT s.name FROM (SELECT DISTINCT {sql.SubjectLock} AS name FROM {sql.KeyedRows()}
                 WHERE r.[subject_kind] IS NOT NULL) AS s ORDER BY s.name;
             DECLARE @i int = 0, @count int = (SELECT COUNT(*) FROM @subjects), @name nvarchar(255);
             WHILE @i < @count
@@ -553,7 +557,7 @@ internal sealed partial class SqlServerLeaseStore
                 IF @lock_result < 0 INSERT INTO @busy (name) VALUES (@name);
                 SET @i += 1;
             END
-            SELECT {sql.KeyList} FROM {sql.Table} AS r JOIN @keys AS u ON {sql.KeyJoin} WHERE r.[subject_kind] IS NOT NULL AND {sql.SubjectLock} IN (SELECT name FROM @busy);
+            SELECT {sql.KeyList} FROM {sql.KeyedRows()} WHERE r.[subject_kind] IS NOT NULL AND {sql.SubjectLock} IN (SELECT name FROM @busy);
             """);
         var busy = new HashSet<string>(StringComparer.Ordinal);
         await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
@@ -585,7 +589,7 @@ internal sealed partial class SqlServerLeaseStore
     {
         var dueByGeneration = sql.Reconcile is null ? "1 = 0" : $"({sql.Due} IS NULL OR {sql.Due} > SYSUTCDATETIME())";
         var text = $"SELECT {sql.Select(sql.PartitionText, sql.Owner, sql.Epoch, Tsql.Bit($"{sql.Expires} IS NOT NULL"), Tsql.Bit(claimable), Tsql.Bit(sql.OutstandingCondition), Tsql.Bit(sql.NeedsSettlement), sql.Takeovers, Tsql.Bit(sql.Superseded), Tsql.Bit(dueByGeneration), $"CAST({sql.Generation} AS bigint)")} "
-            + $"FROM {sql.Table} AS r JOIN @keys AS u ON {sql.KeyJoin} ORDER BY CASE WHEN {sql.Due} IS NULL THEN 1 ELSE 0 END, {sql.Due}, {sql.KeyList};";
+            + $"FROM {sql.KeyedRows()} ORDER BY CASE WHEN {sql.Due} IS NULL THEN 1 ELSE 0 END, {sql.Due}, {sql.KeyList};";
         await using var command = KeysCommand(work.Connection, work.Transaction, sql, source, keys, text);
         var candidates = new List<Candidate<TKey>>(keys.Count);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -782,8 +786,8 @@ internal sealed partial class SqlServerLeaseStore
         {
             text.Append("DECLARE @j TABLE (jid uniqueidentifier NOT NULL PRIMARY KEY, kind int NOT NULL);\n");
             text.Append($"INSERT INTO @j (jid, kind) SELECT r.[id], CASE WHEN {sql.Cancel} IS NOT NULL THEN {(int)JobClaimKind.Cancelled} WHEN {sql.JobLate} THEN {(int)JobClaimKind.Late} "
-                + $"WHEN {sql.JobExhausted} THEN {(int)JobClaimKind.Exhausted} ELSE {run} END FROM {sql.Table} AS r JOIN @keys AS u ON {sql.KeyJoin};\n");
-            text.Append(sql.RecordRun($"{sql.Table} AS r JOIN @keys AS u ON {sql.KeyJoin}", "1 = 1", ((int)JobRunOutcome.LeaseLost).ToString(CultureInfo.InvariantCulture), "NULL", $"LEAST({sql.Expires}, SYSUTCDATETIME())")).Append('\n');
+                + $"WHEN {sql.JobExhausted} THEN {(int)JobClaimKind.Exhausted} ELSE {run} END FROM {sql.KeyedRows()};\n");
+            text.Append(sql.RecordRun(sql.KeyedRows(), "1 = 1", ((int)JobRunOutcome.LeaseLost).ToString(CultureInfo.InvariantCulture), "NULL", $"LEAST({sql.Expires}, SYSUTCDATETIME())")).Append('\n');
             job = $", [attempts] = CASE WHEN j.kind = {run} THEN r.[attempts] + 1 ELSE r.[attempts] END, "
                 + $"[started] = CASE WHEN r.[started] = 1 OR j.kind = {run} THEN 1 ELSE 0 END, "
                 + $"[attempt_epoch] = CASE WHEN j.kind = {run} THEN {sql.Epoch} + 1 ELSE r.[attempt_epoch] END, "
@@ -800,7 +804,7 @@ internal sealed partial class SqlServerLeaseStore
             + $"{LeaseSql.Bare(sql.Takeovers)} = CASE WHEN {takeover} THEN {sql.Takeovers} + 1 ELSE {sql.Takeovers} END, "
             + $"{reconcile}{settle}{job} "
             + $"OUTPUT {output} INTO @claimed "
-            + $"FROM {sql.Table} AS r JOIN @keys AS u ON {sql.KeyJoin}{from};\n");
+            + $"FROM {sql.KeyedRows()}{from};\n");
         text.Append("SELECT * FROM @claimed;\n");
         var parameters = new List<SqlParameter> { Tsql.Guid("@owner", owner.Value), Tsql.Ticks("@duration", sql.Policy.Duration) };
         if (sql.Reconcile is not null)

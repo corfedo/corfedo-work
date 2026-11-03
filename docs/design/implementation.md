@@ -210,7 +210,7 @@ The provider passes the whole conformance suite before 0.2.0 is released. Each s
 | Step | Contents | Status |
 |---|---|---|
 | 9a | Project, package metadata, `Microsoft.Data.SqlClient` and `Testcontainers.MsSql` pins; test provisioning (one container per test process, a database per test class, RCSI on); framework schema baseline with lock escalation disabled; startup checks (RCSI, source columns, indexes, lock escalation); the isolation check recorded on `WorkTransaction`. | Done |
-| 9b | Leases: claims, claim by key, claims in the caller's transaction, renew, guard, release, end, schedule, cancel, expiry settlement, limits with scope applocks. | In progress |
+| 9b | Leases: claims, claim by key, claims in the caller's transaction, renew, guard, release, end, schedule, cancel, expiry settlement, limits with scope applocks. | Done |
 | 9c | Reconciliation: generations, the generation fence, supersession. | Not started |
 | 9d | Jobs: definitions and the definition fence, requests and merging, transitions, subject pauses, recurrences and planning, operator actions, status, run history, retention, the process registry. | Not started |
 | 9e | Calendars, chains, monitoring. | Not started |

@@ -2,6 +2,7 @@ using System.Data;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Data.SqlClient;
 
 namespace Corfedo.Work.SqlServer;
@@ -155,6 +156,12 @@ internal static class Tsql
 
     /// <summary>A JSON array parameter, read with OPENJSON into a table variable.</summary>
     public static SqlParameter Json(string name, string json) => new(name, SqlDbType.NVarChar, -1) { Value = json };
+
+    /// <summary>A JSON array of strings, read with <c>OPENJSON</c>; its elements are in the column <c>value</c>.</summary>
+    public static SqlParameter Strings(string name, IEnumerable<string> values) => Json(name, JsonSerializer.Serialize(values.ToArray(), SqlServerJson.Default.StringArray));
+
+    /// <summary>A JSON array of ids, read with <c>OPENJSON</c>.</summary>
+    public static SqlParameter Guids(string name, IEnumerable<Guid> values) => Json(name, JsonSerializer.Serialize(values.ToArray(), SqlServerJson.Default.GuidArray));
 
     /// <summary>
     /// A command on the connection, in <paramref name="transaction"/> if given, with <see cref="Prologue"/>. A command

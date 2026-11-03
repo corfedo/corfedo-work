@@ -43,7 +43,8 @@ internal sealed class LeaseSql
         LoadKeys = $"DECLARE @keys {KeyTable};\nINSERT INTO @keys ({KeyColumns}) SELECT {KeyColumns} FROM OPENJSON(@keyset) WITH ("
             + string.Join(", ", shape.Keys.Select((k, i) => $"k{i} {JsonType(k)} '$[{i}]'")) + ");\n";
         // Job sources share the framework's job table: every statement is scoped to the source's definition.
-        Scope = job is null ? "1 = 1" : $"r.[definition] = {Tsql.Literal(job.Definition)}";
+        Scope = ScopeOf("r");
+        KeyHint = shape.KeyIndex;
         KeyJoin = string.Join(" AND ", Keys.Select((k, i) => $"{k} = u.k{i}")) + (job is null ? "" : " AND " + Scope);
         KeyList = string.Join(", ", Keys);
         PartitionText = Partition is null ? "CAST(NULL AS nvarchar(4000))" : $"CAST({Partition} AS nvarchar(4000))";
@@ -85,7 +86,8 @@ internal sealed class LeaseSql
             SubjectLock = Tsql.LockNameExpression("subject", [frameworkSchema, job.Definition], "r.[subject_kind] + NCHAR(10) + r.[subject_id]");
             // One scan per accepted version on the index led by definition and version, so due jobs of versions this
             // process does not accept are never read.
-            DueRanges = [.. accepted.Select(v => $"r.[args_version] = {v}")];
+            acceptedVersions = accepted;
+            DueRanges = DueRangesOf("r");
             // A job with a calendar starts only inside the window planned with its due time. A takeover of a lost lease
             // continues an execution that started inside it, as a running attempt continues past the window's end.
             Claimable = $"({Eligible} AND {Due} <= SYSUTCDATETIME() AND ({Expires} IS NULL OR {Tsql.AddTicks(Expires, TakeoverBackoff)} <= SYSUTCDATETIME()) "
@@ -118,6 +120,8 @@ internal sealed class LeaseSql
         Policy = policy;
     }
 
+    private readonly string[]? acceptedVersions;
+
     public string Name { get; }
 
     public SourceShape Shape { get; }
@@ -127,6 +131,56 @@ internal sealed class LeaseSql
 
     /// <summary>The condition every statement of the source adds: the definition on job sources, <c>1 = 1</c> otherwise.</summary>
     public string Scope { get; }
+
+    /// <summary><see cref="Scope"/> on the row alias <paramref name="alias"/>.</summary>
+    public string ScopeOf(string alias) => Job is null ? "1 = 1" : $"{alias}.[definition] = {Tsql.Literal(Job.Definition)}";
+
+    /// <summary><see cref="DueRanges"/> on the row alias <paramref name="alias"/>.</summary>
+    public IReadOnlyList<string> DueRangesOf(string alias) => acceptedVersions is null ? ["1 = 1"] : [.. acceptedVersions.Select(v => $"{alias}.[args_version] = {v}")];
+
+    /// <summary>The column <paramref name="column"/>, given on the row alias <c>r</c>, on <paramref name="alias"/>.</summary>
+    public static string On(string alias, string column) => alias + "." + Bare(column);
+
+    /// <summary>The index hint target of the unique index on the key, through which rows are locked.</summary>
+    public string KeyHint { get; }
+
+    /// <summary>The variables <see cref="LockScan"/> uses, declared once per batch.</summary>
+    public string ScanVariables => "DECLARE " + string.Join(", ", Shape.Keys.Select((k, i) => $"@s{i} {k.VariableDeclaration}")) + ", @scanned int;\n";
+
+    /// <summary>
+    /// Statements that lock up to <paramref name="top"/> rows without waiting, in the order of a scan of
+    /// <paramref name="index"/>, and insert <paramref name="selected"/> of each into <paramref name="into"/>, whose
+    /// first columns are the key as <c>k0</c>, <c>k1</c>, ... A cursor reads the index (alias <c>x</c>) without locks,
+    /// in the order <paramref name="order"/>, the rows matching <paramref name="scan"/>; each row it returns is then
+    /// locked through its key (alias <c>r</c>) and kept when its latest committed version matches
+    /// <paramref name="locked"/> and it is not in <paramref name="into"/> yet; a row another transaction holds is
+    /// skipped. The cursor reads only as far as needed, and only kept rows are locked, whatever plan the scan gets.
+    /// Rows are locked through their key before any other index, as every statement that writes them does, so a scan
+    /// never holds an index entry while it waits for a row that a writer holds. Needs <see cref="ScanVariables"/>.
+    /// </summary>
+    public string LockScan(string name, string top, string index, string scan, string locked, string order, string into, string columns, string selected)
+    {
+        var keys = string.Join(", ", Shape.Keys.Select((_, i) => "@s" + i));
+        var match = string.Join(" AND ", Shape.Keys.Select((k, i) => $"r.{Tsql.Quote(k.Name)} = @s{i}"));
+        var taken = string.Join(" AND ", Shape.Keys.Select((_, i) => $"t.k{i} = @s{i}"));
+        return $"""
+            DECLARE {name} CURSOR LOCAL FORWARD_ONLY READ_ONLY FOR
+                SELECT {string.Join(", ", Shape.Keys.Select(k => "x." + Tsql.Quote(k.Name)))} FROM {Table} AS x WITH (INDEX({Tsql.Quote(index)})) WHERE {scan} ORDER BY {order};
+            OPEN {name};
+            SET @scanned = 0;
+            WHILE @scanned < {top}
+            BEGIN
+                FETCH NEXT FROM {name} INTO {keys};
+                IF @@FETCH_STATUS <> 0 BREAK;
+                INSERT INTO {into} ({columns}) SELECT {selected} FROM {Table} AS r WITH (UPDLOCK, ROWLOCK, READPAST)
+                WHERE {match} AND {locked} AND NOT EXISTS (SELECT 1 FROM {into} AS t WHERE {taken});
+                SET @scanned += @@ROWCOUNT;
+            END
+            CLOSE {name};
+            DEALLOCATE {name};
+
+            """;
+    }
 
     /// <summary>On job sources, the scope plus the argument versions this process may claim.</summary>
     public string Eligible { get; } = "1 = 1";
@@ -278,6 +332,14 @@ internal sealed class LeaseSql
 
     /// <summary>Declares <c>@keys</c> and fills it from the JSON parameter <c>@keyset</c>.</summary>
     public string LoadKeys { get; }
+
+    /// <summary>
+    /// The rows (alias <c>r</c>) of the keys in <c>@keys</c> (alias <c>u</c>), each found by a seek on the key, in the
+    /// order of <c>@keys</c>, with the table hints <paramref name="hints"/>. Without the seek a statement over a few
+    /// keys may scan the table, and a locking scan waits for every row other transactions hold.
+    /// </summary>
+    public string KeyedRows(string hints = "") =>
+        $"@keys AS u INNER LOOP JOIN {Table} AS r WITH ({(hints.Length == 0 ? "" : hints + ", ")}INDEX({KeyHint}), FORCESEEK) ON {KeyJoin}";
 
     /// <summary>Joins rows of <c>r</c> to <c>u</c>, a table of keys.</summary>
     public string KeyJoin { get; }

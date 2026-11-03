@@ -4,7 +4,11 @@ using Microsoft.Data.SqlClient;
 namespace Corfedo.Work.SqlServer.Leases;
 
 /// <summary>A key field's column: its declaration for table variables and the parameter type that matches it.</summary>
-internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type, int Size);
+internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type, int Size)
+{
+    /// <summary>The declaration of a variable of the column's values: variables take no collation and compare in the column's.</summary>
+    public string VariableDeclaration => Declaration.Split(" COLLATE ")[0];
+}
 
 /// <summary>
 /// What the statements of a source need from its table beyond the source definition: the key columns' exact types and
@@ -13,6 +17,7 @@ internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type
 /// </summary>
 internal sealed record SourceShape(
     IReadOnlyList<KeyColumn> Keys,
+    string KeyIndex,
     string PartitionDeclaration,
     string DueIndex,
     string ExpiryIndex,
@@ -23,6 +28,7 @@ internal sealed record SourceShape(
     /// <summary>The shape of the framework's job table.</summary>
     public static SourceShape Jobs { get; } = new(
         [new KeyColumn("id", "uniqueidentifier", SqlDbType.UniqueIdentifier, 0)],
+        "[jobs_key]",
         "nvarchar(400) COLLATE " + Tsql.Binary,
         "jobs_due",
         "jobs_expiry",
@@ -36,7 +42,7 @@ internal static class SourceCatalog
 {
     private sealed record Column(string Type, short MaxLength, string? Collation, bool NotNull);
 
-    private sealed record Index(string Name, bool Unique, string? Filter, string[] Keys, string[] Included);
+    private sealed record Index(string Name, bool Clustered, bool Unique, string? Filter, string[] Keys, string[] Included);
 
     /// <summary>
     /// Checks the source's fields and types and the indexes its statements use, and returns its shape. Required are a
@@ -65,7 +71,7 @@ internal static class SourceCatalog
                 SELECT lock_escalation_desc FROM sys.tables WHERE object_id = @id;
                 SELECT c.name, t.name, c.max_length, c.collation_name, CAST(CASE WHEN c.is_nullable = 0 THEN 1 ELSE 0 END AS bit)
                 FROM sys.columns AS c JOIN sys.types AS t ON t.user_type_id = c.user_type_id WHERE c.object_id = @id;
-                SELECT i.index_id, i.name, i.is_unique, i.filter_definition FROM sys.indexes AS i
+                SELECT i.index_id, i.name, i.is_unique, i.filter_definition, CAST(CASE WHEN i.type = 1 THEN 1 ELSE 0 END AS bit) FROM sys.indexes AS i
                 WHERE i.object_id = @id AND i.type IN (1, 2) AND i.is_disabled = 0 AND i.is_hypothetical = 0;
                 SELECT ic.index_id, c.name, ic.is_included_column FROM sys.index_columns AS ic
                 JOIN sys.columns AS c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
@@ -80,10 +86,10 @@ internal static class SourceCatalog
                 columns[reader.GetString(0)] = new Column(reader.GetString(1), reader.GetInt16(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetBoolean(4));
             }
             await reader.NextResultAsync(cancellationToken);
-            var names = new Dictionary<int, (string Name, bool Unique, string? Filter)>();
+            var names = new Dictionary<int, (string Name, bool Unique, string? Filter, bool Clustered)>();
             while (await reader.ReadAsync(cancellationToken))
             {
-                names[reader.GetInt32(0)] = (reader.GetString(1), reader.GetBoolean(2), reader.IsDBNull(3) ? null : reader.GetString(3));
+                names[reader.GetInt32(0)] = (reader.GetString(1), reader.GetBoolean(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetBoolean(4));
             }
             await reader.NextResultAsync(cancellationToken);
             var keys = new Dictionary<int, (List<string> Keys, List<string> Included)>();
@@ -99,7 +105,7 @@ internal static class SourceCatalog
             foreach (var (id, index) in names)
             {
                 var lists = keys.GetValueOrDefault(id, ([], []));
-                indexes.Add(new Index(index.Name, index.Unique, index.Filter, [.. lists.Keys], [.. lists.Included]));
+                indexes.Add(new Index(index.Name, index.Clustered, index.Unique, index.Filter, [.. lists.Keys], [.. lists.Included]));
             }
         }
         if (escalation is null)
@@ -174,7 +180,12 @@ internal static class SourceCatalog
             }
         }
         var keyNames = source.Key.Fields.Select(k => k.Name).Order(StringComparer.Ordinal).ToArray();
-        if (!indexes.Any(i => i.Unique && i.Filter is null && i.Keys.Order(StringComparer.Ordinal).SequenceEqual(keyNames)))
+        // Rows are locked through the unique index on the key; a clustered one is preferred, which locks one entry per row.
+        var keyIndex = indexes
+            .Where(i => i.Unique && i.Filter is null && i.Keys.Order(StringComparer.Ordinal).SequenceEqual(keyNames))
+            .OrderByDescending(i => i.Clustered)
+            .FirstOrDefault();
+        if (keyIndex is null)
         {
             problems.Add($"no unique index on the key ({string.Join(", ", source.Key.Fields.Select(k => k.Name))})");
         }
@@ -240,7 +251,7 @@ internal static class SourceCatalog
         }
         var keyColumns = source.Key.Fields.Select(k => KeyOf(k.Name, columns[k.Name])).ToArray();
         var partitionDeclaration = partitionColumn is null ? "nvarchar(4000)" : Declaration(partitionColumn);
-        return new SourceShape(keyColumns, partitionDeclaration, due!.Name, expiry!.Name, partitionIndex?.Name, ownerIndex?.Name, generationIndex?.Name);
+        return new SourceShape(keyColumns, Tsql.Quote(keyIndex!.Name), partitionDeclaration, due!.Name, expiry!.Name, partitionIndex?.Name, ownerIndex?.Name, generationIndex?.Name);
     }
 
     private static KeyColumn KeyOf(string name, Column column) => column.Type switch

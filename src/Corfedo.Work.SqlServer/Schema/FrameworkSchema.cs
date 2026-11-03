@@ -119,7 +119,7 @@ internal static class FrameworkSchema
             --
             -- trace_parent is the W3C trace id of the request that created the job.
             CREATE TABLE {schema}.jobs (
-                id uniqueidentifier NOT NULL PRIMARY KEY,
+                id uniqueidentifier NOT NULL CONSTRAINT jobs_key PRIMARY KEY,
                 definition nvarchar(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 merge_key nvarchar(512) COLLATE Latin1_General_100_BIN2,
                 subject_kind nvarchar(100) COLLATE Latin1_General_100_BIN2,

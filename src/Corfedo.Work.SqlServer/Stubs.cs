@@ -1,8 +1,10 @@
-namespace Corfedo.Work.SqlServer;
-
-internal sealed class StubJobStore(string schema) : IJobStore
+namespace Corfedo.Work.SqlServer
 {
-    public StoreLocation Table { get; } = StoreLocation.Table(schema, "jobs");
+
+namespace Jobs
+{
+internal sealed partial class SqlServerJobStore
+{
     public ValueTask<StoredJobDefinition> StoreDefinitionAsync(JobDefinition definition, JobRetention retention, CancellationToken cancellationToken) => throw new NotImplementedException();
     public ValueTask<StoredJobDefinition?> GetDefinitionAsync(string key, CancellationToken cancellationToken) => throw new NotImplementedException();
     public ValueTask<JobRequestResult> RequestAsync(WorkTransaction transaction, LeaseSource<JobId> source, JobRequestData request, CancellationToken cancellationToken) => throw new NotImplementedException();
@@ -31,10 +33,9 @@ internal sealed class StubJobStore(string schema) : IJobStore
     public ValueTask<bool> WatchAsync(string definition, JobId job, CancellationToken cancellationToken) => throw new NotImplementedException();
     public ValueTask<IReadOnlyList<StoredJobOutcome>> GetOutcomesAsync(string definition, IReadOnlyList<JobId> jobs, CancellationToken cancellationToken) => throw new NotImplementedException();
     public ValueTask<JobRunPage> GetRunsAsync(string definition, Subject? subject, JobId? job, int limit, JobRunCursor? after, CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask RegisterProcessAsync(OwnerId owner, IReadOnlyList<ProcessDefinition> definitions, CancellationToken cancellationToken) => throw new NotImplementedException();
     public ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<IReadOnlyList<UndeclaredRecurrence>> GetUndeclaredRecurrencesAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<IReadOnlyList<OutdatedProcess>> GetOutdatedProcessesAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
+}
+
 }
 
 internal sealed class StubChainStore : IChainStore
@@ -50,17 +51,6 @@ internal sealed class StubChainStore : IChainStore
     public ValueTask<ChainDeleteOutcome> DeleteChainAsync(ChainId chain, ChainDelete mode, Func<string, (LeaseSource<JobId> Source, JobEndedCallback? Ended)?> definitions, CancellationToken cancellationToken) => throw new NotImplementedException();
 }
 
-internal sealed class StubCalendarStore : ICalendarStore
-{
-    public ValueTask<WorkCalendar> StoreCalendarAsync(WorkCalendar calendar, CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<IReadOnlyList<WorkCalendar>> GetCalendarsAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<bool> RemoveCalendarAsync(string name, CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask RegisterProcessAsync(OwnerId owner, IReadOnlyList<WorkCalendar> calendars, CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<IReadOnlyList<UnregisteredCalendar>> GetUnregisteredCalendarsAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<IReadOnlyList<DateSetCoverage>> GetDateSetCoverageAsync(TimeSpan margin, CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<bool> PublishDatesAsync(WorkTransaction transaction, CalendarDates dates, CancellationToken cancellationToken) => throw new NotImplementedException();
-    public ValueTask<IReadOnlyList<CalendarDates>> GetDateSetsAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
-}
 
 internal sealed class StubMonitoringStore(string schema) : IMonitoringStore
 {
@@ -85,4 +75,5 @@ internal sealed class StubMonitoringStore(string schema) : IMonitoringStore
     public ValueTask<bool> FinishDeliveryAsync(Lease<Guid> lease, CancellationToken cancellationToken) => throw new NotImplementedException();
     public ValueTask<int> RetainAsync(TimeSpan retention, int limit, CancellationToken cancellationToken) => throw new NotImplementedException();
     public ValueTask<MonitoringGauges> GetGaugesAsync(CancellationToken cancellationToken) => throw new NotImplementedException();
+}
 }
