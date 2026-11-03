@@ -110,7 +110,8 @@ public abstract class JobAttemptScenarios(IJobConformanceProvider provider) : Jo
         release.SetResult();
 
         await EventuallyAsync(() => ended.Calls.Count == 2, TimeSpan.FromSeconds(10), "the follow-up ends");
-        var state = await ReadJobAsync(job.Id);
+        // The hook runs in the ending transaction, so the job's end may not have committed yet.
+        var state = await EndedAsync(job.Id, TimeSpan.FromSeconds(10));
         Assert.Equal((JobOutcome.Skipped, "late", 0, false, "second"), (state.State, state.Reason, state.Attempts, state.Started, state.Args));
         Assert.Equal(["first"], attempts.Select(a => a.Args));
         Assert.Equal([JobOutcome.Completed, JobOutcome.Skipped], ended.Calls.Select(c => c.Outcome));
