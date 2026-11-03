@@ -7,7 +7,7 @@ translate, the measurements behind each choice and the decisions taken. It is th
 
 The proofs of concept are small console programs outside the repository, built on `Microsoft.Data.SqlClient` 6.1.3,
 run against SQL Server 2022 (16.0.4305.5, CU27) and SQL Server 2025 (17.0.5035.5, CU10, compatibility level 170) with
-identical results. Numbers are from sk8 (AMD Ryzen 7 7700X, Docker, native x86_64) unless they say Mac (Apple M4 Pro,
+identical results. Numbers are from a Linux host (AMD Ryzen 7 7700X, Docker, native x86_64) unless they say Mac (Apple M4 Pro,
 colima with Rosetta). The essential statements of each program are reproduced below.
 
 ## Decisions
@@ -38,7 +38,7 @@ docker exec mssql /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P '<passw
 QEMU is not needed: the VM registers Rosetta as the `x86_64` handler. SQL Server needs at least 2 GiB; under load the
 container used 2.4 GiB of the VM's 6.
 
-| | Mac (Rosetta) | sk8 (native) |
+| | Mac (Rosetta) | Linux x86_64 (native) |
 |---|---|---|
 | Container start to first `SELECT 1` | 6.8 s (2022), 7.1 s (2025) | 2.8 s (2022), 3.4 s (2025) |
 | Claim pass, 1 worker, 8 records, p50 | 5.6 ms | 2.1 ms |

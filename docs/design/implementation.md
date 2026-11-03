@@ -13,6 +13,7 @@ PostgreSQL; a stage that changes semantics updates the design and the scenarios 
 | 6. Integration packages | `StartMode.Manual`, application isolation, `InMemory`, `EntityFrameworkCore`, Native AOT smoke application. | H-1, H-2, H-4–H-7 | Done |
 | 7. Signals | The signals layer of [signals](signals.md): the signals layer, the PostgreSQL and in-memory transports, framework topics, the EF Core send. | S-1–S-8 (S-6, S-7 as PostgreSQL tests) | Done |
 | 8. First public release | Package metadata, SourceLink and symbol packages, CI and release workflows, package readme, public documentation pass; the owner makes the repository public and publishes. | — | Done |
+| 9. SQL Server provider | `Corfedo.Work.SqlServer` as designed in [SQL Server provider](sqlserver.md): schema, every store contract, the signals table transport, the EF Core adapter on SQL Server, the guides; the whole conformance suite on SQL Server 2022 and 2025. | All | Not started |
 
 The lease, reconciliation, job and process registry scenarios run as `Corfedo.Work.Conformance` tests against
 PostgreSQL 18.6 in `tests/Corfedo.Work.PostgreSql.Tests`, and against the in-memory provider in
@@ -200,3 +201,20 @@ The first public version is 0.1.0, with every package in `src/`.
 | 8b | `.github/workflows/ci.yml` (build, tests with Docker, AOT smoke) and `release.yml` (on a `v*` tag matching `Version.props`: build, test, pack, push to GitHub Packages and to nuget.org through Trusted Publishing, GitHub release). | Done |
 | 8c | Public documentation pass: the README status, measurement notes that name internal hosts. | Done |
 | 8d | The owner makes the repository public, adds the nuget.org Trusted Publishing policy, publishes `dev` and tags the release. | Done |
+
+## Stage 9 steps
+
+The provider passes the whole conformance suite before 0.2.0 is released. Each step adds its conformance tests to
+`tests/Corfedo.Work.SqlServer.Tests` and keeps the existing suites green.
+
+| Step | Contents | Status |
+|---|---|---|
+| 9a | Project, package metadata, `Microsoft.Data.SqlClient` and `Testcontainers.MsSql` pins; test provisioning (one container per test process, a database per test class, RCSI on); framework schema baseline with lock escalation disabled; startup checks (RCSI, source columns, indexes, lock escalation); the isolation check recorded on `WorkTransaction`. | Not started |
+| 9b | Leases: claims, claim by key, claims in the caller's transaction, renew, guard, release, end, schedule, cancel, expiry settlement, limits with scope applocks. | Not started |
+| 9c | Reconciliation: generations, the generation fence, supersession. | Not started |
+| 9d | Jobs: definitions and the definition fence, requests and merging, transitions, subject pauses, recurrences and planning, operator actions, status, run history, retention, the process registry. | Not started |
+| 9e | Calendars, chains, monitoring. | Not started |
+| 9f | Signals: the signals table transport, its listener and pruning. | Not started |
+| 9g | EF Core adapter on SQL Server; Native AOT and trimming of the provider; guides and README. | Not started |
+| 9h | Validation: the measurements of [SQL Server provider](sqlserver.md) repeated on the provider at 1M and 10M jobs, the open items there closed. | Not started |
+
