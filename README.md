@@ -173,3 +173,8 @@ see [CONTRIBUTING](CONTRIBUTING.md).
 
 Corfedo Work is licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for the reservation of Corfedo names,
 logos and brand assets.
+
+## Part of Corfedo
+
+Corfedo Work is developed by [Corfedo](https://github.com/corfedo), which builds code search and dependency security
+across all your repositories for developers and AI coding agents.
