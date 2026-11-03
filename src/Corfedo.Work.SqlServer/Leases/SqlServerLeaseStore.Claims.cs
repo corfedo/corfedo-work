@@ -222,12 +222,9 @@ internal sealed partial class SqlServerLeaseStore
         var policy = sql.Policy;
         var text = new StringBuilder();
         text.Append("DECLARE @now datetime2(7) = SYSUTCDATETIME();\n");
-        text.Append($"DECLARE @c {sql.KeyTable};\n");
         if (busy.Length > 0)
         {
-            text.Append($"DECLARE @busy TABLE (p {sql.Shape.PartitionDeclaration} NOT NULL PRIMARY KEY);\n");
-            text.Append("INSERT INTO @busy (p) SELECT DISTINCT value FROM OPENJSON(@busyset);\n");
-            claimable = $"({claimable} AND NOT EXISTS (SELECT 1 FROM @busy AS b WHERE b.p = {sql.Partition}))";
+            claimable = $"({claimable} AND NOT EXISTS (SELECT 1 FROM OPENJSON(@busyset) WITH (p {sql.Shape.PartitionDeclaration} '$') AS b WHERE b.p = {sql.Partition}))";
         }
         var saturated = new List<string>();
         var partitionHint = sql.Shape.PartitionIndex is { } p ? $" WITH (INDEX({Tsql.Quote(p)}))" : "";
@@ -244,9 +241,8 @@ internal sealed partial class SqlServerLeaseStore
             // Saturated partitions are counted once per statement from the partition index over held leases, and a
             // record with an outstanding lease of its own stays in: claiming it replaces that lease, so it adds nothing
             // to its partition. Partition fields of limited sources are never null.
-            text.Append($"DECLARE @saturated TABLE (p {sql.Shape.PartitionDeclaration} NOT NULL PRIMARY KEY);\n");
-            text.Append($"INSERT INTO @saturated (p) {string.Join(" UNION ", saturated)};\n");
-            claimable = $"({claimable} AND (NOT EXISTS (SELECT 1 FROM @saturated AS s WHERE s.p = {sql.Partition}) OR {sql.OutstandingCondition}))";
+            text.Append($"DECLARE @saturated nvarchar(max) = (SELECT s.p FROM ({string.Join(" UNION ", saturated)}) AS s (p) FOR JSON PATH);\n");
+            claimable = $"({claimable} AND (NOT EXISTS (SELECT 1 FROM OPENJSON(@saturated) WITH (p {sql.Shape.PartitionDeclaration} '$.p') AS s WHERE s.p = {sql.Partition}) OR {sql.OutstandingCondition}))";
         }
         var count = policy.OwnerLimit is { } ownerLimit
             ? $"LEAST(@limit, GREATEST({ownerLimit} - (SELECT COUNT(*) FROM {sql.Table} AS r WHERE {sql.OutstandingCondition} AND {sql.Owner} = @owner), 0))"
@@ -265,12 +261,12 @@ internal sealed partial class SqlServerLeaseStore
         // reading once locked. Up to the limit is locked from each; the claim keeps the earliest due within the limit.
         // READPAST skips rows other transactions hold. On reconciliation sources, records of an older generation than
         // the current one come from the index on AttemptedGeneration, in index order; claims interleave them with
-        // records due by time. The scans overlap (a record can be due by time and of an older generation), so each
-        // record is kept once.
-        text.Append(sql.ScanVariables);
+        // records due by time. The scans of the generation and owner indexes overlap the others (a record can be due by
+        // time and of an older generation), so each record is kept once.
+        text.Append(sql.ScanVariables("@c"));
         var scans = 0;
-        void Scan(string top, string index, Func<string, string> range, string locked, string order) =>
-            text.Append(sql.LockScan("scan" + scans++, top, index, range("x"), $"{range("r")} AND {locked}", order, "@c", sql.KeyColumns, sql.KeyList));
+        void Scan(string top, string index, Func<string, string> range, string locked, string order, bool distinct = false) =>
+            text.Append(sql.LockScan("scan" + scans++, top, index, range("x"), $"{range("r")} AND {locked}", order, "@c", distinct));
         string Unheld(string a) => sql.Job is null
             ? $"{LeaseSql.On(a, sql.Expires)} IS NULL"
             : $"{LeaseSql.On(a, sql.Expires)} IS NULL AND {LeaseSql.On(a, sql.Due)} IS NOT NULL AND {a}.[paused] = 0";
@@ -282,17 +278,17 @@ internal sealed partial class SqlServerLeaseStore
         Scan("@n", sql.Shape.ExpiryIndex, a => $"{sql.ScopeOf(a)} AND {LeaseSql.On(a, sql.Expires)} IS NOT NULL AND {LeaseSql.On(a, sql.Expires)} <= @now", claimable, LeaseSql.On("x", sql.Expires));
         if (sql.Reconcile is not null)
         {
-            Scan("@n", sql.Shape.GenerationIndex!, a => $"{LeaseSql.On(a, sql.AttemptedGeneration)} < {sql.Generation}", claimable, LeaseSql.On("x", sql.AttemptedGeneration));
+            Scan("@n", sql.Shape.GenerationIndex!, a => $"{LeaseSql.On(a, sql.AttemptedGeneration)} < {sql.Generation}", claimable, LeaseSql.On("x", sql.AttemptedGeneration), distinct: true);
         }
         if (policy.OwnerLimit is not null)
         {
             // The owner's own claimable outstanding leases, from the owner index: replacing one takes no free slot, so
             // they are candidates even when the owner has none. Saturated partitions keep them for the same reason.
             Scan("@limit", sql.Shape.OwnerIndex!, a => $"{LeaseSql.On(a, sql.Owner)} = @owner AND {LeaseSql.On(a, sql.Expires)} IS NOT NULL",
-                $"{sql.OutstandingCondition} AND {claimable}", LeaseSql.On("x", sql.Due));
+                $"{sql.OutstandingCondition} AND {claimable}", LeaseSql.On("x", sql.Due), distinct: true);
         }
         text.Append("SELECT @now;\n");
-        text.Append($"SELECT {sql.KeyColumns} FROM @c;\n");
+        text.Append($"SELECT {sql.KeyColumns} FROM {sql.KeyRows(LeaseSql.ListJson("@c"))};\n");
         var parameters = new List<SqlParameter> { Tsql.Guid("@owner", owner.Value), Tsql.Int32("@limit", limit) };
         if (busy.Length > 0)
         {
@@ -545,19 +541,10 @@ internal sealed partial class SqlServerLeaseStore
             return locked;
         }
         await using var command = KeysCommand(work.Connection, work.Transaction, sql, source, locked, $"""
-            DECLARE @subjects TABLE (i int IDENTITY(0, 1) PRIMARY KEY, name nvarchar(255) COLLATE {Tsql.Binary} NOT NULL);
-            DECLARE @busy TABLE (name nvarchar(255) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY);
-            INSERT INTO @subjects (name) SELECT s.name FROM (SELECT DISTINCT {sql.SubjectLock} AS name FROM {sql.KeyedRows()}
-                WHERE r.[subject_kind] IS NOT NULL) AS s ORDER BY s.name;
-            DECLARE @i int = 0, @count int = (SELECT COUNT(*) FROM @subjects), @name nvarchar(255);
-            WHILE @i < @count
-            BEGIN
-                SELECT @name = name FROM @subjects WHERE i = @i;
-                EXEC @lock_result = sp_getapplock @Resource = @name, @LockMode = 'Shared', @LockOwner = 'Transaction', @LockTimeout = 0;
-                IF @lock_result < 0 INSERT INTO @busy (name) VALUES (@name);
-                SET @i += 1;
-            END
-            SELECT {sql.KeyList} FROM {sql.KeyedRows()} WHERE r.[subject_kind] IS NOT NULL AND {sql.SubjectLock} IN (SELECT name FROM @busy);
+            DECLARE @busy nvarchar(max) = N'';
+            {Tsql.AppLocks("subject", $"(SELECT STRING_AGG(CAST(s.name AS nvarchar(max)), N',') WITHIN GROUP (ORDER BY s.name) FROM (SELECT DISTINCT {sql.SubjectLock} AS name FROM {sql.KeyedRows()} WHERE r.[subject_kind] IS NOT NULL) AS s)",
+                "Shared", "0", "SET @busy = @busy + N',' + @subject_lock;")}
+            SELECT {sql.KeyList} FROM {sql.KeyedRows()} WHERE r.[subject_kind] IS NOT NULL AND {sql.SubjectLock} IN (SELECT value FROM STRING_SPLIT(@busy, N','));
             """);
         var busy = new HashSet<string>(StringComparer.Ordinal);
         await using (var reader = await command.ReaderAsync(cancellationToken))
@@ -662,31 +649,19 @@ internal sealed partial class SqlServerLeaseStore
     {
         string[] ordered = [.. scopes.Order(StringComparer.Ordinal)];
         await using var command = Tsql.Command(work, $"""
-            DECLARE @scopes TABLE (i int NOT NULL PRIMARY KEY, name nvarchar(255) NOT NULL);
-            INSERT INTO @scopes (i, name) SELECT CAST([key] AS int), value FROM OPENJSON(@names);
-            DECLARE @busy TABLE (i int NOT NULL PRIMARY KEY, name nvarchar(255) NOT NULL);
-            DECLARE @i int = 0, @count int = (SELECT COUNT(*) FROM @scopes), @name nvarchar(255);
-            WHILE @i < @count
-            BEGIN
-                SELECT @name = name FROM @scopes WHERE i = @i;
-                EXEC @lock_result = sp_getapplock @Resource = @name, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = @timeout;
-                IF @lock_result < 0
-                BEGIN
-                    IF @timeout <> 0 THROW 51205, N'A lock request of the transaction was refused or chosen as a deadlock victim.', 1;
-                    INSERT INTO @busy (i, name) VALUES (@i, @name);
-                END
-                SET @i += 1;
-            END
-            SELECT name FROM @busy ORDER BY i;
+            DECLARE @busy nvarchar(max) = N'';
+            {Tsql.AppLocks("scope", "@names", "Exclusive", "@timeout", """
+                IF @timeout <> 0 THROW 51205, N'A lock request of the transaction was refused or chosen as a deadlock victim.', 1;
+                SET @busy = @busy + N',' + CONVERT(nvarchar(11), @scope_index);
+                """)}
+            SELECT STUFF(@busy, 1, 1, N'');
             """,
-            Tsql.Json("@names", JsonSerializer.Serialize(ordered, SqlServerJson.Default.StringArray)),
+            Tsql.Text("@names", string.Join(',', ordered), -1),
             Tsql.Int32("@timeout", wait ? -1 : 0));
-        var busy = new List<string>();
-        await using var reader = await command.ReaderAsync(cancellationToken);
-        while (await reader.NextRowAsync(cancellationToken))
-        {
-            busy.Add(reader.GetString(0));
-        }
+        // The positions of the busy scopes in the ordered names, comma-separated.
+        var busy = await command.ScalarAsync(cancellationToken) is string positions
+            ? positions.Split(',').Select(p => ordered[int.Parse(p, CultureInfo.InvariantCulture)]).ToList()
+            : [];
         return busy;
     }
 
@@ -714,10 +689,8 @@ internal sealed partial class SqlServerLeaseStore
         if (sql.Partition is not null)
         {
             var hint = sql.Shape.PartitionIndex is { } index ? $" WITH (INDEX({Tsql.Quote(index)}))" : "";
-            text.Append($"DECLARE @partitions TABLE (p {sql.Shape.PartitionDeclaration} NOT NULL PRIMARY KEY);\n");
-            text.Append("INSERT INTO @partitions (p) SELECT DISTINCT value FROM OPENJSON(@partitionset) WHERE value IS NOT NULL;\n");
             text.Append($"SELECT {sql.PartitionText}, COUNT(*), SUM(CASE WHEN {sql.Owner} = @owner THEN 1 ELSE 0 END) FROM {sql.Table} AS r{hint} "
-                + $"WHERE {sql.OutstandingCondition} AND {sql.Partition} IN (SELECT p FROM @partitions) GROUP BY {sql.Partition};\n");
+                + $"WHERE {sql.OutstandingCondition} AND {sql.Partition} IN (SELECT p FROM OPENJSON(@partitionset) WITH (p {sql.Shape.PartitionDeclaration} '$') WHERE p IS NOT NULL) GROUP BY {sql.Partition};\n");
             parameters.Add(Tsql.Json("@partitionset", JsonSerializer.Serialize(partitions, SqlServerJson.Default.StringArray)));
         }
         text.Append($"SELECT COUNT(*) FROM {sql.Table} AS r WHERE {sql.OutstandingCondition} AND {sql.Owner} = @owner;\n");
@@ -765,28 +738,28 @@ internal sealed partial class SqlServerLeaseStore
             ? $"{sql.Expires} IS NOT NULL AND {sql.AttemptedGeneration} >= @generation"
             : $"{sql.Expires} IS NOT NULL";
         var generation = accepted.Max(c => c.Generation);
-        var keyColumns = string.Join(", ", sql.Shape.Keys.Select((c, i) => $"k{i} {c.Declaration}"));
-        var output = $"{string.Join(", ", sql.Shape.Keys.Select(c => "inserted." + Tsql.Quote(c.Name)))}, inserted.{LeaseSql.Bare(sql.Epoch)}, inserted.{LeaseSql.Bare(sql.Takeovers)}, "
-            + $"inserted.{LeaseSql.Bare(sql.Failures)}, {Tsql.Bit($"inserted.{LeaseSql.Bare(sql.Cancel)} IS NOT NULL")}, "
-            + $"{(sql.Reconcile is null ? "inserted." + LeaseSql.Bare(sql.Execution) : "CAST(NULL AS uniqueidentifier)")}, "
-            + $"{Tsql.Micros("SYSUTCDATETIME()", "inserted." + LeaseSql.Bare(sql.Expires))}, "
-            + (sql.Reconcile is null ? "CAST(0 AS bigint)" : "inserted." + LeaseSql.Bare(sql.ClaimedRevision));
-        var outputTable = $"DECLARE @claimed TABLE ({keyColumns}, epoch bigint, takeovers int, failures int, cancel bit, execution uniqueidentifier, valid_for bigint, claimed_revision bigint";
+        // The claimed rows are returned by an OUTPUT clause on the framework's job table. An application table may have
+        // triggers, which refuse an OUTPUT clause that returns rows to the client, so application rows are read again
+        // after the update, under the locks the claim holds; their remaining validity is then measured slightly later.
+        var row = sql.Job is null ? "r." : "inserted.";
+        var output = $"{string.Join(", ", sql.Shape.Keys.Select(c => row + Tsql.Quote(c.Name)))}, {row}{LeaseSql.Bare(sql.Epoch)}, {row}{LeaseSql.Bare(sql.Takeovers)}, "
+            + $"{row}{LeaseSql.Bare(sql.Failures)}, {Tsql.Bit($"{row}{LeaseSql.Bare(sql.Cancel)} IS NOT NULL")}, "
+            + $"{(sql.Reconcile is null ? row + LeaseSql.Bare(sql.Execution) : "CAST(NULL AS uniqueidentifier)")}, "
+            + $"{Tsql.Micros("SYSUTCDATETIME()", row + LeaseSql.Bare(sql.Expires))}, "
+            + (sql.Reconcile is null ? "CAST(0 AS bigint)" : row + LeaseSql.Bare(sql.ClaimedRevision));
         // A job claim uses an attempt and starts the execution, unless it finds a cancellation requested while an
         // earlier holder ran it, the job late before its execution started, or no attempt left after a lost lease; those
         // use none and end the job without a handler. A pending cancellation comes first: the application asked for it,
         // and the holder that would have observed it was lost. The epoch that used the attempt is recorded, so only a
         // graceful release of that claim returns it. A claim that runs the handler starts the attempt and clears the
         // progress of the previous one. An attempt still open was lost with its lease: the claim records it in the run
-        // history, ended at its lease's expiry, whatever kind of claim it is.
+        // history, ended at its lease's expiry, whatever kind of claim it is. The kind is evaluated on the row before the
+        // update.
         var text = new StringBuilder();
         var run = (int)JobClaimKind.Run;
         string job = "", from = "";
         if (sql.Job is not null)
         {
-            text.Append("DECLARE @j TABLE (jid uniqueidentifier NOT NULL PRIMARY KEY, kind int NOT NULL);\n");
-            text.Append($"INSERT INTO @j (jid, kind) SELECT r.[id], CASE WHEN {sql.Cancel} IS NOT NULL THEN {(int)JobClaimKind.Cancelled} WHEN {sql.JobLate} THEN {(int)JobClaimKind.Late} "
-                + $"WHEN {sql.JobExhausted} THEN {(int)JobClaimKind.Exhausted} ELSE {run} END FROM {sql.KeyedRows()};\n");
             text.Append(sql.RecordRun(sql.KeyedRows(), "1 = 1", ((int)JobRunOutcome.LeaseLost).ToString(CultureInfo.InvariantCulture), "NULL", $"LEAST({sql.Expires}, SYSUTCDATETIME())")).Append('\n');
             job = $", [attempts] = CASE WHEN j.kind = {run} THEN r.[attempts] + 1 ELSE r.[attempts] END, "
                 + $"[started] = CASE WHEN r.[started] = 1 OR j.kind = {run} THEN 1 ELSE 0 END, "
@@ -794,18 +767,20 @@ internal sealed partial class SqlServerLeaseStore
                 + $"[attempt_started_at] = CASE WHEN j.kind = {run} THEN SYSUTCDATETIME() END, "
                 + $"[progress_percent] = CASE WHEN j.kind = {run} THEN NULL ELSE r.[progress_percent] END, "
                 + $"[progress_message] = CASE WHEN j.kind = {run} THEN NULL ELSE r.[progress_message] END";
-            from = " JOIN @j AS j ON j.jid = r.[id]";
+            from = $" CROSS APPLY (SELECT CASE WHEN {sql.Cancel} IS NOT NULL THEN {(int)JobClaimKind.Cancelled} WHEN {sql.JobLate} THEN {(int)JobClaimKind.Late} "
+                + $"WHEN {sql.JobExhausted} THEN {(int)JobClaimKind.Exhausted} ELSE {run} END) AS j (kind)";
             output += ", j.kind, inserted.[attempts], inserted.[args_version], inserted.[args], inserted.[subject_kind], inserted.[subject_id], inserted.[occurrence], inserted.[due_at], inserted.[trace_parent]";
-            outputTable += ", kind int, attempts int, args_version int, args varbinary(max), subject_kind nvarchar(100), subject_id nvarchar(400), occurrence nvarchar(200), due_at datetime2(7), trace_parent nvarchar(100)";
         }
-        text.Insert(0, outputTable + ");\n");
         text.Append($"UPDATE r SET {LeaseSql.Bare(sql.Owner)} = @owner, {LeaseSql.Bare(sql.Epoch)} = {sql.Epoch} + 1, "
             + $"{LeaseSql.Bare(sql.Expires)} = {Tsql.AddTicks("SYSUTCDATETIME()", "@duration")}, "
             + $"{LeaseSql.Bare(sql.Takeovers)} = CASE WHEN {takeover} THEN {sql.Takeovers} + 1 ELSE {sql.Takeovers} END, "
             + $"{reconcile}{settle}{job} "
-            + $"OUTPUT {output} INTO @claimed "
+            + (sql.Job is null ? "" : $"OUTPUT {output} ")
             + $"FROM {sql.KeyedRows()}{from};\n");
-        text.Append("SELECT * FROM @claimed;\n");
+        if (sql.Job is null)
+        {
+            text.Append($"SELECT {output} FROM {sql.KeyedRows()};\n");
+        }
         var parameters = new List<SqlParameter> { Tsql.Guid("@owner", owner.Value), Tsql.Ticks("@duration", sql.Policy.Duration) };
         if (sql.Reconcile is not null)
         {

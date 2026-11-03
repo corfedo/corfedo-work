@@ -41,19 +41,19 @@ internal sealed partial class SqlServerJobStore
         var expired = $"j.[definition] = @definition AND j.ended_at IS NOT NULL AND j.ended_at < @bound AND j.state <> 0 AND j.chain_id IS NULL AND j.unconsumed = 0 "
             + $"AND (j.recurrence_id IS NULL OR NOT EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.id = j.recurrence_id AND c.awaited_job = j.id))";
         var deleteJobs = $"""
-            DECLARE @doomed TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
+            DECLARE @doomed nvarchar(max) = N'';
             {Tsql.LockEach("job_scan", "@limit", $"SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_retention)) WHERE {expired} ORDER BY j.ended_at",
                 Jobs, Tsql.IdKey, expired.Replace("j.", "r.", StringComparison.Ordinal), "@doomed")}
-            DELETE r FROM @doomed AS d INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = d.id;
-            SELECT COUNT(*) FROM @doomed;
+            DELETE r FROM {Tsql.KeyRows("@doomed", Tsql.IdKey)} AS d INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = d.id;
+            SELECT @@ROWCOUNT;
             """;
         var deleteRuns = $"""
-            DECLARE @doomed TABLE (job_id uniqueidentifier NOT NULL, epoch bigint NOT NULL, PRIMARY KEY (job_id, epoch));
+            DECLARE @doomed nvarchar(max) = N'';
             {Tsql.LockEach("run_scan", "@limit",
                 $"SELECT h.job_id, h.epoch FROM {runs} AS h WITH (INDEX(job_runs_retention)) WHERE h.[definition] = @definition AND h.ended_at < @bound ORDER BY h.ended_at",
-                runs, [("job_id", "uniqueidentifier"), ("epoch", "bigint")], "r.ended_at < @bound", "@doomed")}
-            DELETE r FROM @doomed AS d INNER LOOP JOIN {runs} AS r WITH (FORCESEEK) ON r.job_id = d.job_id AND r.epoch = d.epoch;
-            SELECT COUNT(*) FROM @doomed;
+                runs, RunKey, "r.ended_at < @bound", "@doomed")}
+            DELETE r FROM {Tsql.KeyRows("@doomed", RunKey)} AS d INNER LOOP JOIN {runs} AS r WITH (FORCESEEK) ON r.job_id = d.job_id AND r.epoch = d.epoch;
+            SELECT @@ROWCOUNT;
             """;
         int jobs = 0, entries = 0;
         var more = false;
@@ -72,15 +72,16 @@ internal sealed partial class SqlServerJobStore
             var settled = $"c.settled_at IS NOT NULL AND c.settled_at < @bound AND {Tsql.Micros("c.settled_at", "@now")} > (SELECT MAX(d.job_retention) / 10 FROM {definitions} AS d "
                 + $"WHERE d.[key] = c.owner_definition OR (c.owner_definition IS NULL AND d.[key] IN (SELECT cd.[definition] FROM {chainDefinitions} AS cd WHERE cd.chain_id = c.id)))";
             chainsDeleted = await DeleteAsync($"""
-                DECLARE @doomed TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
+                DECLARE @doomed nvarchar(max) = N'';
                 {Tsql.LockEach("chain_scan", "@limit", $"SELECT c.id FROM {chains} AS c WITH (INDEX(job_chains_settled)) WHERE {settled} ORDER BY c.settled_at",
                     chains, Tsql.IdKey, settled.Replace("c.settled_at", "r.settled_at", StringComparison.Ordinal).Replace("c.owner_definition", "r.owner_definition", StringComparison.Ordinal)
                         .Replace("cd.chain_id = c.id", "cd.chain_id = r.id", StringComparison.Ordinal), "@doomed")}
-                DECLARE @steps TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-                INSERT INTO @steps (id) SELECT j.id FROM @doomed AS d INNER LOOP JOIN {Jobs} AS j WITH (INDEX(jobs_chain), FORCESEEK) ON j.chain_id = d.id AND j.chain_id IS NOT NULL;
-                DELETE r FROM @steps AS s INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = s.id WHERE r.chain_id IN (SELECT id FROM @doomed);
-                DELETE c FROM @doomed AS d INNER LOOP JOIN {chains} AS c WITH (FORCESEEK) ON c.id = d.id;
-                SELECT COUNT(*) FROM @doomed;
+                DECLARE @steps nvarchar(max) = (SELECT j.id FROM {Tsql.KeyRows("@doomed", Tsql.IdKey)} AS d
+                    INNER LOOP JOIN {Jobs} AS j WITH (INDEX(jobs_chain), FORCESEEK) ON j.chain_id = d.id AND j.chain_id IS NOT NULL ORDER BY j.id FOR JSON PATH);
+                DELETE r FROM OPENJSON(@steps) WITH (id uniqueidentifier '$.id') AS s INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = s.id
+                WHERE r.chain_id IN (SELECT id FROM {Tsql.KeyRows("@doomed", Tsql.IdKey)});
+                DELETE c FROM {Tsql.KeyRows("@doomed", Tsql.IdKey)} AS d INNER LOOP JOIN {chains} AS c WITH (FORCESEEK) ON c.id = d.id;
+                SELECT @@ROWCOUNT;
                 """,
                 Tsql.Time("@bound", Before(now, keys.Min(k => k.Jobs))),
                 Tsql.Time("@now", now));
@@ -97,6 +98,9 @@ internal sealed partial class SqlServerJobStore
             });
         }
     }
+
+    /// <summary>The key of the run history.</summary>
+    private static readonly (string Column, string Type)[] RunKey = [("job_id", "uniqueidentifier"), ("epoch", "bigint")];
 
     /// <summary><paramref name="now"/> moved back by <paramref name="retention"/>, or the earliest time when that is before it.</summary>
     private static DateTimeOffset Before(DateTimeOffset now, TimeSpan retention) =>

@@ -363,17 +363,14 @@ internal sealed class SqlServerCalendarStore(string connectionString, SqlServerL
         }
         var replannable = $"r.state = 0 AND r.lease_expires_at IS NULL AND r.skip_pending = 0 "
             + $"AND (r.calendar_unavailable = 1 OR (r.due_at IS NOT NULL AND r.due_at < {Tsql.NeverLiteral} AND (r.window_end IS NULL OR r.window_end <> {Tsql.NeverLiteral})))";
-        var definitions = new List<string>();
+        var definitions = new HashSet<string>(StringComparer.Ordinal);
         await using (var replan = Tsql.Command(work, $"""
-            DECLARE @ids TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @ids (id) SELECT r.id FROM {jobs} AS r WHERE r.calendar IN (SELECT value FROM OPENJSON(@calendars)) AND {replannable};
+            DECLARE @ids nvarchar(max) = (SELECT r.id FROM {jobs} AS r WHERE r.calendar IN (SELECT value FROM OPENJSON(@calendars)) AND {replannable} ORDER BY r.id FOR JSON PATH);
             DECLARE @locked int;
-            SELECT @locked = COUNT(*) FROM @ids AS i INNER LOOP JOIN {jobs} AS r WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON r.id = i.id;
-            DECLARE @planned TABLE (definition nvarchar(200) COLLATE {Tsql.Binary} NOT NULL);
+            SELECT @locked = COUNT(*) FROM OPENJSON(@ids) WITH (id uniqueidentifier '$.id') AS i INNER LOOP JOIN {jobs} AS r WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON r.id = i.id;
             UPDATE r SET calendar_at = CASE WHEN r.calendar_unavailable = 1 THEN r.calendar_at ELSE r.due_at END, due_at = NULL, window_end = NULL, calendar_unavailable = 0
-            OUTPUT inserted.definition INTO @planned
-            FROM @ids AS i INNER LOOP JOIN {jobs} AS r WITH (FORCESEEK) ON r.id = i.id WHERE {replannable};
-            SELECT DISTINCT definition FROM @planned;
+            OUTPUT inserted.definition
+            FROM OPENJSON(@ids) WITH (id uniqueidentifier '$.id') AS i INNER LOOP JOIN {jobs} AS r WITH (FORCESEEK) ON r.id = i.id WHERE {replannable};
             """,
             Tsql.Strings("@calendars", depending)))
         {

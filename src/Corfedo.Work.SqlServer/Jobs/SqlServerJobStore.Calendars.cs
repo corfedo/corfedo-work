@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Data.SqlTypes;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -62,15 +63,11 @@ internal sealed partial class SqlServerJobStore
         static string On(string alias, string condition) => alias + "." + condition.Replace(" AND ", $" AND {alias}.", StringComparison.Ordinal);
         await using (var locks = Tsql.Command(work, $"""
             DECLARE @now datetime2(7) = SYSUTCDATETIME();
-            {sql.ScanVariables}DECLARE @instants TABLE (k0 uniqueidentifier NOT NULL PRIMARY KEY, calendar nvarchar(128) COLLATE {Tsql.Binary} NOT NULL, calendar_at datetime2(7) NOT NULL,
-                blocked smallint NOT NULL, closed smallint NOT NULL);
-            {sql.LockScan("instant_scan", "@limit", "jobs_calendar_due", On("x", instantDue), On("r", instantDue), "x.calendar_at", "@instants",
-                "k0, calendar, calendar_at, blocked, closed", "r.id, r.calendar, r.calendar_at, r.calendar_blocked, r.calendar_closed")}
-            DECLARE @closed TABLE (k0 uniqueidentifier NOT NULL PRIMARY KEY, calendar nvarchar(128) COLLATE {Tsql.Binary} NOT NULL, closed smallint NOT NULL);
-            {sql.LockScan("window_scan", "@limit", "jobs_window", On("x", windowClosed), On("r", windowClosed), "x.window_end", "@closed",
-                "k0, calendar, closed", "r.id, r.calendar, r.calendar_closed")}
-            SELECT k0, calendar, calendar_at, blocked, closed FROM @instants ORDER BY calendar_at;
-            SELECT k0, calendar, closed FROM @closed;
+            {sql.ScanVariables("@instants", "@closed")}
+            {sql.LockScan("instant_scan", "@limit", "jobs_calendar_due", On("x", instantDue), On("r", instantDue), "x.calendar_at", "@instants")}
+            {sql.LockScan("window_scan", "@limit", "jobs_window", On("x", windowClosed), On("r", windowClosed), "x.window_end", "@closed")}
+            SELECT r.id, r.calendar, r.calendar_at, r.calendar_blocked, r.calendar_closed FROM {sql.KeyedRows(keys: LeaseSql.ListJson("@instants"))} ORDER BY r.calendar_at;
+            SELECT r.id, r.calendar, r.calendar_closed FROM {sql.KeyedRows(keys: LeaseSql.ListJson("@closed"))};
             SELECT SYSUTCDATETIME();
             """,
             Tsql.Text("@definition", definition, 200),
@@ -134,12 +131,6 @@ internal sealed partial class SqlServerJobStore
             }
             // A job found by both scans is decided once, by its calendar instant.
             await using var write = Tsql.Command(work, $"""
-                DECLARE @plans TABLE (id uniqueidentifier NOT NULL PRIMARY KEY, decision smallint NOT NULL, due datetime2(7), window_end datetime2(7),
-                    instant datetime2(7), reason nvarchar(max), moves bit NOT NULL);
-                INSERT INTO @plans (id, decision, due, window_end, instant, reason, moves)
-                SELECT id, decision, due, window_end, instant, reason, moves FROM OPENJSON(@decisions) WITH (
-                    id uniqueidentifier '$.i', decision smallint '$.d', due datetime2(7) '$.t', window_end datetime2(7) '$.w',
-                    instant datetime2(7) '$.n', reason nvarchar(max) '$.r', moves bit '$.m');
                 UPDATE r SET
                     due_at = CASE WHEN u.decision = {(short)CalendarDecision.Planned} THEN COALESCE(u.due, r.due_at) END,
                     window_end = CASE WHEN u.decision = {(short)CalendarDecision.Planned} THEN u.window_end END,
@@ -147,9 +138,11 @@ internal sealed partial class SqlServerJobStore
                     calendar_unavailable = CASE WHEN u.decision = {(short)CalendarDecision.Unavailable} THEN 1 ELSE 0 END,
                     calendar_blocked = CASE WHEN u.moves = 1 THEN {(short)Blocked.MoveForward} ELSE r.calendar_blocked END,
                     skip_pending = CASE WHEN u.decision = {(short)CalendarDecision.Skip} THEN 1 ELSE 0 END, skip_reason = u.reason
-                FROM @plans AS u INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = u.id;
+                FROM OPENJSON(@decisions) WITH (id uniqueidentifier '$.i', decision smallint '$.d', due datetime2(7) '$.t', window_end datetime2(7) '$.w',
+                    instant datetime2(7) '$.n', reason nvarchar(max) '$.r', moves bit '$.m') AS u
+                INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = u.id;
                 """,
-                Tsql.Json("@decisions", PlansJson(plans.DistinctBy(p => p.Id))));
+                Tsql.Json("@decisions", PlansJson(plans.DistinctBy(p => p.Id).OrderBy(p => new SqlGuid(p.Id)))));
             await write.NonQueryAsync(cancellationToken);
             if (plans.Any(p => p.Decision == CalendarDecision.Planned))
             {

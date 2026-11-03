@@ -6,9 +6,14 @@ namespace Corfedo.Work.SqlServer.Leases;
 /// <summary>
 /// The statements of one lease source, and its process-local claim turn. Column and table names come from the source
 /// definition and are quoted; values are named parameters, a single key as <c>@k0</c>, <c>@k1</c>, ... and many keys as
-/// a JSON array copied into the table variable <c>@keys</c>. Conditions that read the clock call
+/// a JSON array in <c>@keyset</c>, read by each statement that needs it. Conditions that read the clock call
 /// <c>SYSUTCDATETIME()</c>, which a statement evaluates once when it starts: a condition that depends on a lock is
 /// evaluated in a statement after the one that took the lock.
+/// <para>
+/// No statement declares a table variable or temporary table: SQL Server creates them in tempdb on every execution of
+/// a parameterized batch, and under concurrent claims and requests their creation contended on tempdb's system pages.
+/// Sets pass between statements as JSON text in <c>nvarchar(max)</c> variables or are read again from their tables.
+/// </para>
 /// </summary>
 internal sealed class LeaseSql
 {
@@ -38,11 +43,9 @@ internal sealed class LeaseSql
         Execution = "r." + Tsql.Quote(fields.ExecutionId);
         EndedId = "r." + Tsql.Quote(fields.EndedCompletionId);
         EndedDigest = "r." + Tsql.Quote(fields.EndedDigest);
-        KeyTable = "TABLE (" + string.Join(", ", shape.Keys.Select((k, i) => $"k{i} {k.Declaration} NOT NULL"))
-            + ", PRIMARY KEY (" + string.Join(", ", shape.Keys.Select((_, i) => "k" + i)) + "))";
         KeyColumns = string.Join(", ", shape.Keys.Select((_, i) => "k" + i));
-        LoadKeys = $"DECLARE @keys {KeyTable};\nINSERT INTO @keys ({KeyColumns}) SELECT {KeyColumns} FROM OPENJSON(@keyset) WITH ("
-            + string.Join(", ", shape.Keys.Select((k, i) => $"k{i} {JsonType(k)} '$[{i}]'")) + ");\n";
+        // Keys are read with the key columns' exact types: a wider type would turn each key seek into a range seek.
+        keyJsonColumns = string.Join(", ", shape.Keys.Select((k, i) => $"k{i} {k.Declaration} '$[{i}]'"));
         // Job sources share the framework's job table: every statement is scoped to the source's definition.
         Scope = ScopeOf("r");
         KeyHint = shape.KeyIndex;
@@ -145,27 +148,34 @@ internal sealed class LeaseSql
     /// <summary>The index hint target of the unique index on the key, through which rows are locked.</summary>
     public string KeyHint { get; }
 
-    /// <summary>The variables <see cref="LockScan"/> uses, declared once per batch.</summary>
-    public string ScanVariables => "DECLARE " + string.Join(", ", Shape.Keys.Select((k, i) => $"@s{i} {k.VariableDeclaration}")) + ", @scanned int;\n";
+    /// <summary>
+    /// The variables <see cref="LockScan"/> uses, declared once per batch, and the key lists <paramref name="lists"/>
+    /// it collects into, empty.
+    /// </summary>
+    public string ScanVariables(params string[] lists) =>
+        "DECLARE " + string.Join(", ", Shape.Keys.Select((k, i) => $"@s{i} {k.VariableDeclaration}")) + ", @scanned int, @hit int"
+        + string.Concat(lists.Select(l => $", {l} nvarchar(max) = N''")) + ";\n";
 
     /// <summary>
     /// Statements that lock up to <paramref name="top"/> rows without waiting, in the order of a scan of
-    /// <paramref name="index"/>, and insert <paramref name="selected"/> of each into <paramref name="into"/>, whose
-    /// first columns are the key as <c>k0</c>, <c>k1</c>, ... A cursor reads the index (alias <c>x</c>) without locks,
-    /// in the order <paramref name="order"/>, the rows matching <paramref name="scan"/>; each row it returns is then
-    /// locked through its key (alias <c>r</c>) and kept when its latest committed version matches
-    /// <paramref name="locked"/> and it is not in <paramref name="into"/> yet; a row another transaction holds is
-    /// skipped. The cursor is dynamic, so it reads only as far as needed, and only kept rows are locked, whatever plan
-    /// the scan gets; a <c>FORWARD_ONLY READ_ONLY</c> cursor becomes fast-forward, whose plan read every matching row
-    /// when it opened (250 000 due jobs of a definition, 2.8 s).
+    /// <paramref name="index"/>, and append the key of each to the key list <paramref name="into"/>. A cursor reads the
+    /// index (alias <c>x</c>) without locks, in the order <paramref name="order"/>, the rows matching
+    /// <paramref name="scan"/>; each row it returns is then locked through its key (alias <c>r</c>) and kept when its
+    /// latest committed version matches <paramref name="locked"/> and, with <paramref name="distinct"/>, its key is not
+    /// in <paramref name="into"/> yet, as when an earlier scan of the batch may have kept it; a row another transaction
+    /// holds is skipped. The cursor is dynamic, so it reads only as far as needed, and only kept rows are locked,
+    /// whatever plan the scan gets; a <c>FORWARD_ONLY READ_ONLY</c> cursor becomes fast-forward, whose plan read every
+    /// matching row when it opened (250 000 due jobs of a definition, 2.8 s).
     /// Rows are locked through their key before any other index, as every statement that writes them does, so a scan
-    /// never holds an index entry while it waits for a row that a writer holds. Needs <see cref="ScanVariables"/>.
+    /// never holds an index entry while it waits for a row that a writer holds. Needs <see cref="ScanVariables"/>; the
+    /// kept keys are read with <see cref="KeyedRows"/> or <see cref="KeyRows"/> of <see cref="ListJson"/>.
     /// </summary>
-    public string LockScan(string name, string top, string index, string scan, string locked, string order, string into, string columns, string selected)
+    public string LockScan(string name, string top, string index, string scan, string locked, string order, string into, bool distinct = false)
     {
         var keys = string.Join(", ", Shape.Keys.Select((_, i) => "@s" + i));
         var match = string.Join(" AND ", Shape.Keys.Select((k, i) => $"r.{Tsql.Quote(k.Name)} = @s{i}"));
-        var taken = string.Join(" AND ", Shape.Keys.Select((_, i) => $"t.k{i} = @s{i}"));
+        var element = KeyElement();
+        var unseen = distinct ? $" AND CHARINDEX(N',' + {element}, {into} COLLATE {Tsql.Binary}) = 0" : "";
         return $"""
             DECLARE {name} CURSOR LOCAL DYNAMIC READ_ONLY FOR
                 SELECT {string.Join(", ", Shape.Keys.Select(k => "x." + Tsql.Quote(k.Name)))} FROM {Table} AS x WITH (INDEX({Tsql.Quote(index)})) WHERE {scan} ORDER BY {order};
@@ -175,15 +185,41 @@ internal sealed class LeaseSql
             BEGIN
                 FETCH NEXT FROM {name} INTO {keys};
                 IF @@FETCH_STATUS <> 0 BREAK;
-                INSERT INTO {into} ({columns}) SELECT {selected} FROM {Table} AS r WITH (UPDLOCK, ROWLOCK, READPAST)
-                WHERE {match} AND {locked} AND NOT EXISTS (SELECT 1 FROM {into} AS t WHERE {taken});
-                SET @scanned += @@ROWCOUNT;
+                SELECT @hit = 1 FROM {Table} AS r WITH (UPDLOCK, ROWLOCK, READPAST) WHERE {match} AND {locked}{unseen};
+                IF @@ROWCOUNT > 0
+                BEGIN
+                    SET {into} = {into} + N',' + {element};
+                    SET @scanned += 1;
+                END
             END
             CLOSE {name};
             DEALLOCATE {name};
 
             """;
     }
+
+    /// <summary>
+    /// The key in the scan variables <c>@s0</c>, <c>@s1</c>, ... as a JSON array, the element of a key list. JSON
+    /// escaping leaves a quote inside a string only after a backslash, so <c>,[</c> followed by an element occurs in a
+    /// list only where that element starts.
+    /// </summary>
+    private string KeyElement() => "N'[' + " + string.Join(" + N',' + ", Shape.Keys.Select((k, i) => k.Type switch
+    {
+        System.Data.SqlDbType.Int or System.Data.SqlDbType.BigInt => $"CONVERT(nvarchar(20), @s{i})",
+        System.Data.SqlDbType.UniqueIdentifier => $"N'\"' + CONVERT(nchar(36), @s{i}) + N'\"'",
+        _ => $"N'\"' + STRING_ESCAPE(@s{i}, 'json') + N'\"'",
+    })) + " + N']'";
+
+    /// <summary>The key list <paramref name="list"/>, comma-led elements, as a JSON array of keys; null when empty.</summary>
+    public static string ListJson(string list) => $"N'[' + STUFF({list}, 1, 1, N'') + N']'";
+
+    /// <summary>
+    /// The keys of the JSON array of keys <paramref name="json"/> as rows <c>k0</c>, <c>k1</c>, ... typed like the key
+    /// columns, in the array's order.
+    /// </summary>
+    public string KeyRows(string json) => $"OPENJSON({json}) WITH ({keyJsonColumns})";
+
+    private readonly string keyJsonColumns;
 
     /// <summary>On job sources, the scope plus the argument versions this process may claim.</summary>
     public string Eligible { get; } = "1 = 1";
@@ -343,22 +379,16 @@ internal sealed class LeaseSql
 
     public string EndedDigest { get; }
 
-    /// <summary>The declaration of a table variable of keys, <c>(k0, k1, ...)</c>, with the key columns' types.</summary>
-    public string KeyTable { get; }
-
     /// <summary><c>k0, k1, ...</c></summary>
     public string KeyColumns { get; }
 
-    /// <summary>Declares <c>@keys</c> and fills it from the JSON parameter <c>@keyset</c>.</summary>
-    public string LoadKeys { get; }
-
     /// <summary>
-    /// The rows (alias <c>r</c>) of the keys in <c>@keys</c> (alias <c>u</c>), each found by a seek on the key, in the
-    /// order of <c>@keys</c>, with the table hints <paramref name="hints"/>. Without the seek a statement over a few
-    /// keys may scan the table, and a locking scan waits for every row other transactions hold.
+    /// The rows (alias <c>r</c>) of the keys in the JSON array <paramref name="keys"/> (alias <c>u</c>), each found by
+    /// a seek on the key, in the array's order, with the table hints <paramref name="hints"/>. Without the seek a
+    /// statement over a few keys may scan the table, and a locking scan waits for every row other transactions hold.
     /// </summary>
-    public string KeyedRows(string hints = "") =>
-        $"@keys AS u INNER LOOP JOIN {Table} AS r WITH ({(hints.Length == 0 ? "" : hints + ", ")}INDEX({KeyHint}), FORCESEEK) ON {KeyJoin}";
+    public string KeyedRows(string hints = "", string keys = "@keyset") =>
+        $"{KeyRows(keys)} AS u INNER LOOP JOIN {Table} AS r WITH ({(hints.Length == 0 ? "" : hints + ", ")}INDEX({KeyHint}), FORCESEEK) ON {KeyJoin}";
 
     /// <summary>Joins rows of <c>r</c> to <c>u</c>, a table of keys.</summary>
     public string KeyJoin { get; }
@@ -486,13 +516,4 @@ internal sealed class LeaseSql
         }
         return builder.ToString();
     }
-
-    /// <summary>The OPENJSON type a key column's values are read as before they are stored in the key table.</summary>
-    private static string JsonType(KeyColumn key) => key.Type switch
-    {
-        System.Data.SqlDbType.NVarChar or System.Data.SqlDbType.NChar or System.Data.SqlDbType.VarChar or System.Data.SqlDbType.Char => "nvarchar(max)",
-        System.Data.SqlDbType.Int => "int",
-        System.Data.SqlDbType.BigInt => "bigint",
-        _ => "uniqueidentifier",
-    };
 }

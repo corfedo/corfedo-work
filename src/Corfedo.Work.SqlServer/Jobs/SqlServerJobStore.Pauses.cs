@@ -48,17 +48,15 @@ internal sealed partial class SqlServerJobStore
             : $"DELETE FROM {pauses} WHERE [definition] = @definition AND subject_kind = @kind AND subject_id = @id;";
         await using (var command = Tsql.Command(work, $"""
             {LeaseSql.AppLock("@lock", "Exclusive")}{store}
-            DECLARE @recurrences TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @recurrences (id) SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_subject))
-            WHERE c.[definition] = @definition AND c.subject_kind IS NOT NULL AND c.subject_kind = @kind AND c.subject_id = @id AND c.paused <> @paused;
-            UPDATE c SET paused = @paused FROM @recurrences AS f INNER LOOP JOIN {recurrences} AS c WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON c.id = f.id
+            DECLARE @recurrences nvarchar(max) = (SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_subject))
+                WHERE c.[definition] = @definition AND c.subject_kind IS NOT NULL AND c.subject_kind = @kind AND c.subject_id = @id AND c.paused <> @paused ORDER BY c.id FOR JSON PATH);
+            UPDATE c SET paused = @paused FROM OPENJSON(@recurrences) WITH (id uniqueidentifier '$.id') AS f INNER LOOP JOIN {recurrences} AS c WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON c.id = f.id
             WHERE c.paused <> @paused;
             DECLARE @flagged int = @@ROWCOUNT;
             IF @flagged > 0 INSERT INTO {changes} ([definition], subject_kind, subject_id) VALUES (@definition, @kind, @id);
-            {NotifyMonitor("@flagged > 0")}DECLARE @jobs TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @jobs (id) SELECT r.id FROM {sql.Table} AS r WITH (INDEX(jobs_subject))
-            WHERE r.subject_kind = @kind AND r.subject_id = @id AND r.[definition] = @definition AND r.state = 0 AND r.paused <> @paused;
-            UPDATE r SET paused = @paused FROM @jobs AS f INNER LOOP JOIN {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = f.id
+            {NotifyMonitor("@flagged > 0")}DECLARE @jobs nvarchar(max) = (SELECT r.id FROM {sql.Table} AS r WITH (INDEX(jobs_subject))
+                WHERE r.subject_kind = @kind AND r.subject_id = @id AND r.[definition] = @definition AND r.state = 0 AND r.paused <> @paused ORDER BY r.id FOR JSON PATH);
+            UPDATE r SET paused = @paused FROM OPENJSON(@jobs) WITH (id uniqueidentifier '$.id') AS f INNER LOOP JOIN {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = f.id
             WHERE r.state = 0 AND r.paused <> @paused;
             """,
             Tsql.Text("@lock", LeaseSql.SubjectLockName(schema, definition, subject), 255),
@@ -92,31 +90,27 @@ internal sealed partial class SqlServerJobStore
         var definition = sql.Job!.Definition;
         string Stored(string alias) =>
             $"EXISTS (SELECT 1 FROM {pauses} AS p WHERE p.[definition] = {alias}.[definition] AND p.subject_kind = {alias}.subject_kind AND p.subject_id = {alias}.subject_id)";
-        string Repair(string table, string alias, string candidates, string still, string set, string output) => $"""
-            DELETE FROM @candidates;
-            INSERT INTO @candidates (id) {candidates};
+        string Repair(int step, string table, string alias, string candidates, string still, string set, string output) => $"""
+            SET @candidates = (SELECT x.id FROM ({candidates}) AS x ORDER BY x.id FOR JSON PATH);
             UPDATE {alias} SET paused = {set} {output}
-            FROM @candidates AS f INNER LOOP JOIN {table} AS {alias} WITH (UPDLOCK, ROWLOCK, READPAST, FORCESEEK) ON {alias}.id = f.id WHERE {still};
-            INSERT INTO @repaired (n) VALUES (@@ROWCOUNT);
+            FROM OPENJSON(@candidates) WITH (id uniqueidentifier '$.id') AS f INNER LOOP JOIN {table} AS {alias} WITH (UPDLOCK, ROWLOCK, READPAST, FORCESEEK) ON {alias}.id = f.id WHERE {still};
+            SET @repaired_{step} = @@ROWCOUNT;
 
             """;
-        const string queue = "OUTPUT inserted.[definition], inserted.subject_kind, inserted.subject_id INTO @queued";
+        var queue = $"OUTPUT inserted.[definition], inserted.subject_kind, inserted.subject_id INTO {changes} ([definition], subject_kind, subject_id)";
         var text = $"""
-            DECLARE @candidates TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            DECLARE @repaired TABLE (step int IDENTITY NOT NULL PRIMARY KEY, n int NOT NULL);
-            DECLARE @queued TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
-            {Repair(recurrences, "c",
+            DECLARE @candidates nvarchar(max), @repaired_1 int, @repaired_2 int, @repaired_3 int, @repaired_4 int;
+            {Repair(1, recurrences, "c",
                 $"SELECT TOP (@limit) c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_paused)) WHERE c.[definition] = @definition AND c.paused = 1 AND NOT {Stored("c")}",
-                $"c.paused = 1 AND NOT {Stored("c")}", "0", queue)}{Repair(recurrences, "c",
+                $"c.paused = 1 AND NOT {Stored("c")}", "0", queue)}{Repair(2, recurrences, "c",
                 $"SELECT TOP (@limit) c.id FROM {pauses} AS p INNER LOOP JOIN {recurrences} AS c WITH (INDEX(job_recurrences_subject)) ON c.[definition] = p.[definition] "
                 + "AND c.subject_kind = p.subject_kind AND c.subject_id = p.subject_id WHERE p.[definition] = @definition AND c.subject_kind IS NOT NULL AND c.paused = 0",
-                $"c.paused = 0 AND {Stored("c")}", "1", queue)}{Repair(sql.Table, "r",
+                $"c.paused = 0 AND {Stored("c")}", "1", queue)}{Repair(3, sql.Table, "r",
                 $"SELECT TOP (@limit) r.id FROM {sql.Table} AS r WITH (INDEX(jobs_paused)) WHERE r.[definition] = @definition AND r.paused = 1 AND r.state = 0 AND NOT {Stored("r")}",
-                $"r.paused = 1 AND r.state = 0 AND NOT {Stored("r")}", "0", "")}{Repair(sql.Table, "r",
+                $"r.paused = 1 AND r.state = 0 AND NOT {Stored("r")}", "0", "")}{Repair(4, sql.Table, "r",
                 $"SELECT TOP (@limit) r.id FROM {pauses} AS p INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_subject)) ON r.subject_kind = p.subject_kind "
                 + "AND r.subject_id = p.subject_id AND r.[definition] = p.[definition] WHERE p.[definition] = @definition AND r.state = 0 AND r.paused = 0",
-                $"r.paused = 0 AND r.state = 0 AND {Stored("r")}", "1", "")}INSERT INTO {changes} ([definition], subject_kind, subject_id) SELECT [definition], subject_kind, subject_id FROM @queued;
-            {NotifyMonitor("EXISTS (SELECT 1 FROM @queued)")}{signals.InsertIf(WorkTopics.Plan, "@source", "(SELECT n FROM @repaired WHERE step = 1) > 0")}{signals.InsertIf(WorkTopics.Due, "@source", "(SELECT n FROM @repaired WHERE step = 3) > 0")}SELECT MAX(n) FROM @repaired;
+                $"r.paused = 0 AND r.state = 0 AND {Stored("r")}", "1", "")}{NotifyMonitor("@repaired_1 + @repaired_2 > 0")}{signals.InsertIf(WorkTopics.Plan, "@source", "@repaired_1 > 0")}{signals.InsertIf(WorkTopics.Due, "@source", "@repaired_3 > 0")}SELECT GREATEST(@repaired_1, @repaired_2, @repaired_3, @repaired_4);
             """;
         return await InTransactionAsync(async work =>
         {

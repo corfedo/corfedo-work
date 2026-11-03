@@ -104,13 +104,12 @@ internal sealed partial class SqlServerJobStore
         var after = Tsql.AddTicks("SYSUTCDATETIME()", "@delay");
         // A retry of a job with a calendar is planned at the next allowed instant from the end of its backoff.
         await using (var retry = SqlServerLeaseStore.KeyCommand(work.Connection, work.Transaction, sql, source, lease.Key, $"""
-            DECLARE @valid TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @valid (id) SELECT r.id FROM {sql.Table} AS r WHERE {sql.KeyMatch} AND {sql.Valid};
-            {sql.RecordRun($"{sql.Table} AS r JOIN @valid AS v ON v.id = r.id", "1 = 1", ((int)JobRunOutcome.Retried).ToString(CultureInfo.InvariantCulture), "@reason", "SYSUTCDATETIME()")}
+            DECLARE @valid uniqueidentifier = (SELECT r.id FROM {sql.Table} AS r WHERE {sql.KeyMatch} AND {sql.Valid});
+            {sql.RecordRun($"{sql.Table} AS r", "r.id = @valid", ((int)JobRunOutcome.Retried).ToString(CultureInfo.InvariantCulture), "@reason", "SYSUTCDATETIME()")}
             UPDATE r SET lease_expires_at = NULL, takeovers = 0, failures = r.failures + 1, attempt_started_at = NULL,
                 due_at = CASE WHEN r.calendar IS NULL THEN {after} END, calendar_at = CASE WHEN r.calendar IS NOT NULL THEN {after} END,
                 window_end = NULL, calendar_blocked = CASE WHEN r.calendar IS NOT NULL THEN {(short)Blocked.MoveForward} END
-            FROM {sql.Table} AS r JOIN @valid AS v ON v.id = r.id;
+            FROM {sql.Table} AS r WHERE r.id = @valid;
             SELECT @@ROWCOUNT;
             """,
             Tsql.Guid("@owner", lease.Owner.Value),
@@ -159,39 +158,38 @@ internal sealed partial class SqlServerJobStore
     {
         var sql = await SqlAsync(source, cancellationToken);
         var pending = discardPending ? "0" : "CASE WHEN r.pending_args IS NOT NULL THEN 1 ELSE 0 END";
-        string Next(string column, string value) => $"CASE WHEN old.restart = 1 THEN {value} ELSE r.{column} END";
-        // The condition is evaluated once, after the lock, into @old; the attempt is recorded from the row as locked,
-        // before the update changes it. An attempt its chain holds ends with the job's outcome, whose values the
-        // attempt outcomes share.
+        string Next(string column, string value) => $"CASE WHEN @old_restart = 1 THEN {value} ELSE r.{column} END";
+        // The condition is evaluated once, after the lock, into the @old_ variables; the attempt is recorded from the row
+        // as locked, before the update changes it. An attempt its chain holds ends with the job's outcome, whose values
+        // the attempt outcomes share.
         var text = $"""
             DECLARE @held int;
             SELECT @held = 1 FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK) WHERE {sql.KeyMatch};
-            DECLARE @old TABLE (id uniqueidentifier NOT NULL PRIMARY KEY, execution_id uniqueidentifier NOT NULL, attempts int NOT NULL,
-                subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary}, partition_key nvarchar(400) COLLATE {Tsql.Binary} NOT NULL, occurrence nvarchar(200) COLLATE {Tsql.Binary},
-                waited bit NOT NULL, restart bit NOT NULL, recurring bit NOT NULL, expects bit NOT NULL, expect_failures int);
-            INSERT INTO @old SELECT r.id, r.execution_id, r.attempts, r.subject_kind, r.subject_id, r.partition_key, r.occurrence, r.waited,
-                {pending}, {Tsql.Bit("r.recurrence_id IS NOT NULL")}, {Tsql.Bit(SqlServerMonitoringStore.HasExpectations)}, d.expect_failures
+            DECLARE @old_id uniqueidentifier, @old_execution_id uniqueidentifier, @old_attempts int, @old_subject_kind nvarchar(100), @old_subject_id nvarchar(400),
+                @old_partition_key nvarchar(400), @old_occurrence nvarchar(200), @old_waited bit, @old_restart bit, @old_recurring bit, @old_expects bit, @old_expect_failures int;
+            SELECT @old_id = r.id, @old_execution_id = r.execution_id, @old_attempts = r.attempts, @old_subject_kind = r.subject_kind, @old_subject_id = r.subject_id,
+                @old_partition_key = r.partition_key, @old_occurrence = r.occurrence, @old_waited = r.waited, @old_restart = {pending},
+                @old_recurring = {Tsql.Bit("r.recurrence_id IS NOT NULL")}, @old_expects = {Tsql.Bit(SqlServerMonitoringStore.HasExpectations)}, @old_expect_failures = d.expect_failures
             FROM {sql.Table} AS r JOIN {definitions} AS d ON d.[key] = r.[definition] WHERE {sql.KeyMatch} AND r.state = 0 AND {condition};
-            {sql.RecordRun($"{sql.Table} AS r JOIN @old AS old ON old.id = r.id", "1 = 1", "CASE WHEN r.owned_chain IS NOT NULL THEN @outcome ELSE @attempt END", "@reason", "SYSUTCDATETIME()", "old.occurrence")}
-            DECLARE @ended TABLE (planned bit NOT NULL, chain_id uniqueidentifier, chain_root bit NOT NULL, chain_group uniqueidentifier, ended_at datetime2(7) NOT NULL);
+            {sql.RecordRun($"{sql.Table} AS r", "r.id = @old_id", "CASE WHEN r.owned_chain IS NOT NULL THEN @outcome ELSE @attempt END", "@reason", "SYSUTCDATETIME()", "@old_occurrence")}
             UPDATE r SET outcome = @outcome, reason = @reason, ended_at = SYSUTCDATETIME(), lease_expires_at = NULL, cancel_requested_at = NULL,
-                ended_execution_id = old.execution_id, result = @result, result_version = @result_version, attempt_started_at = NULL,
-                waited = CASE WHEN old.restart = 1 AND r.waited = 1 THEN 1 ELSE 0 END, takeovers = 0, failures = 0,
-                state = CASE WHEN old.restart = 1 THEN 0 ELSE @outcome END,
-                due_at = CASE WHEN old.restart = 1 AND r.calendar IS NULL THEN r.pending_due END,
-                calendar_at = CASE WHEN old.restart = 1 AND r.calendar IS NOT NULL THEN r.pending_due END,
+                ended_execution_id = @old_execution_id, result = @result, result_version = @result_version, attempt_started_at = NULL,
+                waited = CASE WHEN @old_restart = 1 AND r.waited = 1 THEN 1 ELSE 0 END, takeovers = 0, failures = 0,
+                state = CASE WHEN @old_restart = 1 THEN 0 ELSE @outcome END,
+                due_at = CASE WHEN @old_restart = 1 AND r.calendar IS NULL THEN r.pending_due END,
+                calendar_at = CASE WHEN @old_restart = 1 AND r.calendar IS NOT NULL THEN r.pending_due END,
                 window_end = NULL, calendar_unavailable = 0, chain_waiting = 0, chain_outcome = NULL,
-                calendar = CASE WHEN old.restart = 1 THEN r.calendar END, ended_calendar = CASE WHEN old.restart = 0 THEN r.calendar END,
-                unconsumed = CASE WHEN old.recurring = 1 AND NOT (r.skip_pending = 1 AND r.skip_reason IS NULL) THEN 1 ELSE 0 END, skip_pending = 0, skip_reason = NULL,
+                calendar = CASE WHEN @old_restart = 1 THEN r.calendar END, ended_calendar = CASE WHEN @old_restart = 0 THEN r.calendar END,
+                unconsumed = CASE WHEN @old_recurring = 1 AND NOT (r.skip_pending = 1 AND r.skip_reason IS NULL) THEN 1 ELSE 0 END, skip_pending = 0, skip_reason = NULL,
                 args = {Next("args", "r.pending_args")}, args_version = {Next("args_version", "r.pending_args_version")},
                 first_requested_at = {Next("first_requested_at", "r.pending_first_requested_at")},
                 execution_id = {Next("execution_id", "NEWID()")}, attempts = {Next("attempts", "0")}, started = {Next("started", "0")},
                 pending_args = NULL, pending_args_version = NULL, pending_due = NULL, pending_first_requested_at = NULL
-            OUTPUT {Tsql.Bit("inserted.calendar_at IS NOT NULL")}, inserted.chain_id, {Tsql.Bit("inserted.chain_parent IS NULL")}, inserted.chain_group, inserted.ended_at INTO @ended
-            FROM {sql.Table} AS r JOIN @old AS old ON old.id = r.id;
-            SELECT old.execution_id, old.attempts, old.subject_kind, old.subject_id, old.partition_key, old.restart, old.occurrence, old.recurring,
-                {Tsql.Bit("old.waited = 1 AND old.restart = 0")}, e.planned, e.chain_id, e.chain_root, e.chain_group, old.expects, old.expect_failures, e.ended_at
-            FROM @old AS old CROSS JOIN @ended AS e;
+            FROM {sql.Table} AS r WHERE r.id = @old_id;
+            SELECT @old_execution_id, @old_attempts, @old_subject_kind, @old_subject_id, @old_partition_key, @old_restart, @old_occurrence, @old_recurring,
+                {Tsql.Bit("@old_waited = 1 AND @old_restart = 0")}, {Tsql.Bit("r.calendar_at IS NOT NULL")}, r.chain_id, {Tsql.Bit("r.chain_parent IS NULL")}, r.chain_group,
+                @old_expects, @old_expect_failures, r.ended_at
+            FROM {sql.Table} AS r WHERE r.id = @old_id;
             """;
         JobEnd end;
         bool startsFollowUp;

@@ -52,12 +52,10 @@ internal sealed partial class SqlServerJobStore
         const string Order = "COALESCE(r.due_at, r.calendar_at)";
         await using var connection = await leases.OpenAsync(cancellationToken);
         await using var command = Tsql.Command(connection, null, $"""
-            DECLARE @s TABLE (n int NOT NULL PRIMARY KEY, kind nvarchar(100) COLLATE {Tsql.Binary} NOT NULL, id nvarchar(400) COLLATE {Tsql.Binary} NOT NULL,
-                [identity] nvarchar(512) COLLATE {Tsql.Binary} NOT NULL);
-            INSERT INTO @s (n, kind, id, [identity]) SELECT n, k, i, m FROM OPENJSON(@subjects) WITH (n int '$.n', k nvarchar(100) '$.k', i nvarchar(400) '$.i', m nvarchar(512) '$.m');
             SELECT s.n, o.id, o.due_at, o.held, o.attempt_started_at, o.occurrence, o.attempts, o.progress_percent, o.progress_message, o.follow_up, o.chain_waiting,
                 e.outcome, e.reason, e.ended_at, c.next_at, {Tsql.Bit("c.id IS NOT NULL")}, {Tsql.Bit("d.paused = 1 OR p.paused IS NOT NULL")}
-            FROM @s AS s
+            FROM OPENJSON(@subjects) WITH (n int '$.n', kind nvarchar(100) COLLATE {Tsql.Binary} '$.k', id nvarchar(400) COLLATE {Tsql.Binary} '$.i',
+                [identity] nvarchar(512) COLLATE {Tsql.Binary} '$.m') AS s
             LEFT JOIN {definitions} AS d ON d.[key] = @definition
             OUTER APPLY (
                 SELECT TOP (1) r.id, COALESCE(NULLIF(r.due_at, {Tsql.NeverLiteral}), r.calendar_at) AS due_at, {Tsql.Bit(Running)} AS held, r.attempt_started_at,
@@ -150,12 +148,10 @@ internal sealed partial class SqlServerJobStore
         }
         await using var connection = await leases.OpenAsync(cancellationToken);
         await using var command = Tsql.Command(connection, null, $"""
-            DECLARE @ids TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @ids (id) SELECT DISTINCT value FROM OPENJSON(@jobs) WITH (value uniqueidentifier '$');
-            SELECT {OutcomeColumns} FROM @ids AS i INNER LOOP JOIN {Jobs} AS j ON j.id = i.id WHERE j.[definition] = @definition;
+            SELECT {OutcomeColumns} FROM OPENJSON(@jobs) WITH (id uniqueidentifier '$') AS i INNER LOOP JOIN {Jobs} AS j ON j.id = i.id WHERE j.[definition] = @definition;
             """,
             Tsql.Text("@definition", definition, 200),
-            Tsql.Guids("@jobs", jobs.Select(j => j.Value)));
+            Tsql.Guids("@jobs", jobs.Select(j => j.Value).Distinct()));
         var outcomes = new List<StoredJobOutcome>(jobs.Count);
         await using var reader = await command.ReaderAsync(cancellationToken);
         while (await reader.NextRowAsync(cancellationToken))

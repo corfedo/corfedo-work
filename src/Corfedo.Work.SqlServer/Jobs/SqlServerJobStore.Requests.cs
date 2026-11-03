@@ -35,6 +35,7 @@ internal sealed partial class SqlServerJobStore
         ArgumentNullException.ThrowIfNull(requests);
         var work = SqlServerTransaction.From(transaction);
         var sql = await SqlAsync(source, cancellationToken);
+        CheckLengths(requests);
         await CheckCalendarsAsync(work, requests, cancellationToken);
         var results = new JobRequestResult[requests.Count];
         var pending = Enumerable.Range(0, requests.Count).ToList();
@@ -69,6 +70,29 @@ internal sealed partial class SqlServerJobStore
             await NotifyPlanAsync(work, source, cancellationToken);
         }
         return results;
+    }
+
+    /// <summary>
+    /// Refuses values longer than the job table's columns before anything is read or written. Statements read them at
+    /// the columns' lengths, so a longer merge identity would otherwise be truncated and could merge into another job.
+    /// </summary>
+    private static void CheckLengths(IReadOnlyList<JobRequestData> requests)
+    {
+        foreach (var request in requests)
+        {
+            Check(request.MergeIdentity, 512, "merge identity");
+            Check(request.Subject?.Kind, 100, "subject kind");
+            Check(request.Subject?.Id, 400, "subject id");
+            Check(request.Partition, 400, "partition");
+        }
+
+        static void Check(string? value, int length, string name)
+        {
+            if (value is not null && value.Length > length)
+            {
+                throw new ArgumentException($"A job's {name} has {value.Length} characters; SQL Server stores at most {length}.", nameof(requests));
+            }
+        }
     }
 
     /// <summary>
@@ -128,8 +152,8 @@ internal sealed partial class SqlServerJobStore
     /// without locks, locked through their key in primary-key order and evaluated in the next statement, with a clock
     /// reading taken after the locks are held. Under <c>Merge</c> an outstanding job of the same partition merges the
     /// request; one of another partition, and under <c>IfAbsent</c> any outstanding job, is reported for the caller to
-    /// refuse or return. The other items are inserted; an insert that meets an outstanding job created meanwhile by a
-    /// rerun fails as a whole on the outstanding-identity index, and its items are applied again.
+    /// refuse or return. The other items are inserted by a second command; an insert that meets an outstanding job
+    /// created meanwhile by a rerun fails as a whole on the outstanding-identity index, and its items are applied again.
     /// </summary>
     private async Task<List<int>> RequestGroupAsync(SqlServerTransaction work, LeaseSql sql, IReadOnlyList<JobRequestData> requests, int[] items, JobRequestResult[] results, CancellationToken cancellationToken)
     {
@@ -140,7 +164,7 @@ internal sealed partial class SqlServerJobStore
         var parameters = new List<SqlParameter>
         {
             Tsql.Text("@definition", definition, 200),
-            Tsql.Json("@requests", RequestsJson(definition, requests, items, ids)),
+            Tsql.Json("@requests", RequestsJson(requests, items, ids)),
         };
         var due = schedule.Kind switch
         {
@@ -180,128 +204,80 @@ internal sealed partial class SqlServerJobStore
         var (calendar, blocked, closed) = hasCalendar ? ("@calendar", "@blocked", "@closed") : ("NULL", "NULL", "NULL");
         var (dueAt, calendarAt) = hasCalendar ? ("NULL", due) : (due, "NULL");
         var mode = first.Mode;
-        var text = new StringBuilder($"""
-            DECLARE @items TABLE (
-                ord int NOT NULL PRIMARY KEY, id uniqueidentifier NOT NULL, merge_key nvarchar(512) COLLATE {Tsql.Binary},
-                subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary},
-                partition_key nvarchar(400) COLLATE {Tsql.Binary} NOT NULL, args varbinary(max) NOT NULL, args_version int NOT NULL,
-                trace_parent nvarchar(100), lock_name nvarchar(255) COLLATE {Tsql.Binary});
-            INSERT INTO @items (ord, id, merge_key, subject_kind, subject_id, partition_key, args, args_version, trace_parent, lock_name)
-            SELECT o, i, m, sk, si, p, a, v, t, l FROM OPENJSON(@requests) WITH (
-                o int '$.o', i uniqueidentifier '$.i', m nvarchar(512) '$.m', sk nvarchar(100) '$.sk', si nvarchar(400) '$.si',
-                p nvarchar(400) '$.p', a varbinary(max) '$.a', v int '$.v', t nvarchar(100) '$.t', l nvarchar(255) '$.l');
-            DECLARE @done TABLE (ord int NOT NULL PRIMARY KEY, id uniqueidentifier NOT NULL, kind int NOT NULL);
-            DECLARE @outstanding TABLE (ord int NOT NULL PRIMARY KEY, id uniqueidentifier NOT NULL, partition_key nvarchar(400) COLLATE {Tsql.Binary} NOT NULL);
-            DECLARE @inserted TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-
-            """);
-        if (mode != RequestMode.New)
-        {
-            text.Append($"""
-                DECLARE @locks TABLE (n int IDENTITY NOT NULL PRIMARY KEY, lock_name nvarchar(255) COLLATE {Tsql.Binary} NOT NULL);
-                INSERT INTO @locks (lock_name) SELECT lock_name FROM @items WHERE lock_name IS NOT NULL ORDER BY lock_name;
-                DECLARE @lock_count int = @@ROWCOUNT, @lock_index int = 1, @lock nvarchar(255);
-                WHILE @lock_index <= @lock_count
-                BEGIN
-                    SELECT @lock = lock_name FROM @locks WHERE n = @lock_index;
-                    {LeaseSql.AppLock("@lock", "Exclusive").Replace("\n", "\n    ", StringComparison.Ordinal).TrimEnd()}
-                    SET @lock_index += 1;
-                END
-                DECLARE @found TABLE (id uniqueidentifier NOT NULL PRIMARY KEY, ord int NOT NULL);
-                INSERT INTO @found (id, ord) SELECT j.id, s.ord FROM @items AS s
-                INNER LOOP JOIN {sql.Table} AS j WITH (INDEX(jobs_merge), FORCESEEK) ON j.[definition] = @definition AND j.merge_key = s.merge_key
-                WHERE j.merge_key IS NOT NULL AND j.state = 0;
-                DECLARE @locked int;
-                SELECT @locked = COUNT(*) FROM @found AS f INNER LOOP JOIN {sql.Table} AS j WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON j.id = f.id;
-
-                """);
-        }
-        if (mode == RequestMode.Merge)
-        {
-            // Before the execution started, and while no claim holds or held its lease and it is not to be skipped,
-            // the request replaces the arguments, the calendar and its policies and merges the instant; otherwise it
-            // becomes the pending follow-up, which runs under the job's calendar. The condition does not depend on the
-            // clock, so the outcome reported matches the branch taken.
-            const string followUp = "(j.started = 1 OR j.lease_expires_at IS NOT NULL OR j.skip_pending = 1)";
-            const string merging = "COALESCE(j.calendar_at, j.due_at)";
-            text.Append($"""
-                UPDATE j SET
-                    args = CASE WHEN {followUp} THEN j.args ELSE s.args END,
-                    args_version = CASE WHEN {followUp} THEN j.args_version ELSE s.args_version END,
-                    due_at = CASE WHEN {followUp} THEN j.due_at {(hasCalendar ? "" : $"ELSE {Merge(merging, "j.first_requested_at")} ")}END,
-                    calendar_at = CASE WHEN {followUp} THEN j.calendar_at {(hasCalendar ? $"ELSE {Merge(merging, "j.first_requested_at")} " : "")}END,
-                    window_end = CASE WHEN {followUp} THEN j.window_end END,
-                    calendar_unavailable = CASE WHEN {followUp} AND j.calendar_unavailable = 1 THEN 1 ELSE 0 END,
-                    calendar = CASE WHEN {followUp} THEN j.calendar ELSE {calendar} END,
-                    calendar_blocked = CASE WHEN {followUp} THEN j.calendar_blocked ELSE {blocked} END,
-                    calendar_closed = CASE WHEN {followUp} THEN j.calendar_closed ELSE {closed} END,
-                    pending_args = CASE WHEN {followUp} THEN s.args ELSE j.pending_args END,
-                    pending_args_version = CASE WHEN {followUp} THEN s.args_version ELSE j.pending_args_version END,
-                    pending_due = CASE WHEN NOT {followUp} THEN j.pending_due WHEN j.pending_first_requested_at IS NULL THEN {due}
-                        ELSE {Merge("j.pending_due", "j.pending_first_requested_at")} END,
-                    pending_first_requested_at = CASE WHEN {followUp} THEN COALESCE(j.pending_first_requested_at, SYSUTCDATETIME()) ELSE j.pending_first_requested_at END
-                OUTPUT s.ord, inserted.id, CASE WHEN deleted.started = 1 OR deleted.lease_expires_at IS NOT NULL OR deleted.skip_pending = 1 THEN {FollowUp} ELSE {Merged} END INTO @done (ord, id, kind)
-                FROM @found AS f INNER LOOP JOIN {sql.Table} AS j WITH (INDEX(jobs_key), FORCESEEK) ON j.id = f.id JOIN @items AS s ON s.ord = f.ord
-                WHERE j.state = 0 AND j.[definition] = @definition AND j.merge_key = s.merge_key AND j.partition_key = s.partition_key;
-
-                """);
-        }
-        if (mode != RequestMode.New)
-        {
-            text.Append($"""
-                INSERT INTO @outstanding (ord, id, partition_key) SELECT f.ord, j.id, j.partition_key
-                FROM @found AS f INNER LOOP JOIN {sql.Table} AS j WITH (INDEX(jobs_key), FORCESEEK) ON j.id = f.id JOIN @items AS s ON s.ord = f.ord
-                WHERE j.state = 0 AND j.[definition] = @definition AND j.merge_key = s.merge_key AND NOT EXISTS (SELECT 1 FROM @done AS d WHERE d.ord = f.ord);
-
-                """);
-        }
-        // The pause flag is copied from the stored subject pauses; claims check the stored pause itself. A merged
-        // request keeps the trace of the request that created the job.
-        text.Append($"""
-            SET XACT_ABORT OFF;
-            BEGIN TRY
-                INSERT INTO {sql.Table} (id, [definition], merge_key, subject_kind, subject_id, partition_key, args, args_version,
-                    first_requested_at, created_at, due_at, calendar_at, calendar, calendar_blocked, calendar_closed, execution_id, paused, trace_parent)
-                OUTPUT inserted.id INTO @inserted (id)
-                SELECT s.id, @definition, s.merge_key, s.subject_kind, s.subject_id, s.partition_key, s.args, s.args_version, SYSUTCDATETIME(), SYSUTCDATETIME(),
-                    {dueAt}, {calendarAt}, {calendar}, {blocked}, {closed}, NEWID(),
-                    CASE WHEN s.subject_kind IS NOT NULL AND EXISTS (SELECT 1 FROM {pauses} AS p WHERE p.[definition] = @definition AND p.subject_kind = s.subject_kind AND p.subject_id = s.subject_id) THEN 1 ELSE 0 END,
-                    s.trace_parent
-                FROM @items AS s
-                WHERE NOT EXISTS (SELECT 1 FROM @done AS d WHERE d.ord = s.ord) AND NOT EXISTS (SELECT 1 FROM @outstanding AS o WHERE o.ord = s.ord)
-                ORDER BY s.ord;
-            END TRY
-            BEGIN CATCH
-                SET XACT_ABORT ON;
-                IF ERROR_NUMBER() NOT IN (2601, 2627) THROW;
-                DELETE FROM @inserted;
-            END CATCH
-            SET XACT_ABORT ON;
-            SELECT ord, id, kind FROM @done
-            UNION ALL SELECT s.ord, s.id, {Created} FROM @items AS s JOIN @inserted AS i ON i.id = s.id;
-            SELECT ord, id, partition_key FROM @outstanding;
-            """);
-        await using var command = Tsql.Command(work, text.ToString(), [.. parameters]);
+        // The items of the batch, read from @requests by each statement that needs them, with the job table's types:
+        // a wider type would turn each identity seek into a range seek. RequestManyAsync refuses longer values.
+        var itemRows = $"""
+            OPENJSON(@requests) WITH (ord int '$.o', id uniqueidentifier '$.i', merge_key nvarchar(512) COLLATE {Tsql.Binary} '$.m',
+                subject_kind nvarchar(100) COLLATE {Tsql.Binary} '$.sk', subject_id nvarchar(400) COLLATE {Tsql.Binary} '$.si',
+                partition_key nvarchar(400) COLLATE {Tsql.Binary} '$.p', args varbinary(max) '$.a', args_version int '$.v', trace_parent nvarchar(max) '$.t')
+            """;
         var written = new HashSet<int>();
         var unwritten = new List<(int Item, Guid Id, string Partition)>();
-        await using (var reader = await command.ReaderAsync(cancellationToken))
+        if (mode != RequestMode.New)
         {
-            while (await reader.NextRowAsync(cancellationToken))
+            // Outstanding jobs of the items' identities, read through the identity index without locks.
+            var found = $"{itemRows} AS s INNER LOOP JOIN {sql.Table} AS m WITH (INDEX(jobs_merge), FORCESEEK) ON m.[definition] = @definition AND m.merge_key = s.merge_key "
+                + "WHERE s.merge_key IS NOT NULL AND m.state = 0";
+            var text = new StringBuilder($"""
+                {Tsql.AppLocks("merge", "@locks", "Exclusive", "-1")}
+                DECLARE @found nvarchar(max) = (SELECT m.id FROM {found} ORDER BY m.id FOR JSON PATH), @locked int;
+                SELECT @locked = COUNT(*) FROM OPENJSON(@found) WITH (id uniqueidentifier '$.id') AS f
+                INNER LOOP JOIN {sql.Table} AS j WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON j.id = f.id;
+
+                """);
+            if (mode == RequestMode.Merge)
             {
-                var item = items[reader.GetInt32(0)];
-                var outcome = reader.GetInt32(2) switch
-                {
-                    Created => JobRequestOutcome.Created,
-                    FollowUp => JobRequestOutcome.FollowUp,
-                    _ => JobRequestOutcome.Merged,
-                };
-                results[item] = new JobRequestResult(new JobId(reader.GetGuid(1)), outcome);
-                written.Add(item);
+                // Before the execution started, and while no claim holds or held its lease and it is not to be skipped,
+                // the request replaces the arguments, the calendar and its policies and merges the instant; otherwise it
+                // becomes the pending follow-up, which runs under the job's calendar. The condition does not depend on the
+                // clock, so the outcome reported matches the branch taken. The job table has no triggers, so the merged
+                // jobs are returned by the OUTPUT clause.
+                const string followUp = "(j.started = 1 OR j.lease_expires_at IS NOT NULL OR j.skip_pending = 1)";
+                const string merging = "COALESCE(j.calendar_at, j.due_at)";
+                text.Append($"""
+                    UPDATE j SET
+                        args = CASE WHEN {followUp} THEN j.args ELSE s.args END,
+                        args_version = CASE WHEN {followUp} THEN j.args_version ELSE s.args_version END,
+                        due_at = CASE WHEN {followUp} THEN j.due_at {(hasCalendar ? "" : $"ELSE {Merge(merging, "j.first_requested_at")} ")}END,
+                        calendar_at = CASE WHEN {followUp} THEN j.calendar_at {(hasCalendar ? $"ELSE {Merge(merging, "j.first_requested_at")} " : "")}END,
+                        window_end = CASE WHEN {followUp} THEN j.window_end END,
+                        calendar_unavailable = CASE WHEN {followUp} AND j.calendar_unavailable = 1 THEN 1 ELSE 0 END,
+                        calendar = CASE WHEN {followUp} THEN j.calendar ELSE {calendar} END,
+                        calendar_blocked = CASE WHEN {followUp} THEN j.calendar_blocked ELSE {blocked} END,
+                        calendar_closed = CASE WHEN {followUp} THEN j.calendar_closed ELSE {closed} END,
+                        pending_args = CASE WHEN {followUp} THEN s.args ELSE j.pending_args END,
+                        pending_args_version = CASE WHEN {followUp} THEN s.args_version ELSE j.pending_args_version END,
+                        pending_due = CASE WHEN NOT {followUp} THEN j.pending_due WHEN j.pending_first_requested_at IS NULL THEN {due}
+                            ELSE {Merge("j.pending_due", "j.pending_first_requested_at")} END,
+                        pending_first_requested_at = CASE WHEN {followUp} THEN COALESCE(j.pending_first_requested_at, SYSUTCDATETIME()) ELSE j.pending_first_requested_at END
+                    OUTPUT s.ord, inserted.id, CASE WHEN deleted.started = 1 OR deleted.lease_expires_at IS NOT NULL OR deleted.skip_pending = 1 THEN {FollowUp} ELSE {Merged} END
+                    FROM (SELECT s.ord, m.id, s.merge_key, s.partition_key, s.args, s.args_version FROM {found}) AS s
+                    INNER LOOP JOIN {sql.Table} AS j WITH (INDEX(jobs_key), FORCESEEK) ON j.id = s.id
+                    WHERE j.state = 0 AND j.[definition] = @definition AND j.merge_key = s.merge_key AND j.partition_key = s.partition_key;
+
+                    """);
             }
-            await reader.NextSetAsync(cancellationToken);
+            // The outstanding jobs the batch did not merge.
+            text.Append($"SELECT s.ord, m.id, m.partition_key FROM {found}{(mode == RequestMode.Merge ? " AND m.partition_key <> s.partition_key" : "")};\n");
+            var locks = items.Select(i => requests[i].MergeIdentity).OfType<string>().Select(identity => Tsql.LockName("merge", schema, definition, identity)).Order(StringComparer.Ordinal);
+            await using var command = Tsql.Command(work, text.ToString(), [.. parameters.Select(Copy), Tsql.Text("@locks", string.Join(',', locks), -1)]);
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            if (mode == RequestMode.Merge)
+            {
+                while (await reader.NextRowAsync(cancellationToken))
+                {
+                    var item = items[reader.GetInt32(0)];
+                    var outcome = reader.GetInt32(2) == FollowUp ? JobRequestOutcome.FollowUp : JobRequestOutcome.Merged;
+                    results[item] = new JobRequestResult(new JobId(reader.GetGuid(1)), outcome);
+                    written.Add(item);
+                }
+                await reader.NextSetAsync(cancellationToken);
+            }
             while (await reader.NextRowAsync(cancellationToken))
             {
-                unwritten.Add((items[reader.GetInt32(0)], reader.GetGuid(1), reader.GetString(2)));
+                var n = reader.GetInt32(0);
+                unwritten.Add((items[n], reader.GetGuid(1), reader.GetString(2)));
+                written.Add(items[n]);
             }
         }
         foreach (var (item, id, partition) in unwritten)
@@ -312,22 +288,68 @@ internal sealed partial class SqlServerJobStore
                     $"The outstanding job {id} of {definition} with this identity belongs to another partition; a request cannot merge into it.");
             }
             results[item] = new JobRequestResult(new JobId(id), JobRequestOutcome.Existing);
-            written.Add(item);
         }
-        return [.. items.Where(i => !written.Contains(i))];
+        var inserts = Enumerable.Range(0, items.Length).Where(n => !written.Contains(items[n])).ToArray();
+        if (inserts.Length == 0)
+        {
+            return [];
+        }
+        var insertParameters = parameters.Select(Copy).ToArray();
+        if (inserts.Length < items.Length)
+        {
+            insertParameters[1] = Tsql.Json("@requests", RequestsJson(requests, items, ids, inserts));
+        }
+        // The pause flag is copied from the stored subject pauses; claims check the stored pause itself. The insert
+        // writes every remaining item or, when it meets an outstanding job created meanwhile, none.
+        await using (var insert = Tsql.Command(work, $"""
+            DECLARE @inserted bit = 0;
+            SET XACT_ABORT OFF;
+            BEGIN TRY
+                INSERT INTO {sql.Table} (id, [definition], merge_key, subject_kind, subject_id, partition_key, args, args_version,
+                    first_requested_at, created_at, due_at, calendar_at, calendar, calendar_blocked, calendar_closed, execution_id, paused, trace_parent)
+                SELECT s.id, @definition, s.merge_key, s.subject_kind, s.subject_id, s.partition_key, s.args, s.args_version, SYSUTCDATETIME(), SYSUTCDATETIME(),
+                    {dueAt}, {calendarAt}, {calendar}, {blocked}, {closed}, NEWID(),
+                    CASE WHEN s.subject_kind IS NOT NULL AND EXISTS (SELECT 1 FROM {pauses} AS p WHERE p.[definition] = @definition AND p.subject_kind = s.subject_kind AND p.subject_id = s.subject_id) THEN 1 ELSE 0 END,
+                    s.trace_parent
+                FROM {itemRows} AS s
+                ORDER BY s.ord;
+                SET @inserted = 1;
+            END TRY
+            BEGIN CATCH
+                SET XACT_ABORT ON;
+                IF ERROR_NUMBER() NOT IN (2601, 2627) THROW;
+            END CATCH
+            SET XACT_ABORT ON;
+            SELECT @inserted;
+            """, insertParameters))
+        {
+            if (!(bool)(await insert.ScalarAsync(cancellationToken))!)
+            {
+                return [.. inserts.Select(n => items[n])];
+            }
+        }
+        foreach (var n in inserts)
+        {
+            results[items[n]] = new JobRequestResult(new JobId(ids[n]), JobRequestOutcome.Created);
+        }
+        return [];
     }
 
+    /// <summary>A parameter like <paramref name="parameter"/> for another command; a parameter belongs to one command.</summary>
+    private static SqlParameter Copy(SqlParameter parameter) => (SqlParameter)((ICloneable)parameter).Clone();
+
     /// <summary>
-    /// The items of one request batch as a JSON array: the position in the batch, the new job's id, the merge identity
-    /// with its applock name, subject, partition, base64 arguments, argument version and trace.
+    /// The items <paramref name="positions"/> of one request batch, all of them by default, as a JSON array: the
+    /// position in the batch, the new job's id, the merge identity, subject, partition, base64 arguments, argument
+    /// version and trace.
     /// </summary>
-    private string RequestsJson(string definition, IReadOnlyList<JobRequestData> requests, int[] items, Guid[] ids)
+    private static string RequestsJson(IReadOnlyList<JobRequestData> requests, int[] items, Guid[] ids, IEnumerable<int>? positions = null)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartArray();
-            for (var n = 0; n < items.Length; n++)
+            foreach (var n in positions ?? Enumerable.Range(0, items.Length))
             {
                 var request = requests[items[n]];
                 writer.WriteStartObject();
@@ -336,7 +358,6 @@ internal sealed partial class SqlServerJobStore
                 if (request.MergeIdentity is { } identity)
                 {
                     writer.WriteString("m", identity);
-                    writer.WriteString("l", Tsql.LockName("merge", schema, definition, identity));
                 }
                 if (request.Subject is { } subject)
                 {

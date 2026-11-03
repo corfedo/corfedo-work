@@ -16,8 +16,8 @@ trap cleanup EXIT
 
 dotnet build Corfedo.Work.slnx -c Release
 
-# The test processes share one SQL Server: each would otherwise start a container of its own, and SQL Server sizes its
-# memory to the host. Tempdb keeps its metadata in memory-optimized tables, which takes a restart.
+# The test processes share one SQL Server, with its default configuration: each would otherwise start a container of its
+# own, and SQL Server sizes its memory to the host.
 if [ -z "${CORFEDO_WORK_SQLSERVER:-}" ]; then
   password="Cw-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   sqlserver=$(docker run -d --platform linux/amd64 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD="$password" -p 127.0.0.1::1433 \
@@ -35,9 +35,6 @@ if [ -z "${CORFEDO_WORK_SQLSERVER:-}" ]; then
       sleep 1
     done
   }
-  ready
-  sqlcmd "ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON;"
-  docker restart "$sqlserver" >/dev/null
   ready
   port=$(docker port "$sqlserver" 1433/tcp | head -n 1 | sed 's/.*://')
   export CORFEDO_WORK_SQLSERVER="Server=127.0.0.1,$port;User ID=sa;Password=$password;TrustServerCertificate=True"

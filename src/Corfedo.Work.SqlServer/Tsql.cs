@@ -71,6 +71,34 @@ internal static class Tsql
     public static string OwnTransaction(string text) => "SET TRANSACTION ISOLATION LEVEL READ COMMITTED;\nBEGIN TRANSACTION;\n" + text + "\nCOMMIT;\n";
 
     /// <summary>
+    /// Statements that take the applocks named in <paramref name="names"/>, an nvarchar(max) expression listing
+    /// <see cref="LockName"/> names, which hold no comma, separated by commas, one after another in the list's order and
+    /// in <paramref name="mode"/> until the transaction ends, each waiting up to <paramref name="timeout"/> milliseconds
+    /// (-1 waits, 0 only tries). A refused lock runs <paramref name="refused"/>, which sees the name in
+    /// <c>@{prefix}_lock</c> and its position from 0 in <c>@{prefix}_index</c>; without it a refusal ends the batch with
+    /// an error. The list is read once from start to end, so n locks cost O(n). <c>@lock_result</c> is declared by the
+    /// prologue.
+    /// </summary>
+    public static string AppLocks(string prefix, string names, string mode, string timeout, string? refused = null) => $"""
+        DECLARE @{prefix}_names nvarchar(max) = {names}, @{prefix}_at int = 1, @{prefix}_end int, @{prefix}_index int = 0, @{prefix}_lock nvarchar(255);
+        DECLARE @{prefix}_length int = LEN(@{prefix}_names);
+        WHILE @{prefix}_at <= @{prefix}_length
+        BEGIN
+            SET @{prefix}_end = CHARINDEX(N',', @{prefix}_names, @{prefix}_at);
+            IF @{prefix}_end = 0 SET @{prefix}_end = @{prefix}_length + 1;
+            SET @{prefix}_lock = SUBSTRING(@{prefix}_names, @{prefix}_at, @{prefix}_end - @{prefix}_at);
+            EXEC @lock_result = sp_getapplock @Resource = @{prefix}_lock, @LockMode = '{mode}', @LockOwner = 'Transaction', @LockTimeout = {timeout};
+            IF @lock_result < 0
+            BEGIN
+                {refused ?? "THROW 51205, N'A lock request of the transaction was refused or chosen as a deadlock victim.', 1;"}
+            END
+            SET @{prefix}_at = @{prefix}_end + 1;
+            SET @{prefix}_index += 1;
+        END
+
+        """;
+
+    /// <summary>
     /// Runs <paramref name="statement"/> and ignores a unique violation (2601, 2627) it raises, which leaves the
     /// transaction active: XACT_ABORT is off around it, since with it on a caught error still dooms the transaction.
     /// Any other error is raised again with XACT_ABORT on, so it rolls the transaction back as every other error does.
@@ -90,38 +118,55 @@ internal static class Tsql
 
     /// <summary>
     /// Statements that lock up to <paramref name="top"/> rows of <paramref name="table"/> without waiting, in the order
-    /// the query <paramref name="scan"/> returns their keys, and insert the keys of those kept into
-    /// <paramref name="into"/>, whose columns are named as the key's. The query reads without locks; each key it returns
-    /// is then locked through the key (alias <c>r</c>) and kept when its latest committed version meets
-    /// <paramref name="locked"/> and it is not in <paramref name="into"/> yet; a row another transaction holds is
-    /// skipped. Rows are locked through their key before any other index, as every statement that writes them does.
-    /// The statements declare variables prefixed with <paramref name="name"/>, which names one scan per batch. Keys with
-    /// nullable columns are matched with <c>IS NOT DISTINCT FROM</c> when <paramref name="nullable"/> is set.
+    /// the query <paramref name="scan"/> returns their keys, and append the key of each row kept to the key list
+    /// <paramref name="into"/>, an <c>nvarchar(max)</c> variable the batch declares as <c>N''</c> and reads with
+    /// <see cref="KeyRows"/>. The query reads without locks; each key it returns is then locked through the key (alias
+    /// <c>r</c>) and kept when its latest committed version meets <paramref name="locked"/>; a row another transaction
+    /// holds is skipped. With <paramref name="distinct"/> a key already in <paramref name="into"/>, from an earlier scan
+    /// or returned again by this one after a concurrent update moved it, is not kept twice; each check reads the list, so
+    /// it suits lists of a few hundred keys. Rows are locked through their key before any other index, as every statement
+    /// that writes them does. The statements declare variables prefixed with <paramref name="name"/>, which names one scan
+    /// per batch. Keys with nullable columns are matched with <c>IS NOT DISTINCT FROM</c> when <paramref name="nullable"/>
+    /// is set.
     /// </summary>
-    public static string LockEach(string name, string top, string scan, string table, IReadOnlyList<(string Column, string Type)> key, string locked, string into, bool nullable = false)
+    public static string LockEach(string name, string top, string scan, string table, IReadOnlyList<(string Column, string Type)> key, string locked, string into, bool nullable = false, bool distinct = false)
     {
         var variables = key.Select((_, i) => $"@{name}_{i}").ToArray();
-        var columns = string.Join(", ", key.Select(k => k.Column));
         var equal = nullable ? "IS NOT DISTINCT FROM" : "=";
         var match = string.Join(" AND ", key.Select((k, i) => $"r.{k.Column} {equal} {variables[i]}"));
-        var taken = string.Join(" AND ", key.Select((k, i) => $"t.{k.Column} {equal} {variables[i]}"));
+        var element = $"(SELECT {string.Join(", ", key.Select((k, i) => $"{variables[i]} AS [{Bare(k.Column)}]"))} FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES)";
         return $"""
-            DECLARE {string.Join(", ", key.Select((k, i) => $"{variables[i]} {k.Type}"))}, @{name}_n int = 0;
+            DECLARE {string.Join(", ", key.Select((k, i) => $"{variables[i]} {k.Type}"))}, @{name}_n int = 0, @{name}_hit int, @{name}_key nvarchar(max);
             DECLARE {name} CURSOR LOCAL DYNAMIC READ_ONLY FOR {scan};
             OPEN {name};
             WHILE @{name}_n < {top}
             BEGIN
                 FETCH NEXT FROM {name} INTO {string.Join(", ", variables)};
                 IF @@FETCH_STATUS <> 0 BREAK;
-                INSERT INTO {into} ({columns}) SELECT {string.Join(", ", key.Select(k => "r." + k.Column))} FROM {table} AS r WITH (UPDLOCK, ROWLOCK, READPAST)
-                WHERE {match} AND {locked} AND NOT EXISTS (SELECT 1 FROM {into} AS t WHERE {taken});
-                SET @{name}_n += @@ROWCOUNT;
+                SET @{name}_key = N',' + {element};
+                SELECT @{name}_hit = 1 FROM {table} AS r WITH (UPDLOCK, ROWLOCK, READPAST)
+                WHERE {match} AND {locked}{(distinct ? $" AND CHARINDEX(@{name}_key, {into} COLLATE {Binary}) = 0" : "")};
+                IF @@ROWCOUNT > 0
+                BEGIN
+                    SET {into} = {into} + @{name}_key;
+                    SET @{name}_n += 1;
+                END
             END
             CLOSE {name};
             DEALLOCATE {name};
 
             """;
     }
+
+    /// <summary>
+    /// The keys of the key list <paramref name="list"/> that <see cref="LockEach"/> appends to, as rows whose columns
+    /// are named and typed as <paramref name="key"/>'s.
+    /// </summary>
+    public static string KeyRows(string list, IReadOnlyList<(string Column, string Type)> key) =>
+        $"OPENJSON(N'[' + STUFF({list}, 1, 1, N'') + N']') WITH ({string.Join(", ", key.Select(k => $"[{Bare(k.Column)}] {k.Type}{(k.Type.StartsWith("nvarchar", StringComparison.Ordinal) ? " COLLATE " + Binary : "")} '$.{Bare(k.Column)}'"))})";
+
+    /// <summary>A column name without its brackets.</summary>
+    private static string Bare(string column) => column.Trim('[', ']');
 
     /// <summary>The key of tables keyed by the single <c>uniqueidentifier</c> column <c>id</c>, for <see cref="LockEach"/>.</summary>
     public static readonly (string Column, string Type)[] IdKey = [("id", "uniqueidentifier")];

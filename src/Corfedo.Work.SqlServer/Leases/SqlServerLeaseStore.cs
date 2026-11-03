@@ -82,7 +82,7 @@ internal sealed partial class SqlServerLeaseStore(string connectionString, strin
         return parameters;
     }
 
-    /// <summary>The <c>@keyset</c> parameter of distinct keys, read by <see cref="LeaseSql.LoadKeys"/>.</summary>
+    /// <summary>The <c>@keyset</c> parameter of distinct keys, read by <see cref="LeaseSql.KeyedRows"/>.</summary>
     internal static SqlParameter KeySet<TKey>(LeaseSource<TKey> source, IEnumerable<TKey> keys)
         where TKey : notnull
     {
@@ -106,11 +106,11 @@ internal sealed partial class SqlServerLeaseStore(string connectionString, strin
         return command;
     }
 
-    /// <summary>A command for many keys, as <c>@keyset</c>, loaded into <c>@keys</c> before <paramref name="text"/>.</summary>
+    /// <summary>A command for many keys, as the JSON array <c>@keyset</c>.</summary>
     internal static SqlCommand KeysCommand<TKey>(SqlConnection connection, SqlTransaction? transaction, LeaseSql sql, LeaseSource<TKey> source, IEnumerable<TKey> keys, string text, params SqlParameter[] parameters)
         where TKey : notnull
     {
-        var command = Tsql.Command(connection, transaction, sql.LoadKeys + text, parameters);
+        var command = Tsql.Command(connection, transaction, text, parameters);
         command.Parameters.Add(KeySet(source, keys));
         return command;
     }

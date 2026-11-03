@@ -31,7 +31,7 @@ internal sealed class ParameterKeyWriter(SqlParameterCollection parameters, IRea
     }
 }
 
-/// <summary>Writes many keys as one JSON array of arrays, the <c>@keyset</c> parameter that <see cref="LeaseSql.LoadKeys"/> reads.</summary>
+/// <summary>Writes many keys as one JSON array of arrays, the <c>@keyset</c> parameter that <see cref="LeaseSql.KeyedRows"/> reads.</summary>
 internal sealed class JsonKeyWriter : IKeyWriter, IDisposable
 {
     private readonly ArrayBufferWriter<byte> buffer = new();

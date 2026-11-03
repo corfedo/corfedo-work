@@ -37,22 +37,22 @@ internal sealed partial class SqlServerJobStore
         }
         await using var connection = await Tsql.OpenAsync(connectionString, cancellationToken);
         await using var command = Tsql.Command(connection, null, Tsql.OwnTransaction($"""
-            DECLARE @d TABLE (definition nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, revision bigint NOT NULL, runs bit NOT NULL, declares bit NOT NULL, accepted nvarchar(max) NOT NULL);
-            INSERT INTO @d (definition, revision, runs, declares, accepted)
-            SELECT definition, revision, runs, declares, accepted FROM OPENJSON(@definitions)
-            WITH (definition nvarchar(200) '$.d', revision bigint '$.r', runs bit '$.u', declares bit '$.c', accepted nvarchar(max) '$.a' AS JSON);
-            DECLARE @new TABLE (definition nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY);
+            DECLARE @new nvarchar(max) = (SELECT d.definition FROM {DefinitionRows} AS d
+                WHERE NOT EXISTS (SELECT 1 FROM {ProcessDefinitions} AS e WHERE e.owner = @owner AND e.definition = d.definition) FOR JSON PATH);
             INSERT INTO {ProcessDefinitions} (owner, definition, revision, runs, declares_recurrence)
-            OUTPUT inserted.definition INTO @new
-            SELECT @owner, d.definition, d.revision, d.runs, d.declares FROM @d AS d
-            WHERE NOT EXISTS (SELECT 1 FROM {ProcessDefinitions} AS e WHERE e.owner = @owner AND e.definition = d.definition);
+            SELECT @owner, d.definition, d.revision, d.runs, d.declares FROM {DefinitionRows} AS d
+            WHERE d.definition IN (SELECT n.definition FROM OPENJSON(@new) WITH (definition nvarchar(200) COLLATE {Tsql.Binary} '$.definition') AS n);
             INSERT INTO {ProcessDefinitionArgs} (owner, definition, args_version)
-            SELECT DISTINCT @owner, d.definition, CAST(a.value AS int) FROM @d AS d JOIN @new AS n ON n.definition = d.definition CROSS APPLY OPENJSON(d.accepted) AS a;
+            SELECT DISTINCT @owner, d.definition, CAST(a.value AS int) FROM {DefinitionRows} AS d CROSS APPLY OPENJSON(d.accepted) AS a
+            WHERE d.definition IN (SELECT n.definition FROM OPENJSON(@new) WITH (definition nvarchar(200) COLLATE {Tsql.Binary} '$.definition') AS n);
             """),
             Tsql.Guid("@owner", owner.Value),
             Tsql.Json("@definitions", DefinitionsJson(definitions)));
         await command.NonQueryAsync(cancellationToken);
     }
+
+    /// <summary>The definitions of <see cref="DefinitionsJson"/> in <c>@definitions</c>, as rows.</summary>
+    private const string DefinitionRows = $"OPENJSON(@definitions) WITH (definition nvarchar(200) COLLATE {Tsql.Binary} '$.d', revision bigint '$.r', runs bit '$.u', declares bit '$.c', accepted nvarchar(max) '$.a' AS JSON)";
 
     private static string DefinitionsJson(IReadOnlyList<ProcessDefinition> definitions)
     {
@@ -111,39 +111,31 @@ internal sealed partial class SqlServerJobStore
         var recurrenceDue = $"((c.next_at <= @now AND (c.interval_kind IS NULL OR c.interval_kind <> {(short)Interval.AfterCompletion} OR NOT {outstanding})) "
             + $"OR (c.waiting_at IS NOT NULL AND NOT {outstanding}))";
         var pausedSubjects = $"SELECT s.subject_kind, s.subject_id FROM {pauses} AS s WHERE s.[definition] = d.[key]";
+        const string DueVersions = $"OPENJSON(@due) WITH ([definition] nvarchar(200) COLLATE {Tsql.Binary} '$.definition', version int '$.version')";
         await using var connection = await Tsql.OpenAsync(connectionString, cancellationToken);
         await using var command = Tsql.Command(connection, null, $"""
-            DECLARE @now datetime2(7) = SYSUTCDATETIME();
-            DECLARE @versions TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, version int NOT NULL, PRIMARY KEY ([definition], version));
-            DECLARE @level TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, version int NOT NULL);
-            DECLARE @next TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, version int NOT NULL);
-            INSERT INTO @level ([definition], version)
-            SELECT d.[key], m.version FROM {definitions} AS d
-            CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {unheld} ORDER BY j.args_version) AS m
-            WHERE d.paused = 0 AND m.version IS NOT NULL;
-            WHILE EXISTS (SELECT 1 FROM @level)
+            DECLARE @now datetime2(7) = SYSUTCDATETIME(), @versions nvarchar(max) = N'', @level nvarchar(max);
+            SET @level = (SELECT d.[key] AS [definition], m.version FROM {definitions} AS d
+                CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {unheld} ORDER BY j.args_version) AS m
+                WHERE d.paused = 0 AND m.version IS NOT NULL FOR JSON PATH);
+            WHILE @level IS NOT NULL
             BEGIN
-                INSERT INTO @versions ([definition], version) SELECT [definition], version FROM @level;
-                DELETE FROM @next;
-                INSERT INTO @next ([definition], version)
-                SELECT l.[definition], m.version FROM @level AS l
-                CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {unheld} ORDER BY j.args_version) AS m
-                WHERE m.version IS NOT NULL;
-                DELETE FROM @level;
-                INSERT INTO @level ([definition], version) SELECT [definition], version FROM @next;
+                SET @versions = @versions + N',' + SUBSTRING(@level, 2, LEN(@level) - 2);
+                SET @level = (SELECT l.[definition], m.version FROM OPENJSON(@level) WITH ([definition] nvarchar(200) COLLATE {Tsql.Binary} '$.definition', version int '$.version') AS l
+                    CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {unheld} ORDER BY j.args_version) AS m
+                    WHERE m.version IS NOT NULL FOR JSON PATH);
             END
-            DECLARE @due TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, version int NOT NULL, PRIMARY KEY ([definition], version));
-            INSERT INTO @due ([definition], version)
-            SELECT c.[definition], c.version FROM (
-                SELECT [definition], version FROM @versions
+            DECLARE @due nvarchar(max) = (SELECT c.[definition], c.version FROM (
+                SELECT [definition], version FROM OPENJSON(N'[' + STUFF(@versions, 1, 1, N'') + N']') WITH ([definition] nvarchar(200) COLLATE {Tsql.Binary} '$.definition', version int '$.version')
                 UNION
                 SELECT j.[definition], j.args_version FROM {definitions} AS d JOIN {Jobs} AS j WITH (INDEX(jobs_expiry))
                 ON j.[definition] = d.[key] AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at < @now WHERE d.paused = 0) AS c
             WHERE EXISTS (SELECT 1 FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND {unheld} AND j.due_at <= @now AND {Unpaused("j")})
             OR EXISTS (SELECT 1 FROM {Jobs} AS j WITH (INDEX(jobs_expiry)) WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND j.lease_expires_at IS NOT NULL
-                AND j.lease_expires_at < @now AND {Unpaused("j")});
+                AND j.lease_expires_at < @now AND {Unpaused("j")})
+            FOR JSON PATH);
             SELECT d.[key], CAST(NULL AS int) FROM {definitions} AS d WHERE d.paused = 0 AND NOT {LiveRunner("d.[key]")} AND (
-                EXISTS (SELECT 1 FROM @due AS due WHERE due.[definition] = d.[key])
+                EXISTS (SELECT 1 FROM {DueVersions} AS due WHERE due.[definition] = d.[key])
                 OR EXISTS (SELECT 1 FROM {Jobs} AS j WITH (INDEX(jobs_calendar_due)) WHERE j.[definition] = d.[key] AND j.calendar_at IS NOT NULL AND j.calendar_at <= @now AND j.state = 0
                     AND j.calendar_unavailable = 0 AND j.lease_expires_at IS NULL)
                 OR EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.[definition] = d.[key] AND c.paused = 0 AND {Unpaused("c")} AND {recurrenceDue})
@@ -154,7 +146,7 @@ internal sealed partial class SqlServerJobStore
                     JOIN {recurrences} AS c ON c.[definition] = d.[key] AND c.subject_kind = x.subject_kind AND c.subject_id = x.subject_id AND c.paused = 1
                     WHERE {recurrenceDue}))
             UNION ALL
-            SELECT due.[definition], due.version FROM @due AS due JOIN {definitions} AS d ON d.[key] = due.[definition]
+            SELECT due.[definition], due.version FROM {DueVersions} AS due JOIN {definitions} AS d ON d.[key] = due.[definition]
             WHERE due.version >= d.minimum_args_version AND {LiveRunner("due.[definition]")} AND NOT {LiveRunner("due.[definition]", "due.version")}
             ORDER BY 1, 2;
             """);

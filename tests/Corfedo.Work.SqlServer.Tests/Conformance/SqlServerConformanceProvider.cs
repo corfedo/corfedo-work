@@ -271,6 +271,11 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
     public Task<IReadOnlyList<JobState>> ReadJobsAsync(string definition, CancellationToken cancellationToken) =>
         ReadJobsAsync("definition = @value", new SqlParameter("@value", SqlDbType.NVarChar, 200) { Value = definition }, cancellationToken);
 
+    /// <summary>
+    /// Reads jobs in creation order. SQL Server's clock advances in steps of about 4 ms on Linux, so jobs created within
+    /// one step share their creation time; their version-7 ids, compared as text as PostgreSQL compares them, then give
+    /// the order in which they were created.
+    /// </summary>
     private async Task<IReadOnlyList<JobState>> ReadJobsAsync(string filter, SqlParameter parameter, CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken);
@@ -283,7 +288,7 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
                    CAST(CASE WHEN cancel_requested_at IS NOT NULL THEN 1 ELSE 0 END AS bit), execution_id, partition_key,
                    occurrence, unconsumed, skip_pending, paused, ended_at, CAST(CASE WHEN merge_key IS NOT NULL THEN 1 ELSE 0 END AS bit),
                    calendar_unavailable, waited
-            FROM work.jobs WHERE {filter} ORDER BY created_at, id
+            FROM work.jobs WHERE {filter} ORDER BY created_at, CONVERT(char(36), id)
             """, connection);
         command.Parameters.Add(parameter);
         var jobs = new List<JobState>();

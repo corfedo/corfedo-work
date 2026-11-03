@@ -35,18 +35,15 @@ internal sealed partial class SqlServerMonitoringStore
     private async Task<IncidentChanges> RecordFailureAsync(SqlServerTransaction work, string definition, JobId job, Subject? subject, DateTimeOffset endedAt, int limit, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(work, $"""
-            DECLARE @failures TABLE (failures int NOT NULL);
-            DECLARE @upsert_inserted bit;
+            DECLARE @failures int, @upsert_inserted bit;
             {Upsert(
-                $"UPDATE s SET failures = s.failures + 1 OUTPUT inserted.failures INTO @failures FROM {states} AS s WHERE s.[definition] = @definition AND {KeyMatch("s", subject)};",
-                $"INSERT INTO {states} ([definition], subject_kind, subject_id, failures) OUTPUT inserted.failures INTO @failures VALUES (@definition, @kind, @subject, 1);")}
-            DECLARE @opened {IncidentTable};
-            IF EXISTS (SELECT 1 FROM @failures WHERE failures > @limit)
+                $"UPDATE s SET @failures = failures = s.failures + 1 FROM {states} AS s WHERE s.[definition] = @definition AND {KeyMatch("s", subject)};",
+                $"INSERT INTO {states} ([definition], subject_kind, subject_id, failures) VALUES (@definition, @kind, @subject, 1);\nSET @failures = 1;")}
+            IF @failures > @limit
             BEGIN
                 {OpenIncident("id, kind, [definition], subject_kind, subject_id, job, opened_at, due_at",
-                    $"VALUES (NEWID(), {(int)WorkIncidentKind.FailsAtMostInARow}, @definition, @kind, @subject, @job, @ended, SYSUTCDATETIME())")}
+                    $"VALUES (NEWID(), {(int)WorkIncidentKind.FailsAtMostInARow}, @definition, @kind, @subject, @job, @ended, SYSUTCDATETIME())", into: null)}
             END
-            SELECT {IncidentColumns} FROM @opened AS i;
             """,
             [
                 Tsql.Text("@definition", definition, 200),
@@ -85,8 +82,7 @@ internal sealed partial class SqlServerMonitoringStore
         List<WorkIncident> resolved;
         await using (var command = Tsql.Command(work, $"""
             {whole}UPDATE s SET {Update} FROM {states} AS s WHERE s.[definition] = @definition AND {KeyMatch("s", subject)} AND {Applies};
-            DECLARE @resolved {IncidentTable};
-            {ResolveIncidents(resolve, "GREATEST(@ended, i.opened_at)")}            SELECT {IncidentColumns} FROM @resolved AS i;
+            {ResolveIncidents(resolve, "GREATEST(@ended, i.opened_at)", into: null)}
             """,
             [Tsql.Text("@definition", definition, 200), Tsql.Time("@ended", endedAt), .. SubjectParameters(subject)]))
         await using (var reader = await command.ReaderAsync(cancellationToken))

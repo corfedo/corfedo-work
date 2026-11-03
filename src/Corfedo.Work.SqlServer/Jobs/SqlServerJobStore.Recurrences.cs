@@ -136,16 +136,14 @@ internal sealed partial class SqlServerJobStore
         var schedule = recurrence.Schedule;
         var next = calculator.First(schedule, now) ?? throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence));
         await using (var update = Tsql.Command(work, $"""
-            DECLARE @updated TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
             UPDATE c SET args = @args, args_version = @args_version, schedule_kind = @schedule_kind, period = @period, interval_kind = @interval_kind,
                 anchor = @anchor, expression = @expression, time_zone = @time_zone, missed = @missed, overlap = @overlap, awaited_job = NULL, next_at = @next,
                 waiting_at = NULL, declared_revision = COALESCE(@revision, c.declared_revision), declared_digest = COALESCE(@digest, c.declared_digest),
                 calendar = @calendar, calendar_closed = @calendar_closed, paused = {PausedCopy("c.[definition]", "c.subject_kind", "c.subject_id")},
                 updated_at = SYSUTCDATETIME()
-            OUTPUT inserted.[definition], inserted.subject_kind, inserted.subject_id INTO @updated
+            OUTPUT inserted.[definition], inserted.subject_kind, inserted.subject_id INTO {changes} ([definition], subject_kind, subject_id)
             FROM {recurrences} AS c WHERE c.id = @rid;
-            INSERT INTO {changes} ([definition], subject_kind, subject_id) SELECT [definition], subject_kind, subject_id FROM @updated;
-            {NotifyMonitor("EXISTS (SELECT 1 FROM @updated)")}
+            {NotifyMonitor("@@ROWCOUNT > 0")}
             """,
             [
                 Tsql.Guid("@rid", id),
@@ -212,14 +210,12 @@ internal sealed partial class SqlServerJobStore
             cancellationToken);
         await CancelSelectedAsync(work, locked, key => key == sql.Job!.Definition ? (source, ended) : definitions(key), cancellationToken);
         await using var command = Tsql.Command(work, $"""
-            DECLARE @unconsumed TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @unconsumed (id) SELECT r.id FROM {sql.Table} AS r WITH (INDEX(jobs_unconsumed)) WHERE r.[definition] = @definition AND r.unconsumed = 1 AND r.recurrence_id = @rid;
-            UPDATE r SET unconsumed = 0 FROM @unconsumed AS u INNER LOOP JOIN {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = u.id
-            WHERE r.unconsumed = 1;
-            DECLARE @removed TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, subject_kind nvarchar(100) COLLATE {Tsql.Binary}, subject_id nvarchar(400) COLLATE {Tsql.Binary});
-            DELETE FROM {recurrences} OUTPUT deleted.[definition], deleted.subject_kind, deleted.subject_id INTO @removed WHERE id = @rid;
-            INSERT INTO {changes} ([definition], subject_kind, subject_id) SELECT [definition], subject_kind, subject_id FROM @removed;
-            {NotifyMonitor("EXISTS (SELECT 1 FROM @removed)")}
+            DECLARE @unconsumed nvarchar(max) = (SELECT r.id FROM {sql.Table} AS r WITH (INDEX(jobs_unconsumed))
+                WHERE r.[definition] = @definition AND r.unconsumed = 1 AND r.recurrence_id = @rid ORDER BY r.id FOR JSON PATH);
+            UPDATE r SET unconsumed = 0 FROM OPENJSON(@unconsumed) WITH (id uniqueidentifier '$.id') AS u
+            INNER LOOP JOIN {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = u.id WHERE r.unconsumed = 1;
+            DELETE FROM {recurrences} OUTPUT deleted.[definition], deleted.subject_kind, deleted.subject_id INTO {changes} ([definition], subject_kind, subject_id) WHERE id = @rid;
+            {NotifyMonitor("@@ROWCOUNT > 0")}
             """,
             Tsql.Guid("@rid", recurrence.Id),
             Tsql.Text("@definition", sql.Job!.Definition, 200),
@@ -336,12 +332,11 @@ internal sealed partial class SqlServerJobStore
     private static async Task<List<LockedOccurrence>> LockOccurrencesAsync(SqlServerTransaction work, LeaseSql sql, Guid recurrence, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(work, $"""
-            DECLARE @occurrences TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @occurrences (id) SELECT r.id FROM {sql.Table} AS r WITH (INDEX(jobs_recurrence))
-            WHERE r.recurrence_id IS NOT NULL AND r.recurrence_id = @rid AND r.state = 0 AND r.skip_pending = 0 AND {sql.Scope};
+            DECLARE @occurrences nvarchar(max) = (SELECT r.id FROM {sql.Table} AS r WITH (INDEX(jobs_recurrence))
+                WHERE r.recurrence_id IS NOT NULL AND r.recurrence_id = @rid AND r.state = 0 AND r.skip_pending = 0 AND {sql.Scope} ORDER BY r.id FOR JSON PATH);
             DECLARE @locked int;
-            SELECT @locked = COUNT(*) FROM @occurrences AS o INNER LOOP JOIN {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = o.id;
-            SELECT r.id, {Tsql.Bit(Running)} FROM @occurrences AS o INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = o.id
+            SELECT @locked = COUNT(*) FROM OPENJSON(@occurrences) WITH (id uniqueidentifier '$.id') AS o INNER LOOP JOIN {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = o.id;
+            SELECT r.id, {Tsql.Bit(Running)} FROM OPENJSON(@occurrences) WITH (id uniqueidentifier '$.id') AS o INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = o.id
             WHERE r.state = 0 AND r.skip_pending = 0 ORDER BY r.id;
             """, Tsql.Guid("@rid", recurrence));
         await using var reader = await command.ReaderAsync(cancellationToken);

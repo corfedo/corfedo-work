@@ -16,16 +16,6 @@ internal sealed partial class SqlServerJobStore
     private const string Running = "(r.lease_expires_at > SYSUTCDATETIME() OR r.owned_chain IS NOT NULL)";
 
     /// <summary>
-    /// The order cancellations lock outstanding jobs in, as the key of a table variable: chain steps waiting for their
-    /// parent after the others, and occurrences that own a recurring chain last, each in id order. A terminal
-    /// transition holds its own row before it decides its waiting children, so a cancellation never holds a waiting
-    /// child while it waits for the parent that decides it; a chain that settles records its outcome on its occurrence
-    /// after its steps and the chain row, so a cancellation never holds the occurrence while it waits for one of its
-    /// chain's steps.
-    /// </summary>
-    private const string CancelLockTable = "TABLE (owner bit NOT NULL, waiting bit NOT NULL, id uniqueidentifier NOT NULL, PRIMARY KEY (owner, waiting, id))";
-
-    /// <summary>
     /// Clears the occurrence waiting in the identity's recurrence, then locks the definition's outstanding jobs of the
     /// subject or merge key, standalone jobs and occurrences of the identity's recurrence, in the cancellation order,
     /// waiting for other transactions, and cancels them; the recurrence continues. Occurrences to be skipped are left to
@@ -92,9 +82,8 @@ internal sealed partial class SqlServerJobStore
     /// <c>c</c>): found without locks, locked through their key in id order, and cleared when they still wait.
     /// </summary>
     private string ClearWaiting(string where) => $"""
-        DECLARE @waiting TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-        INSERT INTO @waiting (id) SELECT c.id FROM {recurrences} AS c WHERE {where} AND c.waiting_at IS NOT NULL;
-        UPDATE c SET waiting_at = NULL FROM @waiting AS w INNER LOOP JOIN {recurrences} AS c WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON c.id = w.id
+        DECLARE @waiting nvarchar(max) = (SELECT c.id FROM {recurrences} AS c WHERE {where} AND c.waiting_at IS NOT NULL ORDER BY c.id FOR JSON PATH);
+        UPDATE c SET waiting_at = NULL FROM OPENJSON(@waiting) WITH (id uniqueidentifier '$.id') AS w INNER LOOP JOIN {recurrences} AS c WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON c.id = w.id
         WHERE c.waiting_at IS NOT NULL;
         """;
 
@@ -108,25 +97,34 @@ internal sealed partial class SqlServerJobStore
     /// </summary>
     private async Task<LockedForCancel> LockForCancelAsync(SqlServerTransaction work, string selection, SqlParameter[] parameters, CancellationToken cancellationToken)
     {
+        // The cancellation order: chain steps waiting for their parent after the others, and occurrences that own a
+        // recurring chain last, each in id order. A terminal transition holds its own row before it decides its waiting
+        // children, so a cancellation never holds a waiting child while it waits for the parent that decides it; a chain
+        // that settles records its outcome on its occurrence after its steps and the chain row, so a cancellation never
+        // holds the occurrence while it waits for one of its chain's steps. Each job carries whether the selection chose
+        // it and whether it is a step of a chain a selected occurrence owns.
         await using var command = Tsql.Command(work, $"""
-            DECLARE @s TABLE (id uniqueidentifier NOT NULL PRIMARY KEY, chain_id uniqueidentifier, owned_chain uniqueidentifier);
-            INSERT INTO @s (id, chain_id, owned_chain) SELECT r.id, r.chain_id, r.owned_chain FROM {Jobs} AS r WHERE {selection};
-            DECLARE @c {CancelLockTable};
-            INSERT INTO @c (owner, waiting, id)
-            SELECT {Tsql.Bit("r.owned_chain IS NOT NULL")}, r.chain_waiting, r.id FROM (
-                SELECT s.id FROM @s AS s
-                UNION SELECT w.id FROM @s AS s INNER LOOP JOIN {Jobs} AS w WITH (INDEX(jobs_chain), FORCESEEK) ON w.chain_id = s.chain_id
-                    WHERE s.chain_id IS NOT NULL AND w.chain_id IS NOT NULL AND w.chain_waiting = 1 AND w.state = 0
-                UNION SELECT w.id FROM @s AS s INNER LOOP JOIN {Jobs} AS w WITH (INDEX(jobs_chain), FORCESEEK) ON w.chain_id = s.owned_chain
-                    WHERE s.owned_chain IS NOT NULL AND w.chain_id IS NOT NULL AND w.state = 0) AS k
-            INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = k.id
-            WHERE r.state = 0 AND r.skip_pending = 0;
+            DECLARE @s nvarchar(max) = (SELECT r.id, r.chain_id, r.owned_chain FROM {Jobs} AS r WHERE {selection} FOR JSON PATH);
+            DECLARE @c nvarchar(max) = (
+                SELECT {Tsql.Bit("r.owned_chain IS NOT NULL")} AS [owner], r.chain_waiting AS waiting, r.id, MAX(k.selected) AS selected, MAX(k.owned_step) AS owned_step
+                FROM (
+                    SELECT s.id, 1 AS selected, 0 AS owned_step FROM OPENJSON(@s) WITH (id uniqueidentifier '$.id') AS s
+                    UNION ALL SELECT w.id, 0, 0 FROM OPENJSON(@s) WITH (chain_id uniqueidentifier '$.chain_id') AS s
+                        INNER LOOP JOIN {Jobs} AS w WITH (INDEX(jobs_chain), FORCESEEK) ON w.chain_id = s.chain_id
+                        WHERE s.chain_id IS NOT NULL AND w.chain_id IS NOT NULL AND w.chain_waiting = 1 AND w.state = 0
+                    UNION ALL SELECT w.id, 0, 1 FROM OPENJSON(@s) WITH (owned_chain uniqueidentifier '$.owned_chain') AS s
+                        INNER LOOP JOIN {Jobs} AS w WITH (INDEX(jobs_chain), FORCESEEK) ON w.chain_id = s.owned_chain
+                        WHERE s.owned_chain IS NOT NULL AND w.chain_id IS NOT NULL AND w.state = 0) AS k
+                INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = k.id
+                WHERE r.state = 0 AND r.skip_pending = 0
+                GROUP BY r.id, r.owned_chain, r.chain_waiting
+                ORDER BY [owner], waiting, r.id FOR JSON PATH);
             DECLARE @locked int;
-            SELECT @locked = COUNT(*) FROM @c AS c INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = c.id;
-            SELECT r.id, r.[definition], {Tsql.Bit("EXISTS (SELECT 1 FROM @s AS s WHERE s.id = r.id)")}, {Tsql.Bit("r.owned_chain IS NOT NULL")},
-                {Tsql.Bit("r.chain_id IN (SELECT s.owned_chain FROM @s AS s WHERE s.owned_chain IS NOT NULL)")}
-            FROM @c AS c INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = c.id
-            WHERE r.state = 0 AND r.skip_pending = 0 ORDER BY c.owner, c.waiting, c.id;
+            SELECT @locked = COUNT(*) FROM OPENJSON(@c) WITH (id uniqueidentifier '$.id') AS c INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = c.id;
+            SELECT r.id, r.[definition], c.selected, {Tsql.Bit("r.owned_chain IS NOT NULL")}, c.owned_step
+            FROM OPENJSON(@c) WITH ([owner] bit '$.owner', waiting bit '$.waiting', id uniqueidentifier '$.id', selected bit '$.selected', owned_step bit '$.owned_step') AS c
+            INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = c.id
+            WHERE r.state = 0 AND r.skip_pending = 0 ORDER BY c.[owner], c.waiting, c.id;
             """, parameters);
         var locked = new LockedForCancel([], [], []);
         await using var reader = await command.ReaderAsync(cancellationToken);
@@ -193,16 +191,12 @@ internal sealed partial class SqlServerJobStore
         var held = new HashSet<Guid>();
         var owners = new List<Guid>();
         await using (var command = Tsql.Command(work, $"""
-            DECLARE @ids TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @ids (id) SELECT DISTINCT value FROM OPENJSON(@jobs) WITH (value uniqueidentifier '$');
-            DECLARE @held TABLE (id uniqueidentifier NOT NULL, owner uniqueidentifier);
             UPDATE r SET cancel_requested_at = COALESCE(r.cancel_requested_at, SYSUTCDATETIME()),
                 pending_args = NULL, pending_args_version = NULL, pending_due = NULL, pending_first_requested_at = NULL
-            OUTPUT inserted.id, inserted.lease_owner INTO @held
-            FROM @ids AS i INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = i.id
+            OUTPUT inserted.id, inserted.lease_owner
+            FROM OPENJSON(@jobs) WITH (id uniqueidentifier '$') AS i INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = i.id
             WHERE {sql.Scope} AND r.lease_expires_at > SYSUTCDATETIME();
-            SELECT id, owner FROM @held;
-            """, Tsql.Guids("@jobs", jobs)))
+            """, Tsql.Guids("@jobs", jobs.Distinct())))
         await using (var reader = await command.ReaderAsync(cancellationToken))
         {
             while (await reader.NextRowAsync(cancellationToken))
@@ -289,8 +283,7 @@ internal sealed partial class SqlServerJobStore
     /// transactions hold, and returns its id.
     /// </summary>
     private static string PickOne(LeaseSql sql, string index, string scan, string locked, string order) =>
-        sql.ScanVariables
-        + "DECLARE @picked TABLE (k0 uniqueidentifier NOT NULL PRIMARY KEY);\n"
-        + sql.LockScan("pick", "1", index, scan, locked, order, "@picked", "k0", "r.id")
-        + "SELECT k0 FROM @picked;";
+        sql.ScanVariables("@picked")
+        + sql.LockScan("pick", "1", index, scan, locked, order, "@picked")
+        + $"SELECT k0 FROM {sql.KeyRows(LeaseSql.ListJson("@picked"))};";
 }

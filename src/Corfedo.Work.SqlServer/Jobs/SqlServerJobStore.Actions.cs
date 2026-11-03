@@ -114,9 +114,7 @@ internal sealed partial class SqlServerJobStore
     private static async Task<bool> MakeDueNowAsync(SqlServerTransaction work, LeaseSql sql, Guid job, bool ignoreCalendar, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(work, $"""
-            DECLARE @planned TABLE (planned bit NOT NULL);
-            UPDATE r SET {DueNow("@ignore")} OUTPUT {Tsql.Bit("inserted.calendar_at IS NOT NULL")} INTO @planned FROM {sql.Table} AS r WHERE r.id = @job;
-            SELECT planned FROM @planned;
+            UPDATE r SET {DueNow("@ignore")} OUTPUT {Tsql.Bit("inserted.calendar_at IS NOT NULL")} FROM {sql.Table} AS r WHERE r.id = @job;
             """,
             Tsql.Guid("@job", job),
             Tsql.Bool("@ignore", ignoreCalendar));
@@ -175,13 +173,11 @@ internal sealed partial class SqlServerJobStore
             }
             bool planned;
             await using (var rerun = Tsql.Command(work, $"""
-                DECLARE @planned TABLE (planned bit NOT NULL);
                 UPDATE r SET state = 0, {DueNow("@ignore", "r.ended_calendar")}, calendar = r.ended_calendar, ended_calendar = NULL, first_requested_at = SYSUTCDATETIME(),
                     execution_id = NEWID(), attempts = 0, started = 0, takeovers = 0, failures = 0, cancel_requested_at = NULL, progress_percent = NULL, progress_message = NULL,
                     paused = {Tsql.Bit(sql.SubjectPaused)}
-                OUTPUT {Tsql.Bit("inserted.calendar_at IS NOT NULL")} INTO @planned
+                OUTPUT {Tsql.Bit("inserted.calendar_at IS NOT NULL")}
                 FROM {sql.Table} AS r WHERE r.id = @job AND {sql.Scope};
-                SELECT planned FROM @planned;
                 """,
                 Tsql.Guid("@job", job.Value),
                 Tsql.Bool("@ignore", ignoreCalendar)))

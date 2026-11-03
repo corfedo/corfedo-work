@@ -171,27 +171,26 @@ internal sealed partial class SqlServerMonitoringStore(SqlServerLeaseStore lease
         $"{alias}.subject_kind IS NOT DISTINCT FROM {key}.subject_kind AND {alias}.subject_id IS NOT DISTINCT FROM {key}.subject_id";
 
     /// <summary>
-    /// Statements that resolve the open incidents (alias <c>i</c>) <paramref name="selection"/> selects, into the table
-    /// variable <c>@resolved</c> of <see cref="IncidentTable"/>: they are found without locks, locked in primary-key
-    /// order, waiting, and resolved at <paramref name="resolvedAt"/> when they still match after the locks are held.
+    /// Statements that resolve the open incidents (alias <c>i</c>) <paramref name="selection"/> selects, returning them
+    /// as <see cref="IncidentColumns"/>, or into <paramref name="into"/>, a table variable of <see cref="IncidentTable"/>:
+    /// they are found without locks, locked in primary-key order, waiting, and resolved at <paramref name="resolvedAt"/>
+    /// when they still match after the locks are held.
     /// </summary>
-    private string ResolveIncidents(string selection, string resolvedAt = "SYSUTCDATETIME()") => $"""
-        DECLARE @open TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-        INSERT INTO @open (id) SELECT i.id FROM {incidents} AS i WHERE i.resolved_at IS NULL AND {selection};
-        DECLARE @open_locked int;
-        SELECT @open_locked = COUNT(*) FROM @open AS o INNER LOOP JOIN {incidents} AS i WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON i.id = o.id;
-        UPDATE i SET resolved_at = {resolvedAt}, due_at = COALESCE(i.due_at, SYSUTCDATETIME()) OUTPUT {IncidentOutput} INTO @resolved
-        FROM @open AS o INNER LOOP JOIN {incidents} AS i WITH (FORCESEEK) ON i.id = o.id WHERE i.resolved_at IS NULL AND {selection};
+    private string ResolveIncidents(string selection, string resolvedAt = "SYSUTCDATETIME()", string? into = "@resolved") => $"""
+        DECLARE @open nvarchar(max) = (SELECT i.id FROM {incidents} AS i WHERE i.resolved_at IS NULL AND {selection} ORDER BY i.id FOR JSON PATH), @open_locked int;
+        SELECT @open_locked = COUNT(*) FROM OPENJSON(@open) WITH (id uniqueidentifier '$.id') AS o INNER LOOP JOIN {incidents} AS i WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON i.id = o.id;
+        UPDATE i SET resolved_at = {resolvedAt}, due_at = COALESCE(i.due_at, SYSUTCDATETIME()) OUTPUT {IncidentOutput}{(into is null ? "" : " INTO " + into)}
+        FROM OPENJSON(@open) WITH (id uniqueidentifier '$.id') AS o INNER LOOP JOIN {incidents} AS i WITH (FORCESEEK) ON i.id = o.id WHERE i.resolved_at IS NULL AND {selection};
 
         """;
 
     /// <summary>
-    /// A statement that opens an incident unless its key has one open of its kind, into the table variable
-    /// <c>@opened</c> of <see cref="IncidentTable"/>, with the columns <paramref name="columns"/> and the
-    /// <c>VALUES</c> or <c>SELECT</c> <paramref name="values"/>.
+    /// A statement that opens an incident unless its key has one open of its kind, returning it as
+    /// <see cref="IncidentColumns"/>, or into <paramref name="into"/>, a table variable of <see cref="IncidentTable"/>,
+    /// with the columns <paramref name="columns"/> and the <c>VALUES</c> or <c>SELECT</c> <paramref name="values"/>.
     /// </summary>
-    private string OpenIncident(string columns, string values) =>
-        Tsql.IgnoreUnique($"INSERT INTO {incidents} ({columns}) OUTPUT {IncidentOutput} INTO @opened {values};");
+    private string OpenIncident(string columns, string values, string? into = "@opened") =>
+        Tsql.IgnoreUnique($"INSERT INTO {incidents} ({columns}) OUTPUT {IncidentOutput}{(into is null ? "" : " INTO " + into)} {values};");
 
     /// <summary>
     /// Statements that run <paramref name="update"/> of one state row and, when it changed none, <paramref name="insert"/>;

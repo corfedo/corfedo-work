@@ -61,13 +61,11 @@ internal sealed partial class SqlServerLeaseStore
         // a row this statement locks; it only becomes true with time, or changes by an update, which is rechecked.
         string Expired(string a) =>
             $"{sql.ScopeOf(a)} AND {LeaseSql.On(a, sql.Expires)} IS NOT NULL AND {LeaseSql.On(a, sql.Expires)} <= SYSUTCDATETIME() AND {sql.UnsettledOf(a)}";
-        var into = $"DECLARE @expired TABLE ({string.Join(", ", sql.Shape.Keys.Select((k, i) => $"k{i} {k.Declaration} NOT NULL"))}, owner uniqueidentifier, epoch bigint, partition_key nvarchar(4000));\n";
-        var notFailed = $"NOT EXISTS (SELECT 1 FROM @keys AS u WHERE {string.Join(" AND ", sql.Shape.Keys.Select((k, i) => $"x.{Tsql.Quote(k.Name)} = u.k{i}"))})";
+        var notFailed = $"NOT EXISTS (SELECT 1 FROM {sql.KeyRows("@keyset")} AS u WHERE {string.Join(" AND ", sql.Shape.Keys.Select((k, i) => $"x.{Tsql.Quote(k.Name)} = u.k{i}"))})";
         await using (var select = KeysCommand(connection, transaction, sql, source, failed,
-            into + sql.ScanVariables
-            + sql.LockScan("scan", "1", sql.Shape.SettlementIndex, $"{Expired("x")} AND {notFailed}", $"{Expired("r")} AND NOT {sql.SettlementWaiting}", LeaseSql.On("x", sql.Expires),
-                "@expired", sql.KeyColumns + ", owner, epoch, partition_key", sql.Select(sql.Owner, sql.Epoch, sql.PartitionText))
-            + "SELECT * FROM @expired;"))
+            sql.ScanVariables("@expired")
+            + sql.LockScan("scan", "1", sql.Shape.SettlementIndex, $"{Expired("x")} AND {notFailed}", $"{Expired("r")} AND NOT {sql.SettlementWaiting}", LeaseSql.On("x", sql.Expires), "@expired")
+            + $"SELECT {sql.Select(sql.Owner, sql.Epoch, sql.PartitionText)} FROM {sql.KeyedRows(keys: LeaseSql.ListJson("@expired"))};"))
         {
             await using var reader = await select.ReaderAsync(cancellationToken);
             if (!await reader.NextRowAsync(cancellationToken))

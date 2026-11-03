@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Data.SqlTypes;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -301,17 +302,15 @@ internal sealed partial class SqlServerJobStore : IChainStore
         if (root && outcome == JobOutcome.Skipped)
         {
             await using var skip = Tsql.Command(work, $"""
-                DECLARE @waiting TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-                INSERT INTO @waiting (id) SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_chain)) WHERE j.chain_id IS NOT NULL AND j.chain_id = @chain AND j.state = 0 AND j.chain_waiting = 1;
-                DECLARE @skipped TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL);
-                UPDATE r SET chain_waiting = 0, skip_pending = 1, skip_reason = @reason OUTPUT inserted.[definition] INTO @skipped
-                FROM @waiting AS w INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = w.id
+                DECLARE @waiting nvarchar(max) = (SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_chain))
+                    WHERE j.chain_id IS NOT NULL AND j.chain_id = @chain AND j.state = 0 AND j.chain_waiting = 1 ORDER BY j.id FOR JSON PATH);
+                UPDATE r SET chain_waiting = 0, skip_pending = 1, skip_reason = @reason OUTPUT inserted.[definition]
+                FROM OPENJSON(@waiting) WITH (id uniqueidentifier '$.id') AS w INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = w.id
                 WHERE r.chain_id = @chain AND r.state = 0 AND r.chain_waiting = 1;
-                SELECT DISTINCT [definition] FROM @skipped;
                 """,
                 Tsql.Guid("@chain", chain),
                 Tsql.Text("@reason", JobReasons.RootSkipped));
-            var definitions = new List<string>();
+            var definitions = new HashSet<string>(StringComparer.Ordinal);
             await using (var reader = await skip.ReaderAsync(cancellationToken))
             {
                 while (await reader.NextRowAsync(cancellationToken))
@@ -328,14 +327,12 @@ internal sealed partial class SqlServerJobStore : IChainStore
         {
             await DecideAsync(work, chain, step, Class(outcome), cancellationToken);
             await using var empty = Tsql.Command(work, $"""
-                DECLARE @empty TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-                INSERT INTO @empty (id) SELECT g.id FROM {chainGroups} AS g WHERE g.chain_id = @chain AND g.parent = @step AND g.pending = 0 AND g.settled_at IS NULL;
+                DECLARE @empty nvarchar(max) = (SELECT g.id FROM {chainGroups} AS g WHERE g.chain_id = @chain AND g.parent = @step AND g.pending = 0 AND g.settled_at IS NULL
+                    ORDER BY g.id FOR JSON PATH);
                 DECLARE @locked int;
-                SELECT @locked = COUNT(*) FROM @empty AS e INNER LOOP JOIN {chainGroups} AS g WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON g.id = e.id;
-                DECLARE @settled TABLE (id uniqueidentifier NOT NULL, enclosing_group uniqueidentifier);
-                UPDATE g SET settled_at = SYSUTCDATETIME(), outcome = @outcome OUTPUT inserted.id, inserted.enclosing_group INTO @settled
-                FROM @empty AS e INNER LOOP JOIN {chainGroups} AS g WITH (FORCESEEK) ON g.id = e.id WHERE g.pending = 0 AND g.settled_at IS NULL;
-                SELECT id, enclosing_group FROM @settled ORDER BY id;
+                SELECT @locked = COUNT(*) FROM OPENJSON(@empty) WITH (id uniqueidentifier '$.id') AS e INNER LOOP JOIN {chainGroups} AS g WITH (UPDLOCK, ROWLOCK, FORCESEEK) ON g.id = e.id;
+                UPDATE g SET settled_at = SYSUTCDATETIME(), outcome = @outcome OUTPUT inserted.id, inserted.enclosing_group
+                FROM OPENJSON(@empty) WITH (id uniqueidentifier '$.id') AS e INNER LOOP JOIN {chainGroups} AS g WITH (FORCESEEK) ON g.id = e.id WHERE g.pending = 0 AND g.settled_at IS NULL;
                 """,
                 Tsql.Guid("@chain", chain),
                 Tsql.Guid("@step", step),
@@ -348,7 +345,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
                     settled.Add((reader.GetGuid(0), reader.IsDBNull(1) ? null : reader.GetGuid(1)));
                 }
             }
-            foreach (var (id, enclosing) in settled)
+            foreach (var (id, enclosing) in settled.OrderBy(g => new SqlGuid(g.Id)))
             {
                 await DecideAsync(work, chain, id, ChainOutcomes.Succeeded, cancellationToken);
                 await CountSettledAsync(work, chain, enclosing, Rank(JobOutcome.Completed), cancellationToken);
@@ -366,24 +363,21 @@ internal sealed partial class SqlServerJobStore : IChainStore
     private async Task DecideAsync(SqlServerTransaction work, Guid chain, Guid node, ChainOutcomes settled, CancellationToken cancellationToken)
     {
         await using var decide = Tsql.Command(work, $"""
-            DECLARE @children TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @children (id) SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_chain)) WHERE j.chain_id IS NOT NULL AND j.chain_id = @chain AND j.chain_parent = @node
-                AND j.state = 0 AND j.chain_waiting = 1;
+            DECLARE @children nvarchar(max) = (SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_chain)) WHERE j.chain_id IS NOT NULL AND j.chain_id = @chain AND j.chain_parent = @node
+                AND j.state = 0 AND j.chain_waiting = 1 ORDER BY j.id FOR JSON PATH);
             DECLARE @locked int;
-            SELECT @locked = COUNT(*) FROM @children AS c INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = c.id;
-            DECLARE @decided TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, runs bit NOT NULL);
+            SELECT @locked = COUNT(*) FROM OPENJSON(@children) WITH (id uniqueidentifier '$.id') AS c INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = c.id;
             UPDATE r SET chain_waiting = 0, due_at = CASE WHEN r.chain_condition & @settled <> 0 THEN SYSUTCDATETIME() END,
                 skip_pending = CASE WHEN r.chain_condition & @settled = 0 THEN 1 ELSE 0 END, skip_reason = CASE WHEN r.chain_condition & @settled = 0 THEN @reason END
-            OUTPUT inserted.[definition], {Tsql.Bit("inserted.chain_condition & @settled <> 0")} INTO @decided
-            FROM @children AS c INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = c.id
+            OUTPUT inserted.[definition], {Tsql.Bit("inserted.chain_condition & @settled <> 0")}
+            FROM OPENJSON(@children) WITH (id uniqueidentifier '$.id') AS c INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = c.id
             WHERE r.chain_id = @chain AND r.chain_parent = @node AND r.state = 0 AND r.chain_waiting = 1;
-            SELECT DISTINCT [definition], runs FROM @decided;
             """,
             Tsql.Guid("@chain", chain),
             Tsql.Guid("@node", node),
             Tsql.Int16("@settled", (short)settled),
             Tsql.Text("@reason", JobReasons.ChainCondition));
-        var signals = new List<(string, SignalTopic)>();
+        var signals = new HashSet<(string, SignalTopic)>();
         await using (var reader = await decide.ReaderAsync(cancellationToken))
         {
             while (await reader.NextRowAsync(cancellationToken))
@@ -412,16 +406,14 @@ internal sealed partial class SqlServerJobStore : IChainStore
         string Count(string table, string columns) => $"""
             DECLARE @counted_held int;
             SELECT @counted_held = 1 FROM {table} WITH (UPDLOCK, ROWLOCK) WHERE id = @id;
-            DECLARE @counted TABLE (pending int NOT NULL, outcome smallint, {columns});
             UPDATE {table} SET pending = pending - 1, worst = GREATEST(worst, @rank), settled_at = CASE WHEN {settles} THEN SYSUTCDATETIME() END,
                 outcome = CASE WHEN {settles} THEN {aggregate} END
-            OUTPUT inserted.pending, inserted.outcome, {string.Join(", ", columns.Split(", ").Select(c => "inserted." + c.Split(' ')[0]))} INTO @counted
+            OUTPUT inserted.pending, inserted.outcome, {string.Join(", ", columns.Split(", ").Select(c => "inserted." + c))}
             WHERE id = @id;
-            SELECT * FROM @counted;
             """;
         while (group is { } current)
         {
-            await using var command = Tsql.Command(work, Count(chainGroups, "enclosing_group uniqueidentifier"),
+            await using var command = Tsql.Command(work, Count(chainGroups, "enclosing_group"),
                 Tsql.Guid("@id", current),
                 Tsql.Int16("@rank", rank));
             JobOutcome outcome;
@@ -442,7 +434,7 @@ internal sealed partial class SqlServerJobStore : IChainStore
         Guid? owner;
         string? ownerDefinition;
         bool delete;
-        await using (var command = Tsql.Command(work, Count(chains, "owner_job uniqueidentifier, owner_definition nvarchar(200), delete_requested bit"),
+        await using (var command = Tsql.Command(work, Count(chains, "owner_job, owner_definition, delete_requested"),
             Tsql.Guid("@id", chain),
             Tsql.Int16("@rank", rank)))
         await using (var reader = await command.ReaderAsync(cancellationToken))
@@ -506,9 +498,8 @@ internal sealed partial class SqlServerJobStore : IChainStore
     private async Task DeleteChainRowsAsync(SqlServerTransaction work, Guid chain, CancellationToken cancellationToken)
     {
         await using var command = Tsql.Command(work, $"""
-            DECLARE @steps TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @steps (id) SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_chain)) WHERE j.chain_id IS NOT NULL AND j.chain_id = @chain;
-            DELETE r FROM @steps AS s INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = s.id WHERE r.chain_id = @chain;
+            DECLARE @steps nvarchar(max) = (SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_chain)) WHERE j.chain_id IS NOT NULL AND j.chain_id = @chain ORDER BY j.id FOR JSON PATH);
+            DELETE r FROM OPENJSON(@steps) WITH (id uniqueidentifier '$.id') AS s INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = s.id WHERE r.chain_id = @chain;
             DELETE FROM {chains} WHERE id = @chain;
             """, Tsql.Guid("@chain", chain));
         await command.NonQueryAsync(cancellationToken);

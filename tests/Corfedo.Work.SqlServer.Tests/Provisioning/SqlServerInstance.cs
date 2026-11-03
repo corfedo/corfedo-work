@@ -25,26 +25,13 @@ public sealed class SqlServerInstance : IAsyncLifetime
 
     private string Master => Shared ?? container!.GetConnectionString();
 
-    /// <summary>
-    /// Starts the container with tempdb's metadata in memory-optimized tables: every provider batch declares table
-    /// variables, whose creation otherwise contends on tempdb's system pages under the suite's concurrency. The setting
-    /// takes effect after a restart. A shared server is configured by whoever runs it.
-    /// </summary>
+    /// <summary>Starts the container, with SQL Server's default configuration; a shared server is run by whoever runs it.</summary>
     public async ValueTask InitializeAsync()
     {
-        if (container is null)
+        if (container is not null)
         {
-            return;
+            await container.StartAsync();
         }
-        await container.StartAsync();
-        await using (var connection = new SqlConnection(container.GetConnectionString()))
-        {
-            await connection.OpenAsync();
-            await using var command = new SqlCommand("ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON;", connection);
-            await command.ExecuteNonQueryAsync();
-        }
-        await container.StopAsync();
-        await container.StartAsync();
     }
 
     /// <summary>Removes the container, or on a shared server the databases this process created.</summary>

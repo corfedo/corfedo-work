@@ -106,37 +106,35 @@ internal sealed partial class SqlServerJobStore
         // occurrence, cannot progress; left in, they would fill every pass ahead of recurrences that can. The copied
         // flag keeps paused ones out of the indexes; the stored pause also excludes those whose flag is stale.
         await using (var locks = Tsql.Command(work, $"""
-            DECLARE @now datetime2(7) = SYSUTCDATETIME();
-            DECLARE @cleared TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
+            DECLARE @now datetime2(7) = SYSUTCDATETIME(), @cleared nvarchar(max) = N'', @ids nvarchar(max) = N'';
             {Tsql.LockEach("cleared_scan", "@limit",
                 $"SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_unconsumed)) WHERE {unconsumed}",
                 Jobs, Tsql.IdKey, unconsumed.Replace("j.", "r.", StringComparison.Ordinal), "@cleared")}
-            UPDATE r SET unconsumed = 0 FROM @cleared AS u INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = u.id;
-            DECLARE @ids TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
+            UPDATE r SET unconsumed = 0 FROM {Tsql.KeyRows("@cleared", Tsql.IdKey)} AS u INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = u.id;
             IF @definition_paused = 0
             BEGIN
                 {Tsql.LockEach("due_scan", "@limit",
                     $"SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_next)) WHERE c.[definition] = @definition AND c.next_at IS NOT NULL "
                     + $"AND c.next_at <= @now AND c.paused = 0 AND {SubjectUnpaused("c")} AND {DueCanPlan("c")} ORDER BY c.next_at",
                     recurrences, Tsql.IdKey,
-                    $"r.next_at <= @now AND r.paused = 0 AND {SubjectUnpaused("r")} AND {DueCanPlan("r")}", "@ids")}
+                    $"r.next_at <= @now AND r.paused = 0 AND {SubjectUnpaused("r")} AND {DueCanPlan("r")}", "@ids", distinct: true)}
                 {Tsql.LockEach("waiting_scan", "@limit",
                     $"SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_waiting)) WHERE c.[definition] = @definition AND c.waiting_at IS NOT NULL "
                     + $"AND c.paused = 0 AND {SubjectUnpaused("c")} AND NOT {OccurrenceOutstanding("c")}",
                     recurrences, Tsql.IdKey,
-                    $"r.waiting_at IS NOT NULL AND r.paused = 0 AND {SubjectUnpaused("r")} AND NOT {OccurrenceOutstanding("r")}", "@ids")}
+                    $"r.waiting_at IS NOT NULL AND r.paused = 0 AND {SubjectUnpaused("r")} AND NOT {OccurrenceOutstanding("r")}", "@ids", distinct: true)}
             END
             {Tsql.LockEach("unconsumed_scan", "@limit",
                 $"SELECT DISTINCT j.recurrence_id FROM {Jobs} AS j WITH (INDEX(jobs_unconsumed)) WHERE j.[definition] = @definition AND j.unconsumed = 1 AND j.recurrence_id IS NOT NULL",
-                recurrences, Tsql.IdKey, "1 = 1", "@ids")}
+                recurrences, Tsql.IdKey, "1 = 1", "@ids", distinct: true)}
             SELECT c.id, c.{ScheduleColumns.Replace(", ", ", c.", StringComparison.Ordinal)},
                 c.missed, c.overlap, c.awaited_job, c.next_at, c.waiting_at, {PausedCopy("c.[definition]", "c.subject_kind", "c.subject_id")}
-            FROM @ids AS i INNER LOOP JOIN {recurrences} AS c WITH (FORCESEEK) ON c.id = i.id;
-            DECLARE @candidates TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @candidates (id) SELECT j.id FROM @ids AS i INNER LOOP JOIN {Jobs} AS j WITH (INDEX(jobs_unconsumed), FORCESEEK) ON j.[definition] = @definition AND j.recurrence_id = i.id WHERE j.unconsumed = 1;
-            SELECT r.id, r.recurrence_id, r.ended_at FROM @candidates AS u INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, READPAST, INDEX(jobs_key), FORCESEEK) ON r.id = u.id
-            WHERE r.unconsumed = 1 AND r.[definition] = @definition;
-            SELECT DISTINCT o.recurrence_id FROM @ids AS i INNER LOOP JOIN {Jobs} AS o WITH (INDEX(jobs_recurrence), FORCESEEK) ON o.recurrence_id = i.id WHERE o.recurrence_id IS NOT NULL AND o.state = 0 AND o.skip_pending = 0;
+            FROM {Tsql.KeyRows("@ids", Tsql.IdKey)} AS i INNER LOOP JOIN {recurrences} AS c WITH (FORCESEEK) ON c.id = i.id;
+            SELECT r.id, r.recurrence_id, r.ended_at FROM {Tsql.KeyRows("@ids", Tsql.IdKey)} AS i
+            INNER LOOP JOIN {Jobs} AS j WITH (INDEX(jobs_unconsumed), FORCESEEK) ON j.[definition] = @definition AND j.recurrence_id = i.id
+            INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, READPAST, INDEX(jobs_key), FORCESEEK) ON r.id = j.id
+            WHERE j.unconsumed = 1 AND r.unconsumed = 1 AND r.[definition] = @definition;
+            SELECT DISTINCT o.recurrence_id FROM {Tsql.KeyRows("@ids", Tsql.IdKey)} AS i INNER LOOP JOIN {Jobs} AS o WITH (INDEX(jobs_recurrence), FORCESEEK) ON o.recurrence_id = i.id WHERE o.recurrence_id IS NOT NULL AND o.state = 0 AND o.skip_pending = 0;
             SELECT SYSUTCDATETIME();
             """,
             Tsql.Text("@definition", definition, 200),
@@ -366,13 +364,13 @@ internal sealed partial class SqlServerJobStore
                 string? reason;
                 var ending = JobOutcome.Skipped;
                 await using (var select = Tsql.Command(work, $"""
-                    {sql.ScanVariables}DECLARE @picked TABLE (k0 uniqueidentifier NOT NULL PRIMARY KEY);
-                    {sql.LockScan("skip_scan", "1", "jobs_skip", $"x.[definition] = @definition AND x.skip_pending = 1 AND x.state = 0 AND {notFailed}", locked, "x.id", "@picked", "k0", "r.id")}
-                    IF NOT EXISTS (SELECT 1 FROM @picked)
+                    {sql.ScanVariables("@picked")}
+                    {sql.LockScan("skip_scan", "1", "jobs_skip", $"x.[definition] = @definition AND x.skip_pending = 1 AND x.state = 0 AND {notFailed}", locked, "x.id", "@picked")}
+                    IF @picked = N''
                     BEGIN
-                        {sql.LockScan("owner_scan", "1", "jobs_chain_owner", $"x.[definition] = @definition AND x.chain_outcome IS NOT NULL AND x.state = 0 AND {notFailed}", locked, "x.id", "@picked", "k0", "r.id")}
+                        {sql.LockScan("owner_scan", "1", "jobs_chain_owner", $"x.[definition] = @definition AND x.chain_outcome IS NOT NULL AND x.state = 0 AND {notFailed}", locked, "x.id", "@picked")}
                     END
-                    SELECT r.id, COALESCE(r.skip_reason, @overlap), r.skip_pending, r.chain_outcome FROM @picked AS p JOIN {sql.Table} AS r ON r.id = p.k0;
+                    SELECT r.id, COALESCE(r.skip_reason, @overlap), r.skip_pending, r.chain_outcome FROM {sql.KeyedRows(keys: LeaseSql.ListJson("@picked"))};
                     """,
                     Tsql.Text("@definition", sql.Job!.Definition, 200),
                     Tsql.Guids("@failed", failed),

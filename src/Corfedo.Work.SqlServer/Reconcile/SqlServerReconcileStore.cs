@@ -169,9 +169,9 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
         var text = (sql.Supersedes ? sql.InvalidationFence : "")
             + Tsql.IgnoreUnique($"INSERT INTO {sql.Generations} (source, generation) SELECT {sql.GenerationName}, 0 WHERE NOT EXISTS (SELECT 1 FROM {sql.Generations} WITH (UPDLOCK, ROWLOCK) WHERE source = {sql.GenerationName});")
             + $"""
-            DECLARE @generation TABLE (generation bigint NOT NULL);
-            UPDATE {sql.Generations} SET generation = generation + 1 OUTPUT inserted.generation INTO @generation WHERE source = {sql.GenerationName};
-            {signals.Insert}SELECT generation FROM @generation;
+            DECLARE @generation bigint;
+            UPDATE {sql.Generations} SET @generation = generation = generation + 1 WHERE source = {sql.GenerationName};
+            {signals.Insert}SELECT @generation;
             """;
         await using var command = Tsql.Command(work, text, SqlServerSignalSql.Parameters(WorkTopics.Due, source.Name));
         return (long)(await command.ScalarAsync(cancellationToken))!;

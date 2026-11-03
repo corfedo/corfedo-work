@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Globalization;
 using System.Text.Json;
 using Corfedo.Work.SqlServer.Leases;
@@ -249,16 +250,12 @@ internal sealed partial class SqlServerJobStore
                 var worst = scoped.Where(n => !reset.Contains(n.Id) && !reopened.Contains(n.Id) && n.Outcome is not null).Select(n => Rank(n.Outcome!.Value)).DefaultIfEmpty((short)0).Max();
                 return (open, worst);
             }
-            var groups = reset.Concat(reopened).Where(id => nodes[id].IsGroup).ToArray();
+            var groups = reset.Concat(reopened).Where(id => nodes[id].IsGroup).Distinct().OrderBy(id => new SqlGuid(id)).ToArray();
             var top = Count(null);
-            var steps = reset.Where(id => !nodes[id].IsGroup).ToArray();
+            var steps = reset.Where(id => !nodes[id].IsGroup).OrderBy(id => new SqlGuid(id)).ToArray();
             await using (var write = Tsql.Command(work, $"""
-                DECLARE @discarded TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-                INSERT INTO @discarded (id) SELECT DISTINCT value FROM OPENJSON(@discarded_ids) WITH (value uniqueidentifier '$');
-                DELETE r FROM @discarded AS d INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = d.id WHERE r.chain_id = @chain;
-                DELETE g FROM @discarded AS d INNER LOOP JOIN {chainGroups} AS g WITH (FORCESEEK) ON g.id = d.id WHERE g.chain_id = @chain;
-                DECLARE @steps TABLE (id uniqueidentifier NOT NULL PRIMARY KEY, due bit NOT NULL, skip bit NOT NULL);
-                INSERT INTO @steps (id, due, skip) SELECT id, due, skip FROM OPENJSON(@step_ids) WITH (id uniqueidentifier '$.i', due bit '$.d', skip bit '$.s');
+                DELETE r FROM OPENJSON(@discarded_ids) WITH (id uniqueidentifier '$') AS d INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = d.id WHERE r.chain_id = @chain;
+                DELETE g FROM OPENJSON(@discarded_ids) WITH (id uniqueidentifier '$') AS d INNER LOOP JOIN {chainGroups} AS g WITH (FORCESEEK) ON g.id = d.id WHERE g.chain_id = @chain;
                 UPDATE r SET state = 0, chain_generation = @generation, chain_waiting = {Tsql.Bit("s.due = 0 AND s.skip = 0")},
                     due_at = CASE WHEN s.due = 1 AND r.ended_calendar IS NULL THEN SYSUTCDATETIME() END,
                     calendar_at = CASE WHEN s.due = 1 AND r.ended_calendar IS NOT NULL THEN SYSUTCDATETIME() END,
@@ -268,16 +265,16 @@ internal sealed partial class SqlServerJobStore
                     execution_id = NEWID(), first_requested_at = SYSUTCDATETIME(), attempts = 0, started = 0, takeovers = 0, failures = 0,
                     cancel_requested_at = NULL, progress_percent = NULL, progress_message = NULL,
                     paused = {PausedCopy("r.[definition]", "r.subject_kind", "r.subject_id")}
-                FROM @steps AS s INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = s.id WHERE r.chain_id = @chain;
-                DECLARE @groups TABLE (id uniqueidentifier NOT NULL PRIMARY KEY, pending int NOT NULL, worst smallint NOT NULL);
-                INSERT INTO @groups (id, pending, worst) SELECT id, pending, worst FROM OPENJSON(@group_counts) WITH (id uniqueidentifier '$.i', pending int '$.n', worst smallint '$.w');
+                FROM OPENJSON(@step_ids) WITH (id uniqueidentifier '$.i', due bit '$.d', skip bit '$.s') AS s
+                INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = s.id WHERE r.chain_id = @chain;
                 UPDATE g SET generation = @generation, settled_at = NULL, outcome = NULL, pending = u.pending, worst = u.worst
-                FROM @groups AS u INNER LOOP JOIN {chainGroups} AS g WITH (FORCESEEK) ON g.id = u.id;
+                FROM OPENJSON(@group_counts) WITH (id uniqueidentifier '$.i', pending int '$.n', worst smallint '$.w') AS u
+                INNER LOOP JOIN {chainGroups} AS g WITH (FORCESEEK) ON g.id = u.id;
                 UPDATE {chains} SET generation = @generation, settled_at = NULL, outcome = NULL, pending = @pending, worst = @worst WHERE id = @chain;
                 """,
                 Tsql.Guid("@chain", chain.Value),
                 Tsql.Int64("@generation", generation),
-                Tsql.Guids("@discarded_ids", discarded),
+                Tsql.Guids("@discarded_ids", discarded.Distinct().OrderBy(id => new SqlGuid(id))),
                 Tsql.Json("@step_ids", Json(writer =>
                 {
                     foreach (var id in steps)

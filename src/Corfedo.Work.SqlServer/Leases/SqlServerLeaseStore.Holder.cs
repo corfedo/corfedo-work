@@ -38,14 +38,15 @@ internal sealed partial class SqlServerLeaseStore
         var source = lease.Source;
         var fence = work is null ? null : sql.GenerationFence(!work.Work.ReadCommitted);
         var body = $"""
-            DECLARE @held int;
+            DECLARE @held int, @expires datetime2(7), @cancel bit, @valid_for bigint;
             SELECT @held = 1 FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK) WHERE {sql.KeyMatch};
-            DECLARE @renewed TABLE (cancel bit, valid_for bigint);
-            UPDATE r SET {LeaseSql.Bare(sql.Expires)} = {Tsql.AddTicks("SYSUTCDATETIME()", "@duration")}
-            OUTPUT {Tsql.Bit($"inserted.{LeaseSql.Bare(sql.Cancel)} IS NOT NULL")}, {Tsql.Micros("SYSUTCDATETIME()", $"inserted.{LeaseSql.Bare(sql.Expires)}")} INTO @renewed
+            UPDATE r SET @expires = {LeaseSql.Bare(sql.Expires)} = {Tsql.AddTicks("SYSUTCDATETIME()", "@duration")},
+                @cancel = {Tsql.Bit($"{sql.Cancel} IS NOT NULL")}, @valid_for = {Tsql.Micros("SYSUTCDATETIME()", Tsql.AddTicks("SYSUTCDATETIME()", "@duration"))}
             FROM {sql.Table} AS r WHERE {sql.KeyMatch} AND {sql.Valid};
             """;
-        var text = work is null ? Tsql.OwnTransaction(body) + "SELECT cancel, valid_for FROM @renewed;" : fence + body + "\nSELECT cancel, valid_for FROM @renewed;";
+        // A renewal sets the variables only when it updated the row.
+        const string result = "SELECT @cancel, @valid_for WHERE @expires IS NOT NULL;";
+        var text = work is null ? Tsql.OwnTransaction(body) + result : fence + body + "\n" + result;
         await using var command = KeyCommand(connection, work?.Transaction, sql, source, lease.Key, text,
             Tsql.Guid("@owner", lease.Owner.Value),
             Tsql.Int64("@epoch", lease.Epoch),
