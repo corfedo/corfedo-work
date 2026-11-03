@@ -492,8 +492,24 @@ provider options; pruning is a maintenance statement.
   definition took up to 4.4 s and later passes 666 ms at p99, and time-sensitive scenarios failed. With
   `ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON`, after a restart, the same run had 16 000
   waits (27 s): the slowest first pass took 0.8 s, and later passes took 31 ms at p90 and 152 ms at p99, against 142 ms
-  and 666 ms before. The test server enables it. Whether production requires it, or the provider reduces its
-  temporary objects, is open; the measurements in the validation decide.
+  and 666 ms before. The test server enables it. Measured again on 2025 with the outstanding-lease column, a full run
+  of the SQL Server tests: 1.48 million `PAGELATCH` waits (966 s) without the setting, job claim passes p50 20 ms and
+  p99 614 ms, and two timing-bound scenarios failed; 23 000 waits (43 s) with it, p50 13 ms and p99 155 ms, all
+  passed. A micro-benchmark of a claim-shaped batch (32 keys from `OPENJSON`, an `UPDATE` with `OUTPUT`, 16 clients,
+  2022 and 2025 alike) isolates the cost of the temporary objects themselves:
+
+  | Batch | Without the setting | With it |
+  |---|---|---|
+  | Three table variables, as the provider | 1 450–1 550/s, p50 10 ms | 2 530/s, p50 5 ms |
+  | One table variable | 4 000–4 400/s, p50 3.6–4.0 ms | |
+  | No temporary object (inline `OPENJSON`, `OUTPUT` to the client) | 12 400–13 300/s, p50 1.2 ms | 12 500/s |
+  | The three table variables in a stored procedure | 10 900–11 000/s, p50 1.4 ms | 10 400/s |
+  | Memory-optimized table types | 11 200–11 700/s, p50 1.3 ms | 11 500/s |
+
+  One client alone: 570 batches/s with three table variables, 2 075/s without. At 64 clients the setting raised the
+  table-variable batch from 1 470/s to 2 540/s while the batch without temporary objects ran 13 700–14 700/s.
+  Memory-optimized tempdb metadata relieves the latch waits but not the cost of creating the objects; which approach
+  the provider takes is open (owner).
 - A SQL authentication login costs about twice as much on 2025 as on 2022 (about 80 ms against 37 ms per `sqlcmd`
   login on an idle container, with `PREEMPTIVE_OS_CRYPTOPS` and `PREEMPTIVE_OS_AUTHENTICATIONOPS` among 2025's top
   waits under the suite), and under the suite's load on 2025 a new connection took 80–830 ms (about 170 per run over
