@@ -88,10 +88,51 @@ internal static class Tsql
 
         """;
 
+    /// <summary>
+    /// Statements that lock up to <paramref name="top"/> rows of <paramref name="table"/> without waiting, in the order
+    /// the query <paramref name="scan"/> returns their keys, and insert the keys of those kept into
+    /// <paramref name="into"/>, whose columns are named as the key's. The query reads without locks; each key it returns
+    /// is then locked through the key (alias <c>r</c>) and kept when its latest committed version meets
+    /// <paramref name="locked"/> and it is not in <paramref name="into"/> yet; a row another transaction holds is
+    /// skipped. Rows are locked through their key before any other index, as every statement that writes them does.
+    /// The statements declare variables prefixed with <paramref name="name"/>, which names one scan per batch. Keys with
+    /// nullable columns are matched with <c>IS NOT DISTINCT FROM</c> when <paramref name="nullable"/> is set.
+    /// </summary>
+    public static string LockEach(string name, string top, string scan, string table, IReadOnlyList<(string Column, string Type)> key, string locked, string into, bool nullable = false)
+    {
+        var variables = key.Select((_, i) => $"@{name}_{i}").ToArray();
+        var columns = string.Join(", ", key.Select(k => k.Column));
+        var equal = nullable ? "IS NOT DISTINCT FROM" : "=";
+        var match = string.Join(" AND ", key.Select((k, i) => $"r.{k.Column} {equal} {variables[i]}"));
+        var taken = string.Join(" AND ", key.Select((k, i) => $"t.{k.Column} {equal} {variables[i]}"));
+        return $"""
+            DECLARE {string.Join(", ", key.Select((k, i) => $"{variables[i]} {k.Type}"))}, @{name}_n int = 0;
+            DECLARE {name} CURSOR LOCAL FORWARD_ONLY READ_ONLY FOR {scan};
+            OPEN {name};
+            WHILE @{name}_n < {top}
+            BEGIN
+                FETCH NEXT FROM {name} INTO {string.Join(", ", variables)};
+                IF @@FETCH_STATUS <> 0 BREAK;
+                INSERT INTO {into} ({columns}) SELECT {string.Join(", ", key.Select(k => "r." + k.Column))} FROM {table} AS r WITH (UPDLOCK, ROWLOCK, READPAST)
+                WHERE {match} AND {locked} AND NOT EXISTS (SELECT 1 FROM {into} AS t WHERE {taken});
+                SET @{name}_n += @@ROWCOUNT;
+            END
+            CLOSE {name};
+            DEALLOCATE {name};
+
+            """;
+    }
+
+    /// <summary>The key of tables keyed by the single <c>uniqueidentifier</c> column <c>id</c>, for <see cref="LockEach"/>.</summary>
+    public static readonly (string Column, string Type)[] IdKey = [("id", "uniqueidentifier")];
+
     /// <summary>Microseconds from <paramref name="from"/> to <paramref name="to"/>, as a bigint.</summary>
     public static string Micros(string from, string to) => $"DATEDIFF_BIG(microsecond, {from}, {to})";
 
     public static TimeSpan FromMicros(long micros) => micros <= 0 ? TimeSpan.Zero : TimeSpan.FromTicks(micros * 10);
+
+    /// <summary>A wait in microseconds read from the first column of a scalar result; null when there is none.</summary>
+    public static TimeSpan? Wait(object? micros) => micros is long value ? FromMicros(value) : null;
 
     /// <summary>A store time read from a <c>datetime2</c> or <c>datetimeoffset</c> column.</summary>
     public static DateTimeOffset Time(SqlDataReader reader, int ordinal) => reader.GetValue(ordinal) switch

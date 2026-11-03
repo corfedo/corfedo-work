@@ -1,6 +1,7 @@
 using Corfedo.Work.SqlServer.Calendars;
 using Corfedo.Work.SqlServer.Jobs;
 using Corfedo.Work.SqlServer.Leases;
+using Corfedo.Work.SqlServer.Monitoring;
 using Corfedo.Work.SqlServer.Processes;
 using Corfedo.Work.SqlServer.Reconcile;
 using Corfedo.Work.SqlServer.Schema;
@@ -42,10 +43,13 @@ public sealed class SqlServerWorkStore : IWorkStore
         var leases = new SqlServerLeaseStore(connectionString, schema, signals, logger, telemetry);
         Leases = leases;
         Reconcile = new SqlServerReconcileStore(leases, signals);
-        Calendars = new SqlServerCalendarStore(connectionString, leases, schema);
-        Monitoring = new StubMonitoringStore(schema);
-        Jobs = new SqlServerJobStore(connectionString, schema);
-        Chains = new StubChainStore();
+        var calendars = new SqlServerCalendarStore(connectionString, leases, schema);
+        Calendars = calendars;
+        var monitoring = new SqlServerMonitoringStore(leases, schema);
+        Monitoring = monitoring;
+        var jobs = new SqlServerJobStore(connectionString, leases, calendars, monitoring, schema, signals, logger, telemetry);
+        Jobs = jobs;
+        Chains = jobs;
         Processes = new SqlServerProcessStore(connectionString, schema);
         Signals = new SqlServerSignalTransport(connectionString, signals, signalOptions, time, logger, telemetry);
     }

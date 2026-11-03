@@ -17,7 +17,23 @@ public sealed class SqlServerInstance : IAsyncLifetime
 
     private readonly MsSqlContainer container = new MsSqlBuilder(Image).Build();
 
-    public async ValueTask InitializeAsync() => await container.StartAsync();
+    /// <summary>
+    /// Starts the container with tempdb's metadata in memory-optimized tables: every provider batch declares table
+    /// variables, whose creation otherwise contends on tempdb's system pages under the suite's concurrency. The setting
+    /// takes effect after a restart.
+    /// </summary>
+    public async ValueTask InitializeAsync()
+    {
+        await container.StartAsync();
+        await using (var connection = new SqlConnection(container.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var command = new SqlCommand("ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON;", connection);
+            await command.ExecuteNonQueryAsync();
+        }
+        await container.StopAsync();
+        await container.StartAsync();
+    }
 
     public ValueTask DisposeAsync() => container.DisposeAsync();
 

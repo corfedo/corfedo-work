@@ -8,8 +8,8 @@ namespace Corfedo.Work.SqlServer.Jobs;
 /// <summary>
 /// The job definitions of registered processes, in <c>process_definitions</c> with the accepted argument versions in
 /// <c>process_definition_args</c>, and the reports of which definitions live processes cover. A process is live while
-/// it has not stopped and its heartbeat plus its own stale window is after the statement's clock reading; each report
-/// is one statement, so it reads one snapshot at one instant.
+/// it has not stopped and its heartbeat plus its own stale window is after the report's clock reading, taken once per
+/// report.
 /// </summary>
 internal sealed partial class SqlServerJobStore
 {
@@ -78,6 +78,100 @@ internal sealed partial class SqlServerJobStore
             writer.WriteEndArray();
         }
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    /// <summary>Whether no stored pause holds the subject of row <paramref name="alias"/>; the copied flags may be stale while no process repairs them.</summary>
+    private string Unpaused(string alias) =>
+        $"NOT EXISTS (SELECT 1 FROM {pauses} AS s WHERE s.[definition] = {alias}.[definition] AND s.subject_kind = {alias}.subject_kind AND s.subject_id = {alias}.subject_id)";
+
+    /// <summary>A live process runs definition <paramref name="definition"/>, accepting <paramref name="version"/> when given.</summary>
+    private string LiveRunner(string definition, string? version = null) =>
+        $"EXISTS (SELECT 1 FROM {ProcessDefinitions} AS pd JOIN {Processes} AS p ON p.owner = pd.owner "
+        + (version is null ? "" : $"JOIN {ProcessDefinitionArgs} AS a ON a.owner = pd.owner AND a.[definition] = pd.[definition] AND a.args_version = {version} ")
+        + $"WHERE pd.[definition] = {definition} AND pd.runs = 1 AND {Live("@now")})";
+
+    /// <summary>
+    /// One batch with one clock reading. The argument versions of unheld jobs of every unpaused definition are found by a
+    /// loose scan of <c>jobs_due</c>, one index probe per version and definition, and joined with the versions of
+    /// expired leases from <c>jobs_expiry</c>; a version has due work when a probe of that version finds an unheld job
+    /// due now or an expired lease whose subject is not paused. A definition no live process runs is unserved when one
+    /// of its versions has due work, a job's calendar instant needs planning, or a recurrence needs its planner (a due
+    /// next instant, of an after-completion schedule only without an outstanding occurrence, or a waiting occurrence
+    /// without one). Only when none holds does it look at its flagged due jobs and recurrences: their subjects, read in
+    /// subject order from <c>jobs_paused</c> and <c>job_recurrences_paused</c>, minus the subjects in
+    /// <c>job_pauses</c>, so a flag no stored pause backs does not hide work that no maintenance repairs. For a
+    /// definition live processes run, a version with due work that no live runner accepts and that is not below the
+    /// stored minimum is unserved; a flag left stale on its jobs is repaired by the runners' maintenance.
+    /// </summary>
+    public async ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken)
+    {
+        const string unheld = "j.lease_expires_at IS NULL AND j.due_at IS NOT NULL AND j.paused = 0";
+        var outstanding = $"EXISTS (SELECT 1 FROM {Jobs} AS o WHERE o.recurrence_id IS NOT NULL AND o.recurrence_id = c.id AND o.state = 0 AND o.skip_pending = 0)";
+        var recurrenceDue = $"((c.next_at <= @now AND (c.interval_kind IS NULL OR c.interval_kind <> {(short)Interval.AfterCompletion} OR NOT {outstanding})) "
+            + $"OR (c.waiting_at IS NOT NULL AND NOT {outstanding}))";
+        var pausedSubjects = $"SELECT s.subject_kind, s.subject_id FROM {pauses} AS s WHERE s.[definition] = d.[key]";
+        await using var connection = await Tsql.OpenAsync(connectionString, cancellationToken);
+        await using var command = Tsql.Command(connection, null, $"""
+            DECLARE @now datetime2(7) = SYSUTCDATETIME();
+            DECLARE @versions TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, version int NOT NULL, PRIMARY KEY ([definition], version));
+            DECLARE @level TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, version int NOT NULL);
+            DECLARE @next TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, version int NOT NULL);
+            INSERT INTO @level ([definition], version)
+            SELECT d.[key], m.version FROM {definitions} AS d
+            CROSS APPLY (SELECT MIN(j.args_version) AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {unheld}) AS m
+            WHERE d.paused = 0 AND m.version IS NOT NULL;
+            WHILE EXISTS (SELECT 1 FROM @level)
+            BEGIN
+                INSERT INTO @versions ([definition], version) SELECT [definition], version FROM @level;
+                DELETE FROM @next;
+                INSERT INTO @next ([definition], version)
+                SELECT l.[definition], m.version FROM @level AS l
+                CROSS APPLY (SELECT MIN(j.args_version) AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {unheld}) AS m
+                WHERE m.version IS NOT NULL;
+                DELETE FROM @level;
+                INSERT INTO @level ([definition], version) SELECT [definition], version FROM @next;
+            END
+            DECLARE @due TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, version int NOT NULL, PRIMARY KEY ([definition], version));
+            INSERT INTO @due ([definition], version)
+            SELECT c.[definition], c.version FROM (
+                SELECT [definition], version FROM @versions
+                UNION
+                SELECT j.[definition], j.args_version FROM {definitions} AS d JOIN {Jobs} AS j WITH (INDEX(jobs_expiry))
+                ON j.[definition] = d.[key] AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at < @now WHERE d.paused = 0) AS c
+            WHERE EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND {unheld} AND j.due_at <= @now AND {Unpaused("j")})
+            OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND j.lease_expires_at IS NOT NULL
+                AND j.lease_expires_at < @now AND {Unpaused("j")});
+            SELECT d.[key], CAST(NULL AS int) FROM {definitions} AS d WHERE d.paused = 0 AND NOT {LiveRunner("d.[key]")} AND (
+                EXISTS (SELECT 1 FROM @due AS due WHERE due.[definition] = d.[key])
+                OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.[definition] = d.[key] AND j.calendar_at IS NOT NULL AND j.calendar_at <= @now AND j.state = 0
+                    AND j.calendar_unavailable = 0 AND j.lease_expires_at IS NULL)
+                OR EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.[definition] = d.[key] AND c.paused = 0 AND {Unpaused("c")} AND {recurrenceDue})
+                OR EXISTS (SELECT j.subject_kind, j.subject_id FROM {Jobs} AS j WITH (INDEX(jobs_paused)) WHERE j.[definition] = d.[key] AND j.paused = 1 AND j.state = 0
+                    AND j.lease_expires_at IS NULL AND j.due_at <= @now EXCEPT {pausedSubjects})
+                OR EXISTS (SELECT 1 FROM (SELECT r.subject_kind, r.subject_id FROM {recurrences} AS r WITH (INDEX(job_recurrences_paused)) WHERE r.[definition] = d.[key] AND r.paused = 1
+                    AND (r.next_at <= @now OR r.waiting_at IS NOT NULL) EXCEPT {pausedSubjects}) AS x
+                    JOIN {recurrences} AS c ON c.[definition] = d.[key] AND c.subject_kind = x.subject_kind AND c.subject_id = x.subject_id AND c.paused = 1
+                    WHERE {recurrenceDue}))
+            UNION ALL
+            SELECT due.[definition], due.version FROM @due AS due JOIN {definitions} AS d ON d.[key] = due.[definition]
+            WHERE due.version >= d.minimum_args_version AND {LiveRunner("due.[definition]")} AND NOT {LiveRunner("due.[definition]", "due.version")}
+            ORDER BY 1, 2;
+            """);
+        var unrun = new List<UnservedDefinition>();
+        var versions = new List<UnservedVersion>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (reader.IsDBNull(1))
+            {
+                unrun.Add(new UnservedDefinition(reader.GetString(0)));
+            }
+            else
+            {
+                versions.Add(new UnservedVersion(reader.GetString(0), reader.GetInt32(1)));
+            }
+        }
+        return new UnservedReport(unrun, versions);
     }
 
     /// <summary>

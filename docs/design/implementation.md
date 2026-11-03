@@ -212,8 +212,8 @@ The provider passes the whole conformance suite before 0.2.0 is released. Each s
 | 9a | Project, package metadata, `Microsoft.Data.SqlClient` and `Testcontainers.MsSql` pins; test provisioning (one container per test process, a database per test class, RCSI on); framework schema baseline with lock escalation disabled; startup checks (RCSI, source columns, indexes, lock escalation); the isolation check recorded on `WorkTransaction`. | Done |
 | 9b | Leases: claims, claim by key, claims in the caller's transaction, renew, guard, release, end, schedule, cancel, expiry settlement, limits with scope applocks. | Done |
 | 9c | Reconciliation: generations, the generation fence, supersession. | Done |
-| 9d | Jobs: definitions and the definition fence, requests and merging, transitions, subject pauses, recurrences and planning, operator actions, status, run history, retention, the process registry. | Not started |
-| 9e | Calendars, chains, monitoring. | Not started |
+| 9d | Jobs: definitions and the definition fence, requests and merging, transitions, subject pauses, recurrences and planning, operator actions, status, run history, retention, the process registry. | Done |
+| 9e | Calendars, chains, monitoring. | Done |
 | 9f | Signals: the signals table transport, its listener and pruning. | Not started |
 | 9g | EF Core adapter on SQL Server; Native AOT and trimming of the provider; guides and README. | Not started |
 | 9h | Validation: the measurements of [SQL Server provider](sqlserver.md) repeated on the provider at 1M and 10M jobs, the open items there closed. | Not started |

@@ -460,14 +460,37 @@ provider options; pruning is a maintenance statement.
 - In an index without a unique key of its own, rows of equal key value are ordered by the clustered key, where
   PostgreSQL's B-tree orders them by heap position; claims of stale records through the generation index therefore
   reach records of one generation in key order, not in insertion order.
+- Batch input (request items, key sets, id lists) is a JSON parameter read with `OPENJSON` into a table variable, not
+  a framework table type: measured 0.35 s against 0.33 s for a table-valued parameter at 50 000 items, and no schema
+  type has to be versioned. `OPENJSON ... WITH (a varbinary(max))` decodes base64 values.
 - The signals table is a framework table: a database is migrated before clients run, including clients that are
   never started, since lease operations signal in their statements.
 - `Microsoft.Data.SqlClient` 7.1.1, like every earlier version, depends on `System.Security.Cryptography.Pkcs` below the
   versions that fix CVE-2026-84008 and CVE-2026-70162 (9.0.18 for 7.1.1); the provider references 10.0.13 directly, so
   restore resolves the fixed version.
+- A locking read (`UPDLOCK`) that a covering secondary index serves locks only that index's entries, not the rows: a
+  writer that updates the row through its key does not wait for it. Tests that hold rows as a concurrent writer would
+  lock them with an update through the key.
 - A source's first operation in a process reads its table in the catalog and verifies it as startup does: statements
   bind key parameters to the key columns' exact types and name the source's indexes in `INDEX()` hints, so a source
   without its indexes is refused by every operation, not only at startup.
+- Character columns of a table variable take tempdb's default collation, so comparing them with framework columns
+  fails with 468 when the server's collation differs from `Latin1_General_100_BIN2`. Table variables that hold keys
+  declare their character columns with the key collation.
+- Every provider batch declares table variables, and tempdb caches no temporary objects of batches run through
+  `sp_executesql`, so each execution creates them in tempdb's system tables. Under the conformance suite's
+  concurrency on 2025 (16 cores, six tempdb data files) `PAGELATCH_EX`/`PAGELATCH_SH` on tempdb's system pages
+  dominated the waits: about 1.5 million waits and 940 s of wait time in one 80 s run. Claim passes of a new
+  definition took up to 4.4 s and later passes 666 ms at p99, and time-sensitive scenarios failed. With
+  `ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON`, after a restart, the same run had 16 000
+  waits (27 s): the slowest first pass took 0.8 s, and later passes took 31 ms at p90 and 152 ms at p99, against 142 ms
+  and 666 ms before. The test server enables it. Whether production requires it, or the provider reduces its
+  temporary objects, is open; the measurements in the validation decide.
+- A read that PostgreSQL serves from one snapshot of several statements (a chain with its steps and groups) is one
+  statement on SQL Server, since RCSI gives each statement its own snapshot and snapshot isolation is not required of
+  the database: the chain's steps and groups come back as `FOR JSON` columns of the chain's row. The unserved report
+  and the monitoring gauges loop over a loose index scan in one batch (recursive CTEs refuse `TOP` and subqueries in
+  the recursive part), so each step of the loop reads its own snapshot.
 
 ## Effort and risks
 

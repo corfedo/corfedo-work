@@ -324,10 +324,12 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
     public async Task LockSubjectAsync(WorkTransaction transaction, string definition, Subject subject, CancellationToken cancellationToken)
     {
         var sql = transaction.SqlServer();
+        // An update that changes nothing locks the rows through their key, as a writer does; a locking read can be
+        // served by a covering secondary index and then leaves the rows themselves unlocked.
         foreach (var table in new[] { "work.job_recurrences", "work.jobs" })
         {
             await using var command = SubjectCommand(sql.Connection, sql,
-                $"SELECT 1 FROM {table} WITH (UPDLOCK, ROWLOCK) WHERE definition = @definition AND subject_kind = @kind AND subject_id = @id", definition, subject);
+                $"UPDATE {table} SET subject_id = subject_id WHERE definition = @definition AND subject_kind = @kind AND subject_id = @id", definition, subject);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
     }
@@ -520,3 +522,72 @@ public sealed class SqlServerReconcileSupersessionScenarios(SqlServerConformance
 
 public sealed class SqlServerReconcilePoolScenarios(SqlServerConformanceProvider provider)
     : ReconcilePoolScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobRequestScenarios(SqlServerConformanceProvider provider)
+    : JobRequestScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobAttemptScenarios(SqlServerConformanceProvider provider)
+    : JobAttemptScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobDefinitionScenarios(SqlServerConformanceProvider provider)
+    : JobDefinitionScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobOutcomeScenarios(SqlServerConformanceProvider provider)
+    : JobOutcomeScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobRecurrenceScenarios(SqlServerConformanceProvider provider)
+    : JobRecurrenceScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobLifecycleScenarios(SqlServerConformanceProvider provider)
+    : JobLifecycleScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobOverlapScenarios(SqlServerConformanceProvider provider)
+    : JobOverlapScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobPauseScenarios(SqlServerConformanceProvider provider)
+    : JobPauseScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobResultScenarios(SqlServerConformanceProvider provider)
+    : JobResultScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobStatusScenarios(SqlServerConformanceProvider provider)
+    : JobStatusScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobRunHistoryScenarios(SqlServerConformanceProvider provider)
+    : JobRunHistoryScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobActionScenarios(SqlServerConformanceProvider provider)
+    : JobActionScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobRetentionScenarios(SqlServerConformanceProvider provider)
+    : JobRetentionScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerProcessRegistryScenarios(SqlServerConformanceProvider provider)
+    : ProcessRegistryScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobCoverageScenarios(SqlServerConformanceProvider provider)
+    : JobCoverageScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobCalendarScenarios(SqlServerConformanceProvider provider)
+    : JobCalendarScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobChainScenarios(SqlServerConformanceProvider provider)
+    : JobChainScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobMonitoringScenarios(SqlServerConformanceProvider provider)
+    : JobMonitoringScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerJobTelemetryScenarios(SqlServerConformanceProvider provider)
+    : JobTelemetryScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerHostStartScenarios(SqlServerConformanceProvider provider)
+    : HostStartScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerProcessRoleScenarios(SqlServerConformanceProvider provider)
+    : ProcessRoleScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerApplicationIsolationScenarios(SqlServerConformanceProvider provider)
+    : ApplicationIsolationScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerControlledClockScenarios(SqlServerConformanceProvider provider)
+    : ControlledClockScenarios(provider), IClassFixture<SqlServerConformanceProvider>;

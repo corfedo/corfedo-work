@@ -11,4 +11,8 @@ public sealed class ProvisioningTests(SqlServerDatabase database) : IClassFixtur
         Assert.Contains(major, new[] { "16", "17" });
         Assert.Equal(true, await database.ScalarAsync("SELECT is_read_committed_snapshot_on FROM sys.databases WHERE database_id = DB_ID()", Cancel));
     }
+
+    [Fact]
+    public async Task TempdbMetadataIsMemoryOptimized() =>
+        Assert.Equal(1, await database.ScalarAsync("SELECT CAST(SERVERPROPERTY('IsTempdbMetadataMemoryOptimized') AS int)", Cancel));
 }
