@@ -216,5 +216,5 @@ The provider passes the whole conformance suite before 0.2.0 is released. Each s
 | 9e | Calendars, chains, monitoring. | Done |
 | 9f | Signals: the signals table transport, its listener and pruning. | Done |
 | 9g | EF Core adapter on SQL Server; Native AOT and trimming of the provider; the outstanding-lease column on both providers; guides and README. | Done |
-| 9h | Validation: the measurements of [SQL Server provider](sqlserver.md) repeated on the provider at 1M and 10M jobs, the open items there closed. | Not started |
+| 9h | Validation: the measurements of [SQL Server provider](sqlserver.md) repeated on the provider at 1M and 10M jobs, the open items there closed. | Done |
 

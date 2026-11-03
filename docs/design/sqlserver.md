@@ -457,8 +457,9 @@ provider options; pruning is a maintenance statement.
   set-based form (`TOP (@n)` over the unlocked index joined to the locked key) was rejected: on small tables the
   optimizer sorts after the join, even with `LOOP JOIN` and `FAST 1`, and then locks every candidate row (900 of
   1 000); at 200 000 rows it kept the index order. The cursor reads only as far as needed whatever plan it gets: a
-  claim of 32 among 1 000 due rows holds 32 key locks. Its cost on the Mac was 1.24 ms against 0.61 ms for the
-  set-based form per pass of 32 over 200 000 due rows; it is measured again in the validation.
+  claim of 32 among 1 000 due rows holds 32 key locks. The cursor is declared `DYNAMIC`: a `FORWARD_ONLY READ_ONLY`
+  cursor becomes fast-forward, whose plan read every matching row when it opened (2.8 s for the 250 000 due jobs of a
+  definition at 10M jobs, against under 1 ms dynamic). A fetch and its row lock take 0.08 ms on sk8 at 1M jobs and 0.18 ms at 10M.
 - Statements over a set of keys (`@keys`) join it to the table with `INNER LOOP JOIN ... WITH (INDEX(<key>),
   FORCESEEK)`. Without it, an update of a few keys on a small table scanned the table and waited for every row other
   claims held, and two such claims deadlocked on each other's rows.
@@ -528,6 +529,52 @@ provider options; pruning is a maintenance statement.
   the database: the chain's steps and groups come back as `FOR JSON` columns of the chain's row. The unserved report
   and the monitoring gauges loop over a loose index scan in one batch (recursive CTEs refuse `TOP` and subqueries in
   the recursive part), so each step of the loop reads its own snapshot.
+- A correlated `MIN` over a filtered index aggregates the whole index range and looks up every row to recheck the
+  filter's column (the unserved report's first version probe: 1.56M logical reads, 977 ms at 1M jobs); `TOP (1) ...
+  ORDER BY` in index order seeks once (84 reads, under 1 ms). Probes and joins of the framework batches name their
+  index: without a hint the optimizer scanned `jobs` for the calendar branch of the unserved report (2 s at 1M), the
+  recurrence probes of planning (2 s at 10M, with no recurrence stored) and the chain steps of a cancellation (6.9 s
+  at 10M), because the table variable's estimate and the filtered index's predicate left it no seek.
+- SQL Server sizes its buffer pool to the host (80% of memory by default) and keeps it. With a container per test
+  process, `dev/check` on a 30 GiB host left 258 MB free and swapped, and SQL Server 2025 stalled: logins timed out
+  after 14 s and timing scenarios failed. The test processes therefore share one server (`CORFEDO_WORK_SQLSERVER`),
+  which `dev/check` starts; free memory then stayed above 8.6 GB. A 2 GiB memory limit per container instead made
+  the suite twice as slow and failed 45 scenarios.
+
+## Measurements
+
+Validation on sk8 (AMD Ryzen 7 7700X, 30 GiB), SQL Server 2022 in a container limited to 8 GiB, default tempdb (no
+memory-optimized metadata), the jobs of the PostgreSQL measurements in [providers](providers.md): 10 definitions,
+70% terminal, 25% due, 5 000 outstanding leases per definition. Times are whole calls from the client unless a
+statement is named; statement times are `sys.dm_exec_query_stats` averages.
+
+| Operation | 1M jobs | 10M jobs | PostgreSQL, 1M |
+|---|---|---|---|
+| Claim pass of a definition (16 jobs, limits, fence, expiry scan, update) | 17.6 ms p50, 33.7 ms p99; statements 5.7 ms | 20.4 ms p50 | scan statements 0.8 ms |
+| Claim scan, per job (cursor fetch and row lock) | 0.08 ms | 0.18 ms | |
+| Definition-limit count | 0.86 ms | 0.92 ms | 0.3 ms |
+| Terminal transition (statements) | 2.0 ms | | |
+| Merging request, own transaction | 4.6 ms | 4.8 ms | 0.1 ms (statement) |
+| `RequestManyAsync` of 50 000 new subjects | 2.5 s (insert 1.0 s, input 0.3 s, identity locks 0.1 s) | 8.8 s | 0.7 s |
+| Status page of 500 subjects | 7.7 ms | 8.1 ms | 6 ms |
+| Retention of 1 000 jobs of a definition | 30 ms (delete 12 ms, locking scan 16 ms) | 145 ms | 7.5–9.4 ms |
+| Unserved report | 7.1–7.4 ms | 7.2 ms | 1.3 ms |
+| Signal, commit to wake | p50 5.1 ms, p99 10.2 ms | | |
+| Commits/s at 8 clients without / with a signal | 6 662 / 6 084 | | |
+
+- The table variables of every batch account for part of the gap to PostgreSQL; the tempdb approach is open (owner).
+- Fragmentation of the `uniqueidentifier` keys (ids sort randomly in SQL Server's order): `jobs` at 1M is 99%
+  fragmented with pages 66% full (87 064 pages against 58 797 after a rebuild), at 10M 99% and 67% (862 000 pages).
+  It costs space, not speed: claim passes 17.7 against 16.9 ms, merging requests 4.9 against 4.7 ms and fan-outs
+  2.38 against 2.57 s, fragmented against rebuilt; after a rebuild 150 000 new jobs split 54 000 pages. The id type
+  stays.
+- Identity locks of a 50 000-item fan-out: 50 000 `sp_getapplock` calls of 0.002 ms, about 0.1 s of the 2.5 s.
+- Soak, 10 minutes at 10M jobs: 12 clients requesting into 200 hot identities per definition, cancelling them and
+  fanning out 50 at a time, beside 4 job definitions running 16 at a time (10% failing) and a reconciler converging
+  2 000 records that the clients request and invalidate: 143 251 request transactions, 30 922 cancellations, 241 916
+  job runs, 6 264 invalidations and 184 617 reconcile runs. No error reached a caller, no deadlock was recorded, no
+  identity had two outstanding jobs, no terminal job held a lease and no soak job held an expired lease, and every
+  record converged within 5 s of the clients stopping.
 
 ## Effort and risks
 
@@ -552,6 +599,6 @@ Core changes: none to the public contract. One internal change is needed: a prov
 record the isolation check. Deadlock victims in the caller's transaction surface as `SqlException` 1205; whether the
 core reports them as a framework error type is a decision for the provider stage.
 
-Not verified yet: `Testcontainers.MsSql` on the Mac; Azure
-SQL Database and Managed Instance; the end-to-end cost of identity locks in a 50 000-item fan-out; page splits of
-`uniqueidentifier` primary keys at 1M and 10M jobs.
+Not verified yet: Azure SQL Database and Managed Instance. `Testcontainers.MsSql` runs on the Mac in the colima
+profile above; the cost of identity locks and the page splits of `uniqueidentifier` keys are in
+[Measurements](#measurements).

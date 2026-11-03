@@ -113,11 +113,14 @@ internal sealed partial class SqlServerJobStore
             INSERT INTO @s (id, chain_id, owned_chain) SELECT r.id, r.chain_id, r.owned_chain FROM {Jobs} AS r WHERE {selection};
             DECLARE @c {CancelLockTable};
             INSERT INTO @c (owner, waiting, id)
-            SELECT DISTINCT {Tsql.Bit("r.owned_chain IS NOT NULL")}, r.chain_waiting, r.id FROM {Jobs} AS r
-            WHERE r.id IN (SELECT s.id FROM @s AS s
-                UNION ALL SELECT w.id FROM {Jobs} AS w WHERE w.chain_id IN (SELECT s.chain_id FROM @s AS s WHERE s.chain_id IS NOT NULL) AND w.chain_waiting = 1 AND w.state = 0
-                UNION ALL SELECT w.id FROM {Jobs} AS w WHERE w.chain_id IN (SELECT s.owned_chain FROM @s AS s WHERE s.owned_chain IS NOT NULL) AND w.state = 0)
-            AND r.state = 0 AND r.skip_pending = 0;
+            SELECT {Tsql.Bit("r.owned_chain IS NOT NULL")}, r.chain_waiting, r.id FROM (
+                SELECT s.id FROM @s AS s
+                UNION SELECT w.id FROM @s AS s INNER LOOP JOIN {Jobs} AS w WITH (INDEX(jobs_chain), FORCESEEK) ON w.chain_id = s.chain_id
+                    WHERE s.chain_id IS NOT NULL AND w.chain_id IS NOT NULL AND w.chain_waiting = 1 AND w.state = 0
+                UNION SELECT w.id FROM @s AS s INNER LOOP JOIN {Jobs} AS w WITH (INDEX(jobs_chain), FORCESEEK) ON w.chain_id = s.owned_chain
+                    WHERE s.owned_chain IS NOT NULL AND w.chain_id IS NOT NULL AND w.state = 0) AS k
+            INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = k.id
+            WHERE r.state = 0 AND r.skip_pending = 0;
             DECLARE @locked int;
             SELECT @locked = COUNT(*) FROM @c AS c INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON r.id = c.id;
             SELECT r.id, r.[definition], {Tsql.Bit("EXISTS (SELECT 1 FROM @s AS s WHERE s.id = r.id)")}, {Tsql.Bit("r.owned_chain IS NOT NULL")},
