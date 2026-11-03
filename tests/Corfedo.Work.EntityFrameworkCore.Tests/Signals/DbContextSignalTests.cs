@@ -1,8 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Corfedo.Work.EntityFrameworkCore.Tests.Mapping;
-using Corfedo.Work.PostgreSql;
-using Corfedo.Work.PostgreSql.Tests.Provisioning;
+using Corfedo.Work.EntityFrameworkCore.Tests.Provisioning;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Corfedo.Work.EntityFrameworkCore.Tests.Signals;
@@ -11,7 +10,7 @@ namespace Corfedo.Work.EntityFrameworkCore.Tests.Signals;
 /// An application that uses only signals sends them in a <c>DbContext</c>'s transaction: they are delivered when its
 /// changes commit and never after a rollback. No framework schema is applied.
 /// </summary>
-public sealed class DbContextSignalTests(PostgreSqlDatabase database) : IClassFixture<PostgreSqlDatabase>
+public abstract class DbContextSignalTests(TestDatabase database)
 {
     private static readonly SignalTopic Instances = new("fleet.instances");
 
@@ -21,20 +20,20 @@ public sealed class DbContextSignalTests(PostgreSqlDatabase database) : IClassFi
     public async Task SignalsSentInAContextTransactionAreDeliveredOnlyOnCommit()
     {
         var collection = new ServiceCollection();
-        collection.AddPostgreSqlSignals(database.DataSource, "fleet");
+        database.AddSignals(collection, "fleet");
         await using var services = collection.BuildServiceProvider();
         var signals = services.GetRequiredService<IWorkSignals>();
         var subscriber = new Recorder();
         using var subscription = signals.Subscribe(Instances, subscriber);
         await EventuallyAsync(() => subscriber.Resynced, "the subscriber resyncs once listening");
 
-        await using (var context = new FleetContext(database.ConnectionString))
+        await using (var context = new FleetContext(database))
         {
             await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
             await signals.SendAsync(context.Database.WorkTransaction(), Instances, "rolled-back", Cancel);
             await transaction.RollbackAsync(Cancel);
         }
-        await using (var context = new FleetContext(database.ConnectionString))
+        await using (var context = new FleetContext(database))
         {
             await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
             await signals.SendAsync(context.Database.WorkTransaction(), Instances, "committed", Cancel);
@@ -50,9 +49,9 @@ public sealed class DbContextSignalTests(PostgreSqlDatabase database) : IClassFi
     public async Task AContextWithoutATransactionCannotSend()
     {
         var collection = new ServiceCollection();
-        collection.AddPostgreSqlSignals(database.DataSource, "fleet");
+        database.AddSignals(collection, "fleet");
         await using var services = collection.BuildServiceProvider();
-        await using var context = new FleetContext(database.ConnectionString);
+        await using var context = new FleetContext(database);
 
         Assert.Throws<InvalidOperationException>(() => context.Database.WorkTransaction());
     }
@@ -83,3 +82,7 @@ public sealed class DbContextSignalTests(PostgreSqlDatabase database) : IClassFi
         public void Resync() => resynced = true;
     }
 }
+
+public sealed class PostgreSqlDbContextSignalTests(PostgreSqlTestDatabase database) : DbContextSignalTests(database), IClassFixture<PostgreSqlTestDatabase>;
+
+public sealed class SqlServerDbContextSignalTests(SqlServerTestDatabase database) : DbContextSignalTests(database), IClassFixture<SqlServerTestDatabase>;

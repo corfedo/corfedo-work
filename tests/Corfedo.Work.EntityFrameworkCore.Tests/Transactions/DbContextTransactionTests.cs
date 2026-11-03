@@ -1,6 +1,5 @@
 using System.Text.Json.Serialization;
-using Corfedo.Work.PostgreSql;
-using Corfedo.Work.PostgreSql.Tests.Provisioning;
+using Corfedo.Work.EntityFrameworkCore.Tests.Provisioning;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -8,7 +7,7 @@ using Microsoft.Extensions.Hosting;
 namespace Corfedo.Work.EntityFrameworkCore.Tests.Transactions;
 
 /// <summary>Work operations join a <see cref="DbContext"/>'s transaction and commit or roll back with its changes (R1).</summary>
-public sealed class DbContextTransactionTests(PostgreSqlDatabase database) : IClassFixture<PostgreSqlDatabase>, IAsyncLifetime
+public abstract class DbContextTransactionTests(TestDatabase database) : IAsyncLifetime
 {
     private ServiceProvider services = null!;
     private IHostedService[] hosted = [];
@@ -26,8 +25,8 @@ public sealed class DbContextTransactionTests(PostgreSqlDatabase database) : ICl
             await context.Database.EnsureCreatedAsync(Cancel);
         }
         var collection = new ServiceCollection();
-        collection.AddSingleton(new ShopOptions(database.ConnectionString));
-        collection.AddPostgreSqlWorkStore(database.DataSource);
+        collection.AddSingleton(database);
+        database.AddWorkStore(collection);
         collection.AddWork(work => work.PollingInterval(TimeSpan.FromMilliseconds(200)).AddJob<ShipOrder, ShipOrderHandler>(Shop.Ship));
         services = collection.BuildServiceProvider();
         hosted = [.. services.GetServices<IHostedService>()];
@@ -116,7 +115,7 @@ public sealed class DbContextTransactionTests(PostgreSqlDatabase database) : ICl
         Assert.Contains("no active transaction", refused.Message, StringComparison.Ordinal);
     }
 
-    private ShopContext Context() => new(new ShopOptions(database.ConnectionString));
+    private ShopContext Context() => new(database);
 
     private async Task<string?> StatusAsync(Guid order)
     {
@@ -124,6 +123,12 @@ public sealed class DbContextTransactionTests(PostgreSqlDatabase database) : ICl
         return await context.Orders.Where(o => o.Id == order).Select(o => o.Status).SingleOrDefaultAsync(Cancel);
     }
 }
+
+public sealed class PostgreSqlDbContextTransactionTests(PostgreSqlTestDatabase database)
+    : DbContextTransactionTests(database), IClassFixture<PostgreSqlTestDatabase>;
+
+public sealed class SqlServerDbContextTransactionTests(SqlServerTestDatabase database)
+    : DbContextTransactionTests(database), IClassFixture<SqlServerTestDatabase>;
 
 internal static class Shop
 {
@@ -136,8 +141,6 @@ internal sealed record ShipOrder(Guid Order, int RollBackAttempts);
 [JsonSerializable(typeof(ShipOrder))]
 internal sealed partial class ShopJson : JsonSerializerContext;
 
-internal sealed record ShopOptions(string ConnectionString);
-
 internal sealed class Order
 {
     public Guid Id { get; set; }
@@ -145,11 +148,11 @@ internal sealed class Order
     public required string Status { get; set; }
 }
 
-internal sealed class ShopContext(ShopOptions options) : DbContext
+internal sealed class ShopContext(TestDatabase database) : DbContext
 {
     public DbSet<Order> Orders => Set<Order>();
 
-    protected override void OnConfiguring(DbContextOptionsBuilder builder) => builder.UseNpgsql(options.ConnectionString);
+    protected override void OnConfiguring(DbContextOptionsBuilder builder) => database.Configure(builder);
 
     protected override void OnModelCreating(ModelBuilder model) => model.Entity<Order>(order =>
     {
@@ -164,11 +167,11 @@ internal sealed class ShopContext(ShopOptions options) : DbContext
 /// there. Attempts up to the arguments' count roll back after completing, so the run returns without a committed
 /// completion.
 /// </summary>
-internal sealed class ShipOrderHandler(ShopOptions options) : IJobHandler<ShipOrder>
+internal sealed class ShipOrderHandler(TestDatabase database) : IJobHandler<ShipOrder>
 {
     public async ValueTask<JobDisposition> RunAsync(ShipOrder args, JobRun run, CancellationToken cancellationToken)
     {
-        await using var context = new ShopContext(options);
+        await using var context = new ShopContext(database);
         await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
         var work = context.Database.WorkTransaction();
         await run.GuardAsync(work, cancellationToken);

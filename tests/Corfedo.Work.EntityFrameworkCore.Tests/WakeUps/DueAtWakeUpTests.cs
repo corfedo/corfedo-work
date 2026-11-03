@@ -1,8 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Corfedo.Work.EntityFrameworkCore.Tests.Mapping;
-using Corfedo.Work.PostgreSql;
-using Corfedo.Work.PostgreSql.Tests.Provisioning;
+using Corfedo.Work.EntityFrameworkCore.Tests.Provisioning;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -13,7 +12,7 @@ namespace Corfedo.Work.EntityFrameworkCore.Tests.WakeUps;
 /// Saving tracked changes of a mapped <c>DueAt</c> wakes the source's dispatchers at once, on commit of the
 /// transaction that saved them, instead of at their next poll.
 /// </summary>
-public sealed class DueAtWakeUpTests(PostgreSqlDatabase database) : IClassFixture<PostgreSqlDatabase>, IAsyncLifetime
+public abstract class DueAtWakeUpTests(TestDatabase database) : IAsyncLifetime
 {
     private readonly ConcurrentQueue<InstanceKey> runs = new();
     private ServiceProvider services = null!;
@@ -25,21 +24,21 @@ public sealed class DueAtWakeUpTests(PostgreSqlDatabase database) : IClassFixtur
 
     public async ValueTask InitializeAsync()
     {
-        await using (var context = new FleetContext(database.ConnectionString))
+        await using (var context = new FleetContext(database))
         {
             await context.Database.EnsureCreatedAsync(Cancel);
         }
         // A record due at start is claimed by the first pass, so the dispatcher is idle until a signal or its poll.
         var probe = new InstanceKey("probe-" + Guid.NewGuid().ToString("N"), 1);
-        await using (var context = new FleetContext(database.ConnectionString))
+        await using (var context = new FleetContext(database))
         {
             context.Instances.Add(new Instance { TenantId = probe.TenantId, Id = probe.Id, Name = "probe", DueAt = DateTimeOffset.UtcNow });
             await context.SaveChangesAsync(Cancel);
         }
         var collection = new ServiceCollection();
         collection.AddSingleton(runs);
-        collection.AddSingleton(new FleetConnection(database.ConnectionString));
-        collection.AddPostgreSqlWorkStore(database.DataSource);
+        collection.AddSingleton(database);
+        database.AddWorkStore(collection);
         // Without a wake-up, a record that becomes due waits for the next poll, after the test's timeout.
         collection.AddWork(work => work.PollingInterval(TimeSpan.FromMinutes(5)).AddLeaseHandler<InstanceKey, EndingHandler>(Fleet.Instances));
         services = collection.BuildServiceProvider();
@@ -78,7 +77,7 @@ public sealed class DueAtWakeUpTests(PostgreSqlDatabase database) : IClassFixtur
         await AddAsync(key, null);
         await Task.Delay(300, Cancel);
 
-        await using (var context = new FleetContext(database.ConnectionString, Signals))
+        await using (var context = new FleetContext(database, Signals))
         {
             var instance = await context.Instances.SingleAsync(i => i.TenantId == key.TenantId && i.Id == key.Id, Cancel);
             instance.DueAt = DateTimeOffset.UtcNow;
@@ -95,7 +94,7 @@ public sealed class DueAtWakeUpTests(PostgreSqlDatabase database) : IClassFixtur
         await AddAsync(key, null);
         await Task.Delay(300, Cancel);
 
-        await using (var context = new FleetContext(database.ConnectionString, Signals))
+        await using (var context = new FleetContext(database, Signals))
         {
             await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
             var instance = await context.Instances.SingleAsync(i => i.TenantId == key.TenantId && i.Id == key.Id, Cancel);
@@ -109,7 +108,7 @@ public sealed class DueAtWakeUpTests(PostgreSqlDatabase database) : IClassFixtur
 
     private async Task AddAsync(InstanceKey key, DateTimeOffset? due)
     {
-        await using var context = new FleetContext(database.ConnectionString, Signals);
+        await using var context = new FleetContext(database, Signals);
         context.Instances.Add(new Instance { TenantId = key.TenantId, Id = key.Id, Name = "web", DueAt = due });
         await context.SaveChangesAsync(Cancel);
     }
@@ -125,14 +124,16 @@ public sealed class DueAtWakeUpTests(PostgreSqlDatabase database) : IClassFixtur
     }
 }
 
-internal sealed record FleetConnection(string ConnectionString);
+public sealed class PostgreSqlDueAtWakeUpTests(PostgreSqlTestDatabase database) : DueAtWakeUpTests(database), IClassFixture<PostgreSqlTestDatabase>;
+
+public sealed class SqlServerDueAtWakeUpTests(SqlServerTestDatabase database) : DueAtWakeUpTests(database), IClassFixture<SqlServerTestDatabase>;
 
 /// <summary>Records the claimed key and ends the record in a <see cref="DbContext"/> transaction.</summary>
-internal sealed class EndingHandler(ConcurrentQueue<InstanceKey> runs, FleetConnection connection) : ILeaseHandler<InstanceKey>
+internal sealed class EndingHandler(ConcurrentQueue<InstanceKey> runs, TestDatabase database) : ILeaseHandler<InstanceKey>
 {
     public async ValueTask RunAsync(LeaseRun<InstanceKey> run, CancellationToken cancellationToken)
     {
-        await using var context = new FleetContext(connection.ConnectionString);
+        await using var context = new FleetContext(database);
         await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
         await run.EndAsync(context.Database.WorkTransaction(), cancellationToken: cancellationToken);
         await transaction.CommitAsync(cancellationToken);

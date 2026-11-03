@@ -1,6 +1,5 @@
 using System.Globalization;
-using Corfedo.Work.PostgreSql;
-using Corfedo.Work.PostgreSql.Tests.Provisioning;
+using Corfedo.Work.EntityFrameworkCore.Tests.Provisioning;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -10,7 +9,7 @@ namespace Corfedo.Work.EntityFrameworkCore.Tests.Mapping;
 /// Tables an EF model creates with <c>HasLease</c> and <c>HasReconciliation</c> pass the store's verification, and
 /// their entities serve as domain lease and reconciliation sources.
 /// </summary>
-public sealed class ModelMappingTests(PostgreSqlDatabase database) : IClassFixture<PostgreSqlDatabase>, IAsyncLifetime
+public abstract class ModelMappingTests(TestDatabase database) : IAsyncLifetime
 {
     private ServiceProvider services = null!;
 
@@ -25,7 +24,7 @@ public sealed class ModelMappingTests(PostgreSqlDatabase database) : IClassFixtu
             await context.Database.EnsureCreatedAsync(Cancel);
         }
         var collection = new ServiceCollection();
-        collection.AddPostgreSqlWorkStore(database.DataSource);
+        database.AddWorkStore(collection);
         collection.AddWork(work => work.AddLeaseSource(Fleet.Instances).AddReconcileSource(Fleet.Placements));
         services = collection.BuildServiceProvider();
         await Store.MigrateAsync(Cancel);
@@ -79,8 +78,12 @@ public sealed class ModelMappingTests(PostgreSqlDatabase database) : IClassFixtu
         Assert.True(read.Entry(stored).Property<DateTimeOffset?>("DueAt").CurrentValue < DateTimeOffset.MaxValue, "the request makes the placement due");
     }
 
-    private FleetContext Context() => new(database.ConnectionString);
+    private FleetContext Context() => new(database);
 }
+
+public sealed class PostgreSqlModelMappingTests(PostgreSqlTestDatabase database) : ModelMappingTests(database), IClassFixture<PostgreSqlTestDatabase>;
+
+public sealed class SqlServerModelMappingTests(SqlServerTestDatabase database) : ModelMappingTests(database), IClassFixture<SqlServerTestDatabase>;
 
 internal static class Fleet
 {
@@ -119,7 +122,7 @@ internal sealed class Placement
 }
 
 /// <summary>The fleet's records; with <paramref name="wakeUps"/>, saved changes of their due times wake the application's dispatchers.</summary>
-internal sealed class FleetContext(string connectionString, IWorkSignals? wakeUps = null) : DbContext
+internal sealed class FleetContext(TestDatabase database, IWorkSignals? wakeUps = null) : DbContext
 {
     public DbSet<Instance> Instances => Set<Instance>();
 
@@ -127,7 +130,7 @@ internal sealed class FleetContext(string connectionString, IWorkSignals? wakeUp
 
     protected override void OnConfiguring(DbContextOptionsBuilder builder)
     {
-        builder.UseNpgsql(connectionString);
+        database.Configure(builder);
         if (wakeUps is not null)
         {
             builder.AddWorkWakeUps(wakeUps);
