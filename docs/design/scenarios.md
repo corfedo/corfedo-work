@@ -39,6 +39,7 @@ client holding a lease; "pause" means a holder stops running (a long GC pause, a
 | L28 | Partition limit 1; a holder crashes. | Its lease keeps counting until the expiry processor settles it, then the next record of the partition is claimed; no limit is exceeded at any point. | R13, E10 |
 | L29 | An application transaction claims in a partition and stays open; a due claim covers that partition and another; another transaction holds the owner's scope. | The due claim returns the other partition's record without waiting and claims the skipped one in a later call; with the owner's scope busy it returns at once without claims. | R13 |
 | L30 | A due claim finds nothing shortly before a record becomes due, and shortly before an expired lease's takeover backoff ends; another due record is locked; a partition is at its limit. | The next due time after the claim's cutoff is zero once either record is claimable, so the dispatcher claims again instead of waiting for the polling interval; the locked and the limited record, which the claim considered, give no immediate next due time. | R7 |
+| L31 | A record's key is as long as its column; another key adds a character to it. Schedules, cancellation requests and claims, by key and from candidates, use the longer key. | None matches the record or changes it; a candidate claim that also lists the record claims only the record. | E3, E7 |
 
 ## Remote holders
 
@@ -74,6 +75,7 @@ client holding a lease; "pause" means a holder stops running (a long GC pause, a
 | C-20 | A dispatcher with one slot; one record is always due again; another is due only because of an invalidation. | The invalidated record runs after at most two runs of the other. | C6 |
 | C-21 | On a supersede source with owner limit 1, an owner holds a lease; an invalidation commits; the owner claims due records with limit 1. | It claims the record of its obsolete lease at once, without a takeover, and no other record. | C9, R13 |
 | C-22 | On a supersede source, a transaction takes the fence and an invalidation waits for it; a guard queues behind the invalidation; the fenced transaction then writes the guarded record. | The write does not wait: the queued guard holds no record lock. After the fenced transaction commits, the invalidation commits and the guard fails. | C9, C6 |
+| C-23 | A request for a key one character longer than the record's, whose key is as long as its column. | The request finds no record; the record's revision and due time are unchanged. | C1 |
 
 ## Jobs
 

@@ -72,6 +72,18 @@ internal sealed partial class SqlServerLeaseStore(string connectionString, strin
     internal static void AddKey<TKey>(SqlCommand command, LeaseSql sql, LeaseSource<TKey> source, TKey key)
         where TKey : notnull => source.Key.Write(key, new ParameterKeyWriter(command.Parameters, sql.Shape.Keys));
 
+    /// <summary>
+    /// Whether the key's fields fit their columns. A key that does not is no record's key, so operations on keys the
+    /// caller gives treat it as matching no record instead of binding it, which would truncate it to another record's key.
+    /// </summary>
+    internal static bool Fits<TKey>(LeaseSql sql, LeaseSource<TKey> source, TKey key)
+        where TKey : notnull
+    {
+        var writer = new FitsKeyWriter(sql.Shape.Keys);
+        source.Key.Write(key, writer);
+        return writer.Fits;
+    }
+
     internal static SqlParameter[] KeyParameters<TKey>(LeaseSql sql, LeaseSource<TKey> source, TKey key)
         where TKey : notnull
     {

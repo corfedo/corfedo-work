@@ -15,6 +15,10 @@ internal sealed partial class SqlServerLeaseStore
         {
             throw new ArgumentException($"Lease source {source.Name} holds reconciliation records; they are made due by requests and invalidations, not schedules.", nameof(source));
         }
+        if (!Fits(sql, source, key))
+        {
+            return false;
+        }
         var text = $"""
             UPDATE r SET {LeaseSql.Bare(sql.Due)} = {sql.DueExpression}, {LeaseSql.Bare(sql.Execution)} = COALESCE(@execution, {sql.Execution})
             FROM {sql.Table} AS r WHERE {sql.KeyMatch};
@@ -62,6 +66,10 @@ internal sealed partial class SqlServerLeaseStore
         where TKey : notnull
     {
         var work = SqlServerTransaction.From(transaction);
+        if (!Fits(sql, source, key))
+        {
+            return false;
+        }
         var text = $"""
             UPDATE r SET {LeaseSql.Bare(sql.Cancel)} = {value} FROM {sql.Table} AS r WHERE {sql.KeyMatch};
             DECLARE @changed int = @@ROWCOUNT;

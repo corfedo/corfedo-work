@@ -114,4 +114,22 @@ public abstract class ReconcileRequestScenarios(IReconcileConformanceProvider pr
         Assert.True(plainState.DueIn >= plainState.NotBeforeIn, "a plain request moved the record before its backoff floor");
         Assert.Equal(1, runs.Count(r => r.Key == plain));
     }
+
+    [Fact]
+    public async Task C23_ARequestForAKeyLongerThanItsColumnMatchesNoRecord()
+    {
+        var source = await ReconcileSourceAsync(Reconcile(TimeSpan.FromSeconds(30)));
+        var record = new TestKey(new string('t', TestKey.TenantLength), 1);
+        await InsertAsync(source, record);
+        var client = await ClientAsync(source);
+
+        await using (var transaction = await BeginAsync())
+        {
+            Assert.False(await Reconciliation(client).RequestAsync(transaction.Work, source, record with { Tenant = record.Tenant + "u" }, ReconcileRequest.Default, Cancel));
+            await transaction.CommitAsync(Cancel);
+        }
+
+        var state = await ReadAsync(source, record);
+        Assert.Equal((0L, DueState.None), (state.RequestedRevision, state.Lease.Due));
+    }
 }

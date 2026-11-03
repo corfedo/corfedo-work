@@ -75,7 +75,7 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
             """));
         await ExecuteAsync($"""
             CREATE TABLE {Schema}.{name} (
-                tenant nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                tenant nvarchar({TestKey.TenantLength}) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 id bigint NOT NULL,
                 progress nvarchar(max),
                 {columns},
@@ -462,7 +462,7 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
     private static SqlCommand KeyCommand(SqlConnection connection, SqlTransaction? transaction, string text, TestKey key)
     {
         var command = new SqlCommand(text, connection, transaction);
-        command.Parameters.Add(new SqlParameter("@tenant", SqlDbType.NVarChar, 100) { Value = key.Tenant });
+        command.Parameters.Add(new SqlParameter("@tenant", SqlDbType.NVarChar, TestKey.TenantLength) { Value = key.Tenant });
         command.Parameters.Add(new SqlParameter("@id", SqlDbType.BigInt) { Value = key.Id });
         return command;
     }

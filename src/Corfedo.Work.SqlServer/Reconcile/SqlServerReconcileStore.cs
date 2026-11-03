@@ -21,6 +21,10 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
     {
         var work = SqlServerTransaction.From(transaction);
         var sql = await leases.SqlAsync(source.Leases, cancellationToken);
+        if (!SqlServerLeaseStore.Fits(sql, source.Leases, key))
+        {
+            return false;
+        }
         var debounce = request.Debounce;
         var first = $"COALESCE({sql.FirstRequestedAt}, SYSUTCDATETIME())";
         var delayed = Tsql.AddTicks("SYSUTCDATETIME()", "@delay");

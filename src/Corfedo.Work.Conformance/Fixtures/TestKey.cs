@@ -5,6 +5,9 @@ namespace Corfedo.Work.Conformance;
 /// <summary>The composite key of conformance records: a tenant, which is also the partition, and a number.</summary>
 public sealed record TestKey(string Tenant, long Id)
 {
+    /// <summary>The length of the tenant column in test tables of providers that limit it.</summary>
+    public const int TenantLength = 100;
+
     public static IKeyCodec<TestKey> Codec { get; } = new KeyCodec();
 
     public override string ToString() => Codec.Format(this);

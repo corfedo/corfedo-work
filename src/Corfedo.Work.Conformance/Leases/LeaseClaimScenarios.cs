@@ -512,6 +512,35 @@ public abstract class LeaseClaimScenarios(ILeaseConformanceProvider provider) : 
         Assert.Equal(ClaimReason.Takeover, runs[crashed].Reason);
     }
 
+    [Fact]
+    public async Task L31_AKeyLongerThanItsColumnMatchesNoRecord()
+    {
+        var source = await SourceAsync(Policy(TimeSpan.FromSeconds(30)));
+        var record = new TestKey(new string('t', TestKey.TenantLength), 1);
+        var longer = record with { Tenant = record.Tenant + "u" };
+        await InsertAsync(source, record, TimeSpan.Zero);
+        var client = await ClientAsync(source);
+
+        await using (var transaction = await BeginAsync())
+        {
+            Assert.False(await client.Operations.ScheduleAsync(transaction.Work, source, longer, Due.None, cancellationToken: Cancel));
+            Assert.False(await client.Operations.RequestCancelAsync(transaction.Work, source, longer, Cancel));
+            Assert.False(await client.Operations.ClearCancelAsync(transaction.Work, source, longer, Cancel));
+            Assert.Empty(await client.Operations.ClaimAsync(transaction.Work, source, [longer], 10, Cancel));
+            await transaction.CommitAsync(Cancel);
+        }
+        Assert.Null(await client.Operations.ClaimAsync(source, longer, Cancel));
+        var untouched = await ReadAsync(source, record);
+        Assert.Equal((DueState.Past, 0L, false), (untouched.Due, untouched.Epoch, untouched.CancelRequested));
+
+        await using (var transaction = await BeginAsync())
+        {
+            var claims = await client.Operations.ClaimAsync(transaction.Work, source, [longer, record], 10, Cancel);
+            await transaction.CommitAsync(Cancel);
+            Assert.Equal([record], claims.Select(c => c.Key));
+        }
+    }
+
     private static void InterlockedMax(ref int target, int value)
     {
         int current;

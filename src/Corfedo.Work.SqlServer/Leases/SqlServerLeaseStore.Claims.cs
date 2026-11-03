@@ -96,6 +96,10 @@ internal sealed partial class SqlServerLeaseStore
         where TKey : notnull
     {
         var sql = await SqlAsync(source, cancellationToken);
+        if (!Fits(sql, source, key))
+        {
+            return null;
+        }
         string? waitFor = null;
         while (true)
         {
@@ -143,6 +147,14 @@ internal sealed partial class SqlServerLeaseStore
             return [];
         }
         var sql = await SqlAsync(source, cancellationToken);
+        if (!candidates.All(k => Fits(sql, source, k)))
+        {
+            candidates = [.. candidates.Where(k => Fits(sql, source, k))];
+            if (candidates.Count == 0)
+            {
+                return [];
+            }
+        }
         await RequireReadCommittedAsync(work, "Claims in the caller's transaction", cancellationToken);
         if (!await FenceDefinitionAsync(work, sql, cancellationToken))
         {

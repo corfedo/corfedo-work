@@ -1,13 +1,28 @@
 using System.Data;
+using System.Text;
 using Microsoft.Data.SqlClient;
 
 namespace Corfedo.Work.SqlServer.Leases;
 
-/// <summary>A key field's column: its declaration for <c>OPENJSON</c> columns and the parameter type that matches it.</summary>
-internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type, int Size)
+/// <summary>
+/// A key field's column: its declaration for <c>OPENJSON</c> columns and the parameter type that matches it. <see
+/// cref="Size"/> is the length in characters of <c>nvarchar</c> and <c>nchar</c> columns and in bytes of the code page
+/// <see cref="CodePage"/> of <c>varchar</c> and <c>char</c> columns, -1 for <c>max</c> and 0 for other types.
+/// </summary>
+internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type, int Size, int CodePage = 0)
 {
+    private readonly Encoding? encoding = Type is SqlDbType.VarChar or SqlDbType.Char && Size > 0
+        ? CodePage == 65001 ? Encoding.UTF8 : CodePagesEncodingProvider.Instance.GetEncoding(CodePage) ?? Encoding.GetEncoding(CodePage)
+        : null;
+
     /// <summary>The declaration of a variable of the column's values: variables take no collation and compare in the column's.</summary>
     public string VariableDeclaration => Declaration.Split(" COLLATE ")[0];
+
+    /// <summary>
+    /// Whether the value fits the column. One that does not is no record's key, and SQL Server would truncate it,
+    /// both as a parameter and read from JSON, to the key of another record.
+    /// </summary>
+    public bool Fits(string value) => Size <= 0 || (encoding is null ? value.Length : encoding.GetByteCount(value)) <= Size;
 }
 
 /// <summary>
@@ -44,7 +59,7 @@ internal sealed record SourceShape(
 /// <summary>Reads and verifies a source's table in the catalog.</summary>
 internal static class SourceCatalog
 {
-    private sealed record Column(string Type, short MaxLength, string? Collation, bool NotNull, string? Computed);
+    private sealed record Column(string Type, short MaxLength, string? Collation, int CodePage, bool NotNull, string? Computed);
 
     private sealed record Index(string Name, bool Clustered, bool Unique, string? Filter, string[] Keys, string[] Included);
 
@@ -74,7 +89,8 @@ internal static class SourceCatalog
             await using var command = Tsql.Command(connection, null, """
                 DECLARE @id int = OBJECT_ID(@table, N'U');
                 SELECT lock_escalation_desc FROM sys.tables WHERE object_id = @id;
-                SELECT c.name, t.name, c.max_length, c.collation_name, CAST(CASE WHEN c.is_nullable = 0 THEN 1 ELSE 0 END AS bit),
+                SELECT c.name, t.name, c.max_length, c.collation_name, CAST(COALESCE(COLLATIONPROPERTY(c.collation_name, 'CodePage'), 0) AS int),
+                    CAST(CASE WHEN c.is_nullable = 0 THEN 1 ELSE 0 END AS bit),
                     CASE WHEN cc.is_persisted = 1 THEN cc.definition END
                 FROM sys.columns AS c JOIN sys.types AS t ON t.user_type_id = c.user_type_id
                 LEFT JOIN sys.computed_columns AS cc ON cc.object_id = c.object_id AND cc.column_id = c.column_id WHERE c.object_id = @id;
@@ -90,8 +106,8 @@ internal static class SourceCatalog
             await reader.NextSetAsync(cancellationToken);
             while (await reader.NextRowAsync(cancellationToken))
             {
-                columns[reader.GetString(0)] = new Column(reader.GetString(1), reader.GetInt16(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetBoolean(4),
-                    reader.IsDBNull(5) ? null : reader.GetString(5));
+                columns[reader.GetString(0)] = new Column(reader.GetString(1), reader.GetInt16(2), reader.IsDBNull(3) ? null : reader.GetString(3), reader.GetInt32(4),
+                    reader.GetBoolean(5), reader.IsDBNull(6) ? null : reader.GetString(6));
             }
             await reader.NextSetAsync(cancellationToken);
             var names = new Dictionary<int, (string Name, bool Unique, string? Filter, bool Clustered)>();
@@ -297,8 +313,8 @@ internal static class SourceCatalog
     {
         "nvarchar" => new KeyColumn(name, Declaration(column), SqlDbType.NVarChar, column.MaxLength < 0 ? -1 : column.MaxLength / 2),
         "nchar" => new KeyColumn(name, Declaration(column), SqlDbType.NChar, column.MaxLength / 2),
-        "varchar" => new KeyColumn(name, Declaration(column), SqlDbType.VarChar, column.MaxLength),
-        "char" => new KeyColumn(name, Declaration(column), SqlDbType.Char, column.MaxLength),
+        "varchar" => new KeyColumn(name, Declaration(column), SqlDbType.VarChar, column.MaxLength, column.CodePage),
+        "char" => new KeyColumn(name, Declaration(column), SqlDbType.Char, column.MaxLength, column.CodePage),
         "int" => new KeyColumn(name, "int", SqlDbType.Int, 0),
         "bigint" => new KeyColumn(name, "bigint", SqlDbType.BigInt, 0),
         _ => new KeyColumn(name, "uniqueidentifier", SqlDbType.UniqueIdentifier, 0),

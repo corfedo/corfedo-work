@@ -31,6 +31,22 @@ internal sealed class ParameterKeyWriter(SqlParameterCollection parameters, IRea
     }
 }
 
+/// <summary>Checks that a key's string fields fit their columns.</summary>
+internal sealed class FitsKeyWriter(IReadOnlyList<KeyColumn> columns) : IKeyWriter
+{
+    private int next;
+
+    public bool Fits { get; private set; } = true;
+
+    public void Write(string value) => Fits &= columns[next++].Fits(value);
+
+    public void Write(int value) => next++;
+
+    public void Write(long value) => next++;
+
+    public void Write(Guid value) => next++;
+}
+
 /// <summary>Writes many keys as one JSON array of arrays, the <c>@keyset</c> parameter that <see cref="LeaseSql.KeyedRows"/> reads.</summary>
 internal sealed class JsonKeyWriter : IKeyWriter, IDisposable
 {
