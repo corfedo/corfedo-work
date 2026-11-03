@@ -19,7 +19,9 @@ colima with Rosetta). The essential statements of each program are reproduced be
 | Isolation | The database must run with `READ_COMMITTED_SNAPSHOT ON` (RCSI); the store refuses to start otherwise (owner). Without RCSI every read of other rows waits for their writers and the limit-scope pattern deadlocks with application transactions (see [isolation](#isolation-and-lock-then-evaluate)). Azure SQL Database runs with RCSI on by default; on SQL Server and Managed Instance it is enabled once per database. |
 | Signals | A framework signals table, written in the sending transaction and read below `MIN_ACTIVE_ROWVERSION()` by a server-side short poll (owner). Service Broker is not used: it is unavailable on Azure SQL Database, needs a queue and service per process created at runtime, and every send costs one `SEND` per listening process. See [signals](#signals). |
 | Identifiers | Ids are `uniqueidentifier` columns holding the same `Guid` value the application sees, so application tables, tools and EF Core mappings join on them without conversion. SQL Server orders `uniqueidentifier` by its last bytes first, so version-7 ids sort out of time order: inserts spread over the primary key instead of filling its last page. Every rule that locks rows "in id order" means SQL Server's order, produced by the statement's `ORDER BY` or, in .NET, by `SqlGuid` comparison, never by `Guid` comparison. Page splits and fragmentation of `jobs` and `job_runs` are measured at 1M and 10M jobs before the schema baseline is fixed. |
-| Lock escalation | Framework tables are created with `LOCK_ESCALATION = DISABLE`. Startup verification refuses a lease or reconciliation source whose table escalates (`sys.tables.lock_escalation_desc` other than `DISABLE`): one application statement locking more than about 5 000 of its rows would otherwise take a table lock, which `READPAST` cannot skip, and every claim of the source would wait for it. Applications add `ALTER TABLE ... SET (LOCK_ESCALATION = DISABLE)` to their migration. |
+| Lock escalation | Framework tables are created with `LOCK_ESCALATION = DISABLE`. Startup verification refuses a lease or reconciliation source whose table escalates (`sys.tables.lock_escalation_desc` other than `DISABLE`): one application statement locking more than about 5 000 of its rows would otherwise take a table lock, which `READPAST` cannot skip, and every claim of the source would wait for it. Verification disables escalation on such a table itself (owner), waiting at most one second for the schema lock the change takes, and refuses the source, naming the `ALTER TABLE ... SET (LOCK_ESCALATION = DISABLE)` statement, only when its login may not alter the table or the lock is not granted. |
+| Native AOT | The provider is not trimming- or Native AOT-compatible (owner): `Microsoft.Data.SqlClient` 7.1.1 reports trimming and AOT analysis warnings of its own. |
+| Connection pool | The tests run SqlClient's channel-based pool (`Switch.Microsoft.Data.SqlClient.UseConnectionPoolV2`, opt-in since 7.1), and the production guide recommends it (owner); see the login-cost finding. |
 
 ## Local setup
 
@@ -49,12 +51,12 @@ Full suites run on a native x86_64 host; the Mac is for small runs. Server-side 
 client-side pass is mostly round trips (begin, statement, commit) and the compilation of statement text that differs
 per call, which the provider avoids with parameterized statements and table-valued input.
 
-`Microsoft.Data.SqlClient` refuses to open connections under `InvariantGlobalization` (`NotSupportedException`). Its
-Native AOT publish of an application that references the provider fails on SqlClient 7.1.1's trimming and AOT
-analysis warnings (50 distinct warnings on osx-arm64: diagnostic listener and event source writes, authentication
-provider and retry-logic loading by type name, UDT and vector serialization, and `System.Configuration` in
-`System.Configuration.ConfigurationManager`, which SqlClient references). Whether the provider ships without Native AOT
-support or another route exists is a decision for the owner.
+`Microsoft.Data.SqlClient` refuses to open connections under `InvariantGlobalization` (`NotSupportedException`). A
+Native AOT publish of an application that references the provider reports SqlClient 7.1.1's trimming and AOT analysis
+warnings (50 distinct warnings on osx-arm64: diagnostic listener and event source writes, authentication provider and
+retry-logic loading by type name, UDT and vector serialization, and `System.Configuration` in
+`System.Configuration.ConfigurationManager`, which SqlClient references), so the provider is not marked trimming- or
+Native AOT-compatible and the AOT smoke application does not reference it.
 
 ## Isolation and lock, then evaluate
 
@@ -423,7 +425,8 @@ provider options; pruning is a maintenance statement.
 - A refused fence rolls back before it throws.
 - `OUTPUT INTO` table variables only.
 - Table-valued input is copied into a local table variable before multi-statement use.
-- Framework tables disable lock escalation; sources whose tables escalate are refused.
+- Framework tables disable lock escalation; verification disables it on source tables.
+- A command cancelled by its token surfaces as `OperationCanceledException`, through the execution helpers in `Tsql`.
 - Deadlock victims (1205) in provider transactions are retried.
 
 ## Findings while building the provider
@@ -492,10 +495,17 @@ provider options; pruning is a maintenance statement.
   temporary objects, is open; the measurements in the validation decide.
 - A SQL authentication login costs about twice as much on 2025 as on 2022 (about 80 ms against 37 ms per `sqlcmd`
   login on an idle container, with `PREEMPTIVE_OS_CRYPTOPS` and `PREEMPTIVE_OS_AUTHENTICATIONOPS` among 2025's top
-  waits under the suite). A connection pool that grows during a burst pays it per new connection: in the suite on 2025,
-  opens took up to 430 ms, and `J29_WaitsRegisteringWhileJobsCompleteAreWokenBySignals`, whose waiters are reread one
-  definition at a time, exceeded its 400 ms wake bound in about half of the full runs while passing alone. Signals
-  themselves were delivered within 50 ms of the commit.
+  waits under the suite), and under the suite's load on 2025 a new connection took 80–830 ms (about 170 per run over
+  50 ms, since every test class has a database and so a pool of its own). SqlClient's default pool serves an
+  asynchronous open that finds no idle connection from one queue, one request at a time, so every open waits for the
+  logins ahead of it: opens that then received an idle connection still waited up to 430 ms, and
+  `J29_WaitsRegisteringWhileJobsCompleteAreWokenBySignals` exceeded its 400 ms wake bound in about half of the full
+  runs, although signals were delivered within 50 ms of the commit. With the channel-based pool
+  (`UseConnectionPoolV2`) a login delays only the open that makes it: the largest wake lag of that scenario fell from
+  433 ms to 37 ms, and eight full runs in a row passed.
+- SqlClient reports a command that its cancellation token stopped as a `SqlException` ("Operation cancelled by user",
+  or "A severe error occurred on the current command"). The provider runs commands and reads results through helpers
+  that report it as an `OperationCanceledException` of that token, as core loops and callers expect of a cancellation.
 - A read that PostgreSQL serves from one snapshot of several statements (a chain with its steps and groups) is one
   statement on SQL Server, since RCSI gives each statement its own snapshot and snapshot isolation is not required of
   the database: the chain's steps and groups come back as `FOR JSON` columns of the chain's row. The unserved report

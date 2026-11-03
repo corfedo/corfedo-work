@@ -10,4 +10,9 @@
     <Using Include="Xunit" />
     <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- SqlClient's channel-based pool: a new connection's login delays only the open that makes it, not every open
+         queued behind it, as the production guide recommends. -->
+    <RuntimeHostConfigurationOption Include="Switch.Microsoft.Data.SqlClient.UseConnectionPoolV2" Value="true" />
+  </ItemGroup>
 </Project>
