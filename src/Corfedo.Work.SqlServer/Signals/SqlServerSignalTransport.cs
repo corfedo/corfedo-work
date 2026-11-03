@@ -72,8 +72,9 @@ internal sealed partial class SqlServerSignalTransport(string connectionString, 
                     }
                 }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (Exception) when (cancellationToken.IsCancellationRequested)
             {
+                // SqlClient reports a command cancelled by the token as a SqlException.
                 return;
             }
             catch (Exception exception)

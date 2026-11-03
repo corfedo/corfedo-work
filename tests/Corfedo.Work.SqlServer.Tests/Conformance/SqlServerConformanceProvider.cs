@@ -577,6 +577,9 @@ public sealed class SqlServerJobChainScenarios(SqlServerConformanceProvider prov
 public sealed class SqlServerJobMonitoringScenarios(SqlServerConformanceProvider provider)
     : JobMonitoringScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
 
+public sealed class SqlServerSignalScenarios(SqlServerConformanceProvider provider)
+    : SignalScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
 public sealed class SqlServerJobTelemetryScenarios(SqlServerConformanceProvider provider)
     : JobTelemetryScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
 
