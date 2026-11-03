@@ -50,7 +50,11 @@ client-side pass is mostly round trips (begin, statement, commit) and the compil
 per call, which the provider avoids with parameterized statements and table-valued input.
 
 `Microsoft.Data.SqlClient` refuses to open connections under `InvariantGlobalization` (`NotSupportedException`). Its
-behaviour under trimming and Native AOT is not verified yet.
+Native AOT publish of an application that references the provider fails on SqlClient 7.1.1's trimming and AOT
+analysis warnings (50 distinct warnings on osx-arm64: diagnostic listener and event source writes, authentication
+provider and retry-logic loading by type name, UDT and vector serialization, and `System.Configuration` in
+`System.Configuration.ConfigurationManager`, which SqlClient references). Whether the provider ships without Native AOT
+support or another route exists is a decision for the owner.
 
 ## Isolation and lock, then evaluate
 
@@ -521,6 +525,6 @@ Core changes: none to the public contract. One internal change is needed: a prov
 record the isolation check. Deadlock victims in the caller's transaction surface as `SqlException` 1205; whether the
 core reports them as a framework error type is a decision for the provider stage.
 
-Not verified yet: `Microsoft.Data.SqlClient` under trimming and Native AOT; `Testcontainers.MsSql` on the Mac; Azure
+Not verified yet: `Testcontainers.MsSql` on the Mac; Azure
 SQL Database and Managed Instance; the end-to-end cost of identity locks in a 50 000-item fan-out; page splits of
 `uniqueidentifier` primary keys at 1M and 10M jobs.
