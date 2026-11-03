@@ -3,7 +3,7 @@
 From its 5.x line, TickerQ is source-available under the TickerQ Software License Agreement, with a free Community
 tier below US$5M annual revenue and paid subscriptions above it; earlier releases keep their MIT and Apache-2.0
 terms. Corfedo Work is Apache-2.0 for every user. Like TickerQ, it registers work without reflection, and its
-packages, apart from the EF Core adapter, support Native AOT.
+packages, apart from the EF Core adapter and the SQL Server store, support Native AOT.
 
 ## What maps to what
 

@@ -461,7 +461,8 @@ provider options; pruning is a maintenance statement.
   1 000); at 200 000 rows it kept the index order. The cursor reads only as far as needed whatever plan it gets: a
   claim of 32 among 1 000 due rows holds 32 key locks. The cursor is declared `DYNAMIC`: a `FORWARD_ONLY READ_ONLY`
   cursor becomes fast-forward, whose plan read every matching row when it opened (2.8 s for the 250 000 due jobs of a
-  definition at 10M jobs, against under 1 ms dynamic). A fetch and its row lock take 0.08 ms on sk8 at 1M jobs and 0.18 ms at 10M.
+  definition at 10M jobs, against under 1 ms dynamic). A fetch and its row lock take 0.08 ms at 1M jobs and 0.18 ms
+  at 10M on the validation machine described under [Measurements](#measurements).
 - Statements over a set of keys (`@keys`) join it to the table with `INNER LOOP JOIN ... WITH (INDEX(<key>),
   FORCESEEK)`. Without it, an update of a few keys on a small table scanned the table and waited for every row other
   claims held, and two such claims deadlocked on each other's rows.
@@ -547,7 +548,7 @@ provider options; pruning is a maintenance statement.
 
 ## Measurements
 
-Validation on sk8 (AMD Ryzen 7 7700X, 30 GiB), SQL Server 2022 in a container limited to 8 GiB, default tempdb (no
+Validation on an AMD Ryzen 7 7700X with 30 GiB, SQL Server 2022 in a container limited to 8 GiB, default tempdb (no
 memory-optimized metadata), the jobs of the PostgreSQL measurements in [providers](providers.md): 10 definitions,
 70% terminal, 25% due, 5 000 outstanding leases per definition. Times are whole calls from the client unless a
 statement is named; statement times are `sys.dm_exec_query_stats` averages.
