@@ -482,11 +482,12 @@ internal sealed class LeaseSql
 
     /// <summary>
     /// A statement that takes the applock <paramref name="resource"/> until the transaction ends, waiting for it; a
-    /// refusal, such as a deadlock, ends the batch with an error. <c>@lock_result</c> is declared by the prologue.
+    /// refusal, such as a deadlock, ends the batch with <see cref="Tsql.RefusedLock"/>. <c>@lock_result</c> is declared
+    /// by the prologue.
     /// </summary>
     public static string AppLock(string resource, string mode) =>
         $"EXEC @lock_result = sp_getapplock @Resource = {resource}, @LockMode = '{mode}', @LockOwner = 'Transaction', @LockTimeout = -1;\n"
-        + "IF @lock_result < 0 THROW 51205, N'A lock request of the transaction was refused or chosen as a deadlock victim.', 1;\n";
+        + $"IF @lock_result < 0\nBEGIN\n{Tsql.RefusedLock}\nEND\n";
 
     /// <summary><c>r.k0 = @k0 AND ...</c> for one key.</summary>
     public string KeyMatch => string.Join(" AND ", Keys.Select((k, i) => $"{k} = {Shape.Keys[i].Value("@k" + i)}")) + (Job is null ? "" : " AND " + Scope);

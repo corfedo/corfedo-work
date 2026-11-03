@@ -34,8 +34,15 @@ The same handle works for jobs, leases, reconciliation and signals.
 - **Read committed.** Claims and fenced writes inside your transaction require READ COMMITTED, the default isolation
   level, and refuse others. On SQL Server the database reads committed snapshots (`READ_COMMITTED_SNAPSHOT ON`).
 - **A refusal ends the transaction.** When an operation refuses your transaction, it is rolled back. On SQL Server the
-  server ends it, and so does a deadlock (`SqlException` 1205): `Commit` then throws, and a command sent on the
-  connection afterwards runs outside any transaction. Start a new transaction instead of continuing.
+  server ends it, and so does a deadlock: `Commit` then throws, and a command sent on the connection afterwards runs
+  outside any transaction. Start a new transaction instead of continuing. On PostgreSQL the transaction is aborted
+  and `Commit` rolls it back without an error.
+- **Retry the whole transaction after a deadlock.** Your transaction and another one can wait for each other, for
+  example when they request the same jobs in opposite orders or mix requests with writes to the same rows. The
+  database ends one of them. Run your unit of work again in a new transaction. The deadlock errors are
+  `PostgresException` 40P01, and `SqlException` 1205 or 51205: SQL Server reports a deadlock on the store's locks as
+  51205. EF Core's retrying execution strategy runs the unit again when you wrap it in `strategy.ExecuteAsync`; on SQL
+  Server add 51205 with `EnableRetryOnFailure(errorNumbersToAdd: [51205])`.
 - **Fenced writes.** A handler that writes its results calls `run.GuardAsync(transaction)` first. It locks the row and
   checks that the run still holds it, so a worker that lost its lease cannot commit. See [leases](leases.md).
 

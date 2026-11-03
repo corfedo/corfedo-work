@@ -76,8 +76,8 @@ internal static class Tsql
     /// in <paramref name="mode"/> until the transaction ends, each waiting up to <paramref name="timeout"/> milliseconds
     /// (-1 waits, 0 only tries). A refused lock runs <paramref name="refused"/>, which sees the name in
     /// <c>@{prefix}_lock</c> and its position from 0 in <c>@{prefix}_index</c>; without it a refusal ends the batch with
-    /// an error. The list is read once from start to end, so n locks cost O(n). <c>@lock_result</c> is declared by the
-    /// prologue.
+    /// <see cref="RefusedLock"/>. The list is read once from start to end, so n locks cost O(n). <c>@lock_result</c> is
+    /// declared by the prologue.
     /// </summary>
     public static string AppLocks(string prefix, string names, string mode, string timeout, string? refused = null) => $"""
         DECLARE @{prefix}_names nvarchar(max) = {names}, @{prefix}_at int = 1, @{prefix}_end int, @{prefix}_index int = 0, @{prefix}_lock nvarchar(255);
@@ -90,7 +90,7 @@ internal static class Tsql
             EXEC @lock_result = sp_getapplock @Resource = @{prefix}_lock, @LockMode = '{mode}', @LockOwner = 'Transaction', @LockTimeout = {timeout};
             IF @lock_result < 0
             BEGIN
-                {refused ?? "THROW 51205, N'A lock request of the transaction was refused or chosen as a deadlock victim.', 1;"}
+                {refused ?? RefusedLock}
             END
             SET @{prefix}_at = @{prefix}_end + 1;
             SET @{prefix}_index += 1;
@@ -345,8 +345,30 @@ internal static class Tsql
     /// <summary>Error numbers of a unique index (2601) or unique constraint (2627) violation.</summary>
     public static bool IsUniqueViolation(SqlException exception) => exception.Errors.Cast<SqlError>().Any(e => e.Number is 2601 or 2627);
 
-    /// <summary>A deadlock victim (1205): SQL Server rolled its transaction back.</summary>
-    public static bool IsDeadlock(SqlException exception) => exception.Errors.Cast<SqlError>().Any(e => e.Number == 1205);
+    /// <summary>
+    /// The error a batch raises when SQL Server chose it as a deadlock victim while it waited for an applock. SQL Server
+    /// reports that as <c>sp_getapplock</c> result -3 without an error and leaves the transaction open; the batch raises
+    /// this error, which under XACT_ABORT rolls the transaction back as a deadlock victim's (1205) is.
+    /// </summary>
+    public const int LockDeadlock = 51205;
+
+    /// <summary>The error a batch raises when an applock request it waited for was refused otherwise: cancelled or invalid.</summary>
+    public const int LockRefused = 51206;
+
+    /// <summary>
+    /// Statements for a negative <c>sp_getapplock</c> result in <c>@lock_result</c>: <see cref="LockDeadlock"/> for a
+    /// deadlock victim, <see cref="LockRefused"/> for any other refusal.
+    /// </summary>
+    public const string RefusedLock = """
+        IF @lock_result = -3 THROW 51205, N'The transaction was chosen as a deadlock victim while it waited for a lock and was rolled back. Run the transaction again.', 1;
+        THROW 51206, N'A lock request of the transaction was refused.', 1;
+        """;
+
+    /// <summary>
+    /// A deadlock victim: SQL Server rolled its transaction back, after a row or other lock (1205) or an applock
+    /// (<see cref="LockDeadlock"/>).
+    /// </summary>
+    public static bool IsDeadlock(SqlException exception) => exception.Errors.Cast<SqlError>().Any(e => e.Number is 1205 or LockDeadlock);
 
     public static bool HasError(SqlException exception, int number) => exception.Errors.Cast<SqlError>().Any(e => e.Number == number);
 

@@ -662,8 +662,11 @@ internal sealed partial class SqlServerLeaseStore
         string[] ordered = [.. scopes.Order(StringComparer.Ordinal)];
         await using var command = Tsql.Command(work, $"""
             DECLARE @busy nvarchar(max) = N'';
-            {Tsql.AppLocks("scope", "@names", "Exclusive", "@timeout", """
-                IF @timeout <> 0 THROW 51205, N'A lock request of the transaction was refused or chosen as a deadlock victim.', 1;
+            {Tsql.AppLocks("scope", "@names", "Exclusive", "@timeout", $"""
+                IF @timeout <> 0
+                BEGIN
+                    {Tsql.RefusedLock}
+                END
                 SET @busy = @busy + N',' + CONVERT(nvarchar(11), @scope_index);
                 """)}
             SELECT STUFF(@busy, 1, 1, N'');

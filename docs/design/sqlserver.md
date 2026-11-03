@@ -217,7 +217,7 @@ The rolled-back transaction cannot be kept doomed past the batch, and SqlClient 
 server ended as completed: `Commit` and `Rollback` throw, and a command given that transaction afterwards runs outside
 any transaction, with `@@TRANCOUNT` 0, so a write the caller issues after ignoring the refusal commits on its own. On
 PostgreSQL such a write fails in the aborted transaction. Every error that rolls the transaction back behaves the same
-way, a deadlock victim (1205) included. The provider accepts this: no write of the refused transaction commits and its
+way, a deadlock victim (1205 or 51205) included. The provider accepts this: no write of the refused transaction commits and its
 commit fails; callers must not continue on a connection after a refusal as if the transaction were still open.
 
 ### Per-row try-locks
@@ -411,7 +411,7 @@ provider options; pruning is a maintenance statement.
 | `set_config('jit', 'off', true)` | Not applicable. Plans are cached per statement text. |
 | `lock_timeout` in a savepoint | `SET LOCK_TIMEOUT 50`, error 1222, rollback to the savepoint. |
 | `SQLSTATE 23505` | Errors 2601 (unique index) and 2627 (unique constraint). |
-| Deadlock detection | Error 1205; the victim's transaction is rolled back. The provider retries its own transactions; in the caller's transaction the error reaches the caller. |
+| Deadlock detection | Error 1205; the victim's transaction is rolled back. A victim waiting for an applock gets `sp_getapplock` result -3 instead, without an error and with its transaction still open, and the other transaction keeps waiting; the provider's batch then raises 51205, which rolls the transaction back (`XACT_ABORT`). 51205 means only this; other refused applocks raise 51206. The provider retries its own transactions after either error; in the caller's transaction the error reaches the caller. |
 
 ## Rules for the provider
 
@@ -429,7 +429,8 @@ provider options; pruning is a maintenance statement.
 - `OUTPUT` to the client on framework tables only.
 - Framework tables disable lock escalation; verification disables it on source tables.
 - A command cancelled by its token surfaces as `OperationCanceledException`, through the execution helpers in `Tsql`.
-- Deadlock victims (1205) in provider transactions are retried.
+- A refused applock raises 51205 when SQL Server chose it as a deadlock victim (-3), 51206 otherwise.
+- Deadlock victims (1205 and 51205) in provider transactions are retried.
 
 ## Findings while building the provider
 
@@ -605,8 +606,8 @@ Conformance scenarios at risk, to be watched first:
 - Planning with savepoints and lock timeouts.
 
 Core changes: none to the public contract. One internal change is needed: a provider slot on `WorkTransaction` to
-record the isolation check. Deadlock victims in the caller's transaction surface as `SqlException` 1205; whether the
-core reports them as a framework error type is a decision for the provider stage.
+record the isolation check. Deadlock victims in the caller's transaction surface as `SqlException` 1205 or 51205,
+with no framework error type, so retrying execution strategies see the provider's error (owner, 2026-11-03).
 
 Not verified yet: Azure SQL Database and Managed Instance. `Testcontainers.MsSql` runs on the Mac in the colima
 profile above; the cost of identity locks and the page splits of `uniqueidentifier` keys are in
