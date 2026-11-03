@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Background jobs, cron schedules and leases for .NET that live in your database and commit in your transactions: retries, merging, chains, fenced leases on your own rows, reconciliation and commit-time wake-ups, with no broker. An Apache-2.0 alternative to Hangfire, Quartz.NET and TickerQ. Install a store provider such as Corfedo.Work.PostgreSql with it.</Description>
+    <Description>Background jobs, cron schedules and leases for .NET that live in your database and commit in your transactions: retries, merging, chains, fenced leases on your own rows, reconciliation and commit-time wake-ups, with no broker. An Apache-2.0 alternative to Hangfire, Quartz.NET and TickerQ. Install a store provider such as Corfedo.Work.PostgreSql or Corfedo.Work.SqlServer with it.</Description>
+    <PackageTags>$(PackageTags);postgresql;sqlserver;native-aot</PackageTags>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Cronos" />

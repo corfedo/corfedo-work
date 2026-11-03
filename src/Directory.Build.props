@@ -11,7 +11,7 @@
     <Copyright>Copyright 2026 Wojciech Wentland</Copyright>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageReadmeFile>package-readme.md</PackageReadmeFile>
-    <PackageTags>background-jobs;background-tasks;job-scheduler;scheduler;cron;recurring-jobs;job-queue;transactional;leases;distributed-lock;reconciliation;durable-execution;postgresql;native-aot;hangfire-alternative;quartz-alternative;tickerq-alternative</PackageTags>
+    <PackageTags>background-jobs;background-tasks;job-scheduler;scheduler;cron;recurring-jobs;job-queue;transactional;leases;distributed-lock;reconciliation;durable-execution;hangfire-alternative;quartz-alternative;tickerq-alternative</PackageTags>
     <RepositoryUrl>https://github.com/corfedo/corfedo-work</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/corfedo/corfedo-work</PackageProjectUrl>
