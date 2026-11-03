@@ -215,13 +215,20 @@ internal sealed partial class SqlServerJobStore
         var unwritten = new List<(int Item, Guid Id, string Partition)>();
         if (mode != RequestMode.New)
         {
-            // Outstanding jobs of the items' identities, read through the identity index without locks.
-            var found = $"{itemRows} AS s INNER LOOP JOIN {sql.Table} AS m WITH (INDEX(jobs_merge), FORCESEEK) ON m.[definition] = @definition AND m.merge_key = s.merge_key "
-                + "WHERE s.merge_key IS NOT NULL AND m.state = 0";
+            // Outstanding jobs of the items' identities, read once through the identity index without locks, with the
+            // items' keys; the statements after the locks evaluate them again on the locked rows. The lookup reads only
+            // the keys of the items, which for new identities is all the batch reads of them.
+            var found = $"""
+                OPENJSON(@found) WITH (ord int '$.ord', id uniqueidentifier '$.id', merge_key nvarchar(512) COLLATE {Tsql.Binary} '$.merge_key',
+                    partition_key nvarchar(400) COLLATE {Tsql.Binary} '$.partition_key')
+                """;
             var text = new StringBuilder($"""
                 {Tsql.AppLocks("merge", "@locks", "Exclusive", "-1")}
-                DECLARE @found nvarchar(max) = (SELECT m.id FROM {found} ORDER BY m.id FOR JSON PATH), @locked int;
-                SELECT @locked = COUNT(*) FROM OPENJSON(@found) WITH (id uniqueidentifier '$.id') AS f
+                DECLARE @found nvarchar(max) = (SELECT s.ord, m.id, s.merge_key, s.partition_key
+                    FROM OPENJSON(@requests) WITH (ord int '$.o', merge_key nvarchar(512) COLLATE {Tsql.Binary} '$.m', partition_key nvarchar(400) COLLATE {Tsql.Binary} '$.p') AS s
+                    INNER LOOP JOIN {sql.Table} AS m WITH (INDEX(jobs_merge), FORCESEEK) ON m.[definition] = @definition AND m.merge_key = s.merge_key
+                    WHERE s.merge_key IS NOT NULL AND m.state = 0 ORDER BY m.id FOR JSON PATH), @locked int;
+                SELECT @locked = COUNT(*) FROM {found} AS f
                 INNER LOOP JOIN {sql.Table} AS j WITH (UPDLOCK, ROWLOCK, INDEX(jobs_key), FORCESEEK) ON j.id = f.id;
 
                 """);
@@ -231,13 +238,14 @@ internal sealed partial class SqlServerJobStore
                 // the request replaces the arguments, the calendar and its policies and merges the instant; otherwise it
                 // becomes the pending follow-up, which runs under the job's calendar. The condition does not depend on the
                 // clock, so the outcome reported matches the branch taken. The job table has no triggers, so the merged
-                // jobs are returned by the OUTPUT clause.
+                // jobs are returned by the OUTPUT clause. The items' arguments are read through a hash join built from
+                // the found jobs, which reads no item when none was found.
                 const string followUp = "(j.started = 1 OR j.lease_expires_at IS NOT NULL OR j.skip_pending = 1)";
                 const string merging = "COALESCE(j.calendar_at, j.due_at)";
                 text.Append($"""
                     UPDATE j SET
-                        args = CASE WHEN {followUp} THEN j.args ELSE s.args END,
-                        args_version = CASE WHEN {followUp} THEN j.args_version ELSE s.args_version END,
+                        args = CASE WHEN {followUp} THEN j.args ELSE a.args END,
+                        args_version = CASE WHEN {followUp} THEN j.args_version ELSE a.args_version END,
                         due_at = CASE WHEN {followUp} THEN j.due_at {(hasCalendar ? "" : $"ELSE {Merge(merging, "j.first_requested_at")} ")}END,
                         calendar_at = CASE WHEN {followUp} THEN j.calendar_at {(hasCalendar ? $"ELSE {Merge(merging, "j.first_requested_at")} " : "")}END,
                         window_end = CASE WHEN {followUp} THEN j.window_end END,
@@ -245,20 +253,22 @@ internal sealed partial class SqlServerJobStore
                         calendar = CASE WHEN {followUp} THEN j.calendar ELSE {calendar} END,
                         calendar_blocked = CASE WHEN {followUp} THEN j.calendar_blocked ELSE {blocked} END,
                         calendar_closed = CASE WHEN {followUp} THEN j.calendar_closed ELSE {closed} END,
-                        pending_args = CASE WHEN {followUp} THEN s.args ELSE j.pending_args END,
-                        pending_args_version = CASE WHEN {followUp} THEN s.args_version ELSE j.pending_args_version END,
+                        pending_args = CASE WHEN {followUp} THEN a.args ELSE j.pending_args END,
+                        pending_args_version = CASE WHEN {followUp} THEN a.args_version ELSE j.pending_args_version END,
                         pending_due = CASE WHEN NOT {followUp} THEN j.pending_due WHEN j.pending_first_requested_at IS NULL THEN {due}
                             ELSE {Merge("j.pending_due", "j.pending_first_requested_at")} END,
                         pending_first_requested_at = CASE WHEN {followUp} THEN COALESCE(j.pending_first_requested_at, SYSUTCDATETIME()) ELSE j.pending_first_requested_at END
                     OUTPUT s.ord, inserted.id, CASE WHEN deleted.started = 1 OR deleted.lease_expires_at IS NOT NULL OR deleted.skip_pending = 1 THEN {FollowUp} ELSE {Merged} END
-                    FROM (SELECT s.ord, m.id, s.merge_key, s.partition_key, s.args, s.args_version FROM {found}) AS s
+                    FROM {found} AS s
+                    INNER HASH JOIN OPENJSON(@requests) WITH (ord int '$.o', args varbinary(max) '$.a', args_version int '$.v') AS a ON a.ord = s.ord
                     INNER LOOP JOIN {sql.Table} AS j WITH (INDEX(jobs_key), FORCESEEK) ON j.id = s.id
                     WHERE j.state = 0 AND j.[definition] = @definition AND j.merge_key = s.merge_key AND j.partition_key = s.partition_key;
 
                     """);
             }
             // The outstanding jobs the batch did not merge.
-            text.Append($"SELECT s.ord, m.id, m.partition_key FROM {found}{(mode == RequestMode.Merge ? " AND m.partition_key <> s.partition_key" : "")};\n");
+            text.Append($"SELECT s.ord, j.id, j.partition_key FROM {found} AS s INNER LOOP JOIN {sql.Table} AS j WITH (INDEX(jobs_key), FORCESEEK) ON j.id = s.id "
+                + $"WHERE j.state = 0 AND j.[definition] = @definition AND j.merge_key = s.merge_key{(mode == RequestMode.Merge ? " AND j.partition_key <> s.partition_key" : "")};\n");
             var locks = items.Select(i => requests[i].MergeIdentity).OfType<string>().Select(identity => Tsql.LockName("merge", schema, definition, identity)).Order(StringComparer.Ordinal);
             await using var command = Tsql.Command(work, text.ToString(), [.. parameters.Select(Copy), Tsql.Text("@locks", string.Join(',', locks), -1)]);
             await using var reader = await command.ReaderAsync(cancellationToken);
