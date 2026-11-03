@@ -155,7 +155,9 @@ internal sealed class LeaseSql
     /// in the order <paramref name="order"/>, the rows matching <paramref name="scan"/>; each row it returns is then
     /// locked through its key (alias <c>r</c>) and kept when its latest committed version matches
     /// <paramref name="locked"/> and it is not in <paramref name="into"/> yet; a row another transaction holds is
-    /// skipped. The cursor reads only as far as needed, and only kept rows are locked, whatever plan the scan gets.
+    /// skipped. The cursor is dynamic, so it reads only as far as needed, and only kept rows are locked, whatever plan
+    /// the scan gets; a <c>FORWARD_ONLY READ_ONLY</c> cursor becomes fast-forward, whose plan read every matching row
+    /// when it opened (250 000 due jobs of a definition, 2.8 s).
     /// Rows are locked through their key before any other index, as every statement that writes them does, so a scan
     /// never holds an index entry while it waits for a row that a writer holds. Needs <see cref="ScanVariables"/>.
     /// </summary>
@@ -165,7 +167,7 @@ internal sealed class LeaseSql
         var match = string.Join(" AND ", Shape.Keys.Select((k, i) => $"r.{Tsql.Quote(k.Name)} = @s{i}"));
         var taken = string.Join(" AND ", Shape.Keys.Select((_, i) => $"t.k{i} = @s{i}"));
         return $"""
-            DECLARE {name} CURSOR LOCAL FORWARD_ONLY READ_ONLY FOR
+            DECLARE {name} CURSOR LOCAL DYNAMIC READ_ONLY FOR
                 SELECT {string.Join(", ", Shape.Keys.Select(k => "x." + Tsql.Quote(k.Name)))} FROM {Table} AS x WITH (INDEX({Tsql.Quote(index)})) WHERE {scan} ORDER BY {order};
             OPEN {name};
             SET @scanned = 0;

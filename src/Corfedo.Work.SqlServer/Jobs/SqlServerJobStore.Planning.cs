@@ -133,10 +133,10 @@ internal sealed partial class SqlServerJobStore
                 c.missed, c.overlap, c.awaited_job, c.next_at, c.waiting_at, {PausedCopy("c.[definition]", "c.subject_kind", "c.subject_id")}
             FROM @ids AS i INNER LOOP JOIN {recurrences} AS c WITH (FORCESEEK) ON c.id = i.id;
             DECLARE @candidates TABLE (id uniqueidentifier NOT NULL PRIMARY KEY);
-            INSERT INTO @candidates (id) SELECT j.id FROM @ids AS i JOIN {Jobs} AS j ON j.recurrence_id = i.id WHERE j.[definition] = @definition AND j.unconsumed = 1;
+            INSERT INTO @candidates (id) SELECT j.id FROM @ids AS i INNER LOOP JOIN {Jobs} AS j WITH (INDEX(jobs_unconsumed), FORCESEEK) ON j.[definition] = @definition AND j.recurrence_id = i.id WHERE j.unconsumed = 1;
             SELECT r.id, r.recurrence_id, r.ended_at FROM @candidates AS u INNER LOOP JOIN {Jobs} AS r WITH (UPDLOCK, ROWLOCK, READPAST, INDEX(jobs_key), FORCESEEK) ON r.id = u.id
             WHERE r.unconsumed = 1 AND r.[definition] = @definition;
-            SELECT DISTINCT o.recurrence_id FROM @ids AS i JOIN {Jobs} AS o ON o.recurrence_id = i.id WHERE o.state = 0 AND o.skip_pending = 0;
+            SELECT DISTINCT o.recurrence_id FROM @ids AS i INNER LOOP JOIN {Jobs} AS o WITH (INDEX(jobs_recurrence), FORCESEEK) ON o.recurrence_id = i.id WHERE o.recurrence_id IS NOT NULL AND o.state = 0 AND o.skip_pending = 0;
             SELECT SYSUTCDATETIME();
             """,
             Tsql.Text("@definition", definition, 200),

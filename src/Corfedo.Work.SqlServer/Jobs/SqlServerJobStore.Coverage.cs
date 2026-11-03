@@ -92,8 +92,9 @@ internal sealed partial class SqlServerJobStore
 
     /// <summary>
     /// One batch with one clock reading. The argument versions of unheld jobs of every unpaused definition are found by a
-    /// loose scan of <c>jobs_due</c>, one index probe per version and definition, and joined with the versions of
-    /// expired leases from <c>jobs_expiry</c>; a version has due work when a probe of that version finds an unheld job
+    /// loose scan of <c>jobs_due</c>, one <c>TOP (1)</c> index probe per version and definition (a correlated
+    /// <c>MIN</c> aggregates the whole index instead, looking up every row to recheck its filter), and joined with the
+    /// versions of expired leases from <c>jobs_expiry</c>; a version has due work when a probe of that version finds an unheld job
     /// due now or an expired lease whose subject is not paused. A definition no live process runs is unserved when one
     /// of its versions has due work, a job's calendar instant needs planning, or a recurrence needs its planner (a due
     /// next instant, of an after-completion schedule only without an outstanding occurrence, or a waiting occurrence
@@ -118,7 +119,7 @@ internal sealed partial class SqlServerJobStore
             DECLARE @next TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL PRIMARY KEY, version int NOT NULL);
             INSERT INTO @level ([definition], version)
             SELECT d.[key], m.version FROM {definitions} AS d
-            CROSS APPLY (SELECT MIN(j.args_version) AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {unheld}) AS m
+            CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {unheld} ORDER BY j.args_version) AS m
             WHERE d.paused = 0 AND m.version IS NOT NULL;
             WHILE EXISTS (SELECT 1 FROM @level)
             BEGIN
@@ -126,7 +127,7 @@ internal sealed partial class SqlServerJobStore
                 DELETE FROM @next;
                 INSERT INTO @next ([definition], version)
                 SELECT l.[definition], m.version FROM @level AS l
-                CROSS APPLY (SELECT MIN(j.args_version) AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {unheld}) AS m
+                CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {unheld} ORDER BY j.args_version) AS m
                 WHERE m.version IS NOT NULL;
                 DELETE FROM @level;
                 INSERT INTO @level ([definition], version) SELECT [definition], version FROM @next;
@@ -138,12 +139,12 @@ internal sealed partial class SqlServerJobStore
                 UNION
                 SELECT j.[definition], j.args_version FROM {definitions} AS d JOIN {Jobs} AS j WITH (INDEX(jobs_expiry))
                 ON j.[definition] = d.[key] AND j.lease_expires_at IS NOT NULL AND j.lease_expires_at < @now WHERE d.paused = 0) AS c
-            WHERE EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND {unheld} AND j.due_at <= @now AND {Unpaused("j")})
-            OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND j.lease_expires_at IS NOT NULL
+            WHERE EXISTS (SELECT 1 FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND {unheld} AND j.due_at <= @now AND {Unpaused("j")})
+            OR EXISTS (SELECT 1 FROM {Jobs} AS j WITH (INDEX(jobs_expiry)) WHERE j.[definition] = c.[definition] AND j.args_version = c.version AND j.lease_expires_at IS NOT NULL
                 AND j.lease_expires_at < @now AND {Unpaused("j")});
             SELECT d.[key], CAST(NULL AS int) FROM {definitions} AS d WHERE d.paused = 0 AND NOT {LiveRunner("d.[key]")} AND (
                 EXISTS (SELECT 1 FROM @due AS due WHERE due.[definition] = d.[key])
-                OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.[definition] = d.[key] AND j.calendar_at IS NOT NULL AND j.calendar_at <= @now AND j.state = 0
+                OR EXISTS (SELECT 1 FROM {Jobs} AS j WITH (INDEX(jobs_calendar_due)) WHERE j.[definition] = d.[key] AND j.calendar_at IS NOT NULL AND j.calendar_at <= @now AND j.state = 0
                     AND j.calendar_unavailable = 0 AND j.lease_expires_at IS NULL)
                 OR EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.[definition] = d.[key] AND c.paused = 0 AND {Unpaused("c")} AND {recurrenceDue})
                 OR EXISTS (SELECT j.subject_kind, j.subject_id FROM {Jobs} AS j WITH (INDEX(jobs_paused)) WHERE j.[definition] = d.[key] AND j.paused = 1 AND j.state = 0

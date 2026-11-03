@@ -107,7 +107,7 @@ internal static class Tsql
         var taken = string.Join(" AND ", key.Select((k, i) => $"t.{k.Column} {equal} {variables[i]}"));
         return $"""
             DECLARE {string.Join(", ", key.Select((k, i) => $"{variables[i]} {k.Type}"))}, @{name}_n int = 0;
-            DECLARE {name} CURSOR LOCAL FORWARD_ONLY READ_ONLY FOR {scan};
+            DECLARE {name} CURSOR LOCAL DYNAMIC READ_ONLY FOR {scan};
             OPEN {name};
             WHILE @{name}_n < {top}
             BEGIN

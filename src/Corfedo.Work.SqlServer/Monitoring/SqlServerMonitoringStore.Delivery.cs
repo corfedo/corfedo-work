@@ -72,18 +72,18 @@ internal sealed partial class SqlServerMonitoringStore
             DECLARE @oldest TABLE ([definition] nvarchar(200) COLLATE {Tsql.Binary} NOT NULL, due_at datetime2(7) NOT NULL);
             INSERT INTO @level ([definition], version)
             SELECT d.[key], m.version FROM {definitions} AS d
-            CROSS APPLY (SELECT MIN(j.args_version) AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {Due}) AS m
+            CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {Due} ORDER BY j.args_version) AS m
             WHERE m.version IS NOT NULL;
             WHILE EXISTS (SELECT 1 FROM @level)
             BEGIN
                 INSERT INTO @oldest ([definition], due_at)
                 SELECT l.[definition], o.due_at FROM @level AS l
-                CROSS APPLY (SELECT MIN(j.due_at) AS due_at FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version = l.version AND {Due}) AS o
+                CROSS APPLY (SELECT TOP (1) j.due_at AS due_at FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version = l.version AND {Due} ORDER BY j.due_at) AS o
                 WHERE o.due_at IS NOT NULL;
                 DELETE FROM @next;
                 INSERT INTO @next ([definition], version)
                 SELECT l.[definition], m.version FROM @level AS l
-                CROSS APPLY (SELECT MIN(j.args_version) AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {Due}) AS m
+                CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = l.[definition] AND j.args_version > l.version AND {Due} ORDER BY j.args_version) AS m
                 WHERE m.version IS NOT NULL;
                 DELETE FROM @level;
                 INSERT INTO @level ([definition], version) SELECT [definition], version FROM @next;

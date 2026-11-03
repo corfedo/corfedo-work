@@ -452,7 +452,7 @@ provider options; pruning is a maintenance statement.
   (`UPDLOCK, ROWLOCK, READPAST` on the expiry index, then a lookup of the row) locks the index entry first and then
   waits for the row when another transaction holds it, which deadlocked against a claim that held the row and
   updated that index entry (reproduced in the racing-settlement scenario). Claim and settlement scans therefore read
-  the index without locks through a `FORWARD_ONLY READ_ONLY` cursor and lock each row they find with a single-row
+  the index without locks through a `DYNAMIC READ_ONLY` cursor and lock each row they find with a single-row
   `UPDLOCK, ROWLOCK, READPAST` statement on the key, which also evaluates the row's latest committed version. A
   set-based form (`TOP (@n)` over the unlocked index joined to the locked key) was rejected: on small tables the
   optimizer sorts after the join, even with `LOOP JOIN` and `FAST 1`, and then locks every candidate row (900 of
