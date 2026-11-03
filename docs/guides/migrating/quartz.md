@@ -1,7 +1,7 @@
 # Migrating from Quartz.NET
 
 Quartz.NET separates jobs from triggers and stores both in its own tables. Corfedo Work keeps a job's schedule with
-the job, stores it in your PostgreSQL database, and joins the transaction that requests it.
+the job, stores it in your PostgreSQL or SQL Server database, and joins the transaction that requests it.
 
 ## What maps to what
 

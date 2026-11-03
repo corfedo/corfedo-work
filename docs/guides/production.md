@@ -39,9 +39,6 @@
   </ItemGroup>
   ```
 
-- **tempdb.** The store's statements declare table variables, which SQL Server creates in tempdb on every execution.
-  Under many concurrent claims they contend on tempdb's system pages. Turn on memory-optimized tempdb metadata,
-  which takes effect after a restart: `ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON`.
 
 The process registry, dispatch pools, priorities and shutdown are described in the
 [hosting design](../design/hosting.md).

@@ -1,7 +1,7 @@
 # Migrating from Hangfire
 
 Hangfire stores a method call and runs it later. Corfedo Work stores a typed request for a named job definition, in
-your own PostgreSQL database and in the transaction that needs the work.
+your own PostgreSQL or SQL Server database and in the transaction that needs the work.
 
 ## What maps to what
 

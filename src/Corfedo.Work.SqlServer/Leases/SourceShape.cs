@@ -3,7 +3,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Corfedo.Work.SqlServer.Leases;
 
-/// <summary>A key field's column: its declaration for table variables and the parameter type that matches it.</summary>
+/// <summary>A key field's column: its declaration for <c>OPENJSON</c> columns and the parameter type that matches it.</summary>
 internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type, int Size)
 {
     /// <summary>The declaration of a variable of the column's values: variables take no collation and compare in the column's.</summary>
@@ -12,7 +12,7 @@ internal sealed record KeyColumn(string Name, string Declaration, SqlDbType Type
 
 /// <summary>
 /// What the statements of a source need from its table beyond the source definition: the key columns' exact types and
-/// collations, so key parameters and table variables compare without converting the column, and the names of the
+/// collations, so key parameters and key sets read from JSON compare without converting the column, and the names of the
 /// indexes the claim and settlement scans are bound to. <see cref="SettlementIndex"/> serves expiry settlement, store
 /// limits and the next expiry: on application sources it leads with LeaseOutstanding, on the job table it is the expiry
 /// index, which carries the epochs.
@@ -304,7 +304,7 @@ internal static class SourceCatalog
         _ => new KeyColumn(name, "uniqueidentifier", SqlDbType.UniqueIdentifier, 0),
     };
 
-    /// <summary>A column's type with its length and collation, for table variables of its values.</summary>
+    /// <summary>A column's type with its length and collation, for <c>OPENJSON</c> columns of its values.</summary>
     private static string Declaration(Column column)
     {
         var length = column.Type switch

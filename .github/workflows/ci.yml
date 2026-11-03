@@ -28,7 +28,7 @@ jobs:
       - name: Restore
         run: dotnet restore Corfedo.Work.slnx --locked-mode
 
-      # Release build, all tests with PostgreSQL in Docker through Testcontainers, the Native AOT smoke publish for
+      # Release build, all tests with PostgreSQL and SQL Server in Docker, the Native AOT smoke publish for
       # linux-x64; fails on any warning.
       - name: Check
         run: dev/check

@@ -1,9 +1,8 @@
 # SQL Server provider
 
-**Status:** Investigated with proofs of concept; the provider is being built (stage 9 of
-[implementation](implementation.md)). This document records what SQL Server does for each guarantee in
-[providers](providers.md#required-guarantees), how the PostgreSQL provider's primitives translate, the measurements
-behind each choice and the decisions taken. It is the starting point of `Corfedo.Work.SqlServer`.
+**Status:** Built (stage 9 of [implementation](implementation.md)). This document records what SQL Server does for
+each guarantee in [providers](providers.md#required-guarantees), how the PostgreSQL provider's primitives translate,
+the measurements behind each choice and the decisions taken in `Corfedo.Work.SqlServer`.
 
 The proofs of concept are small console programs outside the repository, built on `Microsoft.Data.SqlClient` 6.1.3,
 run against SQL Server 2022 (16.0.4305.5, CU27) and SQL Server 2025 (17.0.5035.5, CU10, compatibility level 170) with
@@ -22,6 +21,7 @@ colima with Rosetta). The essential statements of each program are reproduced be
 | Lock escalation | Framework tables are created with `LOCK_ESCALATION = DISABLE`. Startup verification refuses a lease or reconciliation source whose table escalates (`sys.tables.lock_escalation_desc` other than `DISABLE`): one application statement locking more than about 5 000 of its rows would otherwise take a table lock, which `READPAST` cannot skip, and every claim of the source would wait for it. Verification disables escalation on such a table itself (owner), waiting at most one second for the schema lock the change takes, and refuses the source, naming the `ALTER TABLE ... SET (LOCK_ESCALATION = DISABLE)` statement, only when its login may not alter the table or the lock is not granted. |
 | Native AOT | The provider is not trimming- or Native AOT-compatible (owner): `Microsoft.Data.SqlClient` 7.1.1 reports trimming and AOT analysis warnings of its own. |
 | Outstanding leases | Application sources that settle carry a stored computed column `lease_outstanding`, `CASE WHEN settled_epoch < lease_epoch THEN 1 END` (PERSISTED on SQL Server, GENERATED ALWAYS ... STORED on PostgreSQL), and their settlement and partition indexes lead with it, filtered `WHERE lease_expires_at IS NOT NULL`, on both providers (owner, 2026-11-02). One index shape then serves every store, so the EF Core mapping needs no provider knowledge, and settlement and limit counts pass over no expired lease already settled. The framework's job table keeps its own indexes over the epochs. Measured on 1M rows with 100 000 expired, settled, not reclaimed leases: SQL Server settlement scan and limit counts 4.8–5.1 ms with the epochs carried in the index, 0.35–0.43 ms with the column; PostgreSQL unchanged against its partial indexes (0.005 ms settlement, 0.15 ms partition saturation), next expiry 0.022 ms against 1.9 ms. Rejected: epochs as key columns under the same filter on PostgreSQL (settlement 16 ms, partition saturation 2.7 ms at 100 000). |
+| No temporary objects | No provider batch declares a table variable or temporary table (owner, 2026-11-03): SQL Server creates them in tempdb on every execution of a parameterized batch, and under concurrent claims their creation contended on tempdb's system pages (see the tempdb finding). Sets pass between statements as JSON text in `nvarchar(max)` variables, read by `OPENJSON` with each key column's exact type and collation, or are read again from their tables; a loop over rows reads its JSON array once (`Tsql.EachRow`). `OUTPUT` returns rows to the client only from framework tables, since application tables may have triggers (334); claims on application sources update, then read the rows again. Memory-optimized tempdb metadata, which takes a restart, is not required. |
 | Connection pool | The tests run SqlClient's channel-based pool (`Switch.Microsoft.Data.SqlClient.UseConnectionPoolV2`, opt-in since 7.1), and the production guide recommends it (owner); see the login-cost finding. |
 
 ## Local setup
@@ -324,8 +324,8 @@ Further results:
 - Batch input: a fan-out of 50 000 new subjects took **68 s** when the multi-statement batch read the table-valued
   parameter directly, with or without `OPTION (RECOMPILE)`; with the parameter first copied into a local table
   variable (`DECLARE @items request_items; INSERT @items SELECT * FROM @p;`) it took **0.33 s**, and through `OPENJSON`
-  into a table variable 0.35 s (PostgreSQL: 0.7 s). Batch statements always copy their table-valued input into a
-  local table variable first. The identity locks add about 9 µs per item, about 0.45 s at 50 000; that sum is
+  into a table variable 0.35 s (PostgreSQL: 0.7 s). Batch input is JSON read by `OPENJSON` (decision "No temporary
+  objects"). The identity locks add about 9 µs per item, about 0.45 s at 50 000; that sum is
   estimated from the lock cost and still to be measured end to end.
 
 ## Signals
@@ -393,12 +393,12 @@ provider options; pruning is a maintenance statement.
 | `clock_timestamp()` (127) | `SYSUTCDATETIME()` in a statement that starts after the lock statement. Statements that rely on PostgreSQL re-reading the clock after a lock wait inside one statement (`ON CONFLICT DO UPDATE`, the `WaitAsync` mark, single-statement transitions) are split into lock and evaluation. `datetime2(7)` has 100 ns precision. |
 | `now()` as a stable index bound and claim cutoff | A variable set from `SYSUTCDATETIME()` at the start of the batch. |
 | `FOR UPDATE` (55) / `SKIP LOCKED` (36) | `WITH (UPDLOCK, ROWLOCK)` / `WITH (UPDLOCK, ROWLOCK, READPAST)`, on an index in the claim's order. |
-| `RETURNING` (36) | `OUTPUT ... INTO` a table variable, then `SELECT`. `OUTPUT` without `INTO` is refused on tables with enabled triggers (334), and lease sources are application tables. |
-| `unnest` arrays (26) | A table-valued parameter (a framework table type) copied into a local table variable; `OPENJSON` where no table type fits. |
+| `RETURNING` (36) | `OUTPUT` to the client on framework tables. `OUTPUT` without `INTO` is refused on tables with enabled triggers (334), and lease sources are application tables: their rows are read again after the update. |
+| `unnest` arrays (26) | A JSON parameter read by `OPENJSON` with the key columns' exact types. |
 | `ON CONFLICT` (22) | [Merging](#merging): identity applocks, row first, `TRY/CATCH` on 2601. For `occurrence` uniqueness the same pattern, with the recurrence's lock as the identity lock. |
 | `'infinity'` (19) | `9999-12-31T23:59:59.9999999` as a sentinel. `DATEADD` past it fails (517), so additions to a value that can be the sentinel are guarded. |
 | `pg_notify` (12) | An insert into the signals table, conditional inserts from `INSERT ... SELECT` over the matched rows. |
-| Data-modifying CTEs (6) | Several statements in one batch joined through table variables. |
+| Data-modifying CTEs (6) | Several statements in one batch, passing sets as JSON text in variables. |
 | `COLLATE "C"` | `Latin1_General_100_BIN2` on key columns. |
 | `interval` columns | `bigint` ticks. |
 | `uuid` | `uniqueidentifier` (see the decision on identifiers). |
@@ -407,7 +407,7 @@ provider options; pruning is a maintenance statement.
 | `INCLUDE` indexes | Supported. |
 | `hashtextextended` advisory keys | Fixed-length names with SHA-256, ordered by name. |
 | `pg_try_advisory_xact_lock_shared` inside a statement | A T-SQL loop with `@LockTimeout = 0` (see [per-row try-locks](#per-row-try-locks)). |
-| `set_config('jit', 'off', true)` | Not applicable. Plans are cached per statement text; variable-size batches copy their input into table variables. |
+| `set_config('jit', 'off', true)` | Not applicable. Plans are cached per statement text. |
 | `lock_timeout` in a savepoint | `SET LOCK_TIMEOUT 50`, error 1222, rollback to the savepoint. |
 | `SQLSTATE 23505` | Errors 2601 (unique index) and 2627 (unique constraint). |
 | Deadlock detection | Error 1205; the victim's transaction is rolled back. The provider retries its own transactions; in the caller's transaction the error reaches the caller. |
@@ -424,8 +424,8 @@ provider options; pruning is a maintenance statement.
 - Fences, limit scopes and subject pauses are applocks with fixed-length names; several of them are taken in name
   order.
 - A refused fence rolls back before it throws.
-- `OUTPUT INTO` table variables only.
-- Table-valued input is copied into a local table variable before multi-statement use.
+- No table variables or temporary tables; sets pass as JSON text read by `OPENJSON` with the key columns' exact types.
+- `OUTPUT` to the client on framework tables only.
 - Framework tables disable lock escalation; verification disables it on source tables.
 - A command cancelled by its token surfaces as `OperationCanceledException`, through the execution helpers in `Tsql`.
 - Deadlock victims (1205) in provider transactions are retried.
@@ -441,7 +441,7 @@ provider options; pruning is a maintenance statement.
   evaluated outside the seek: a key lookup or a join (`NOT EXISTS`/`NOT IN` over a table variable) keeps them, a simple
   predicate on a column the index carries releases them. Of 1 000 due rows, 32 claimed: 95 key locks with the filter
   column in the table only, 64 with it included in the index, 88 with a `NOT IN` over a table variable. Claim scans keep
-  their predicates on index columns; exclusions by table variable (saturated or busy partitions, stale pauses) leave the
+  their predicates on index columns; exclusions by a set (saturated or busy partitions, stale pauses) leave the
   rows they skip locked until the claim commits.
 - SET options inside a parameterized SqlClient command (run through `sp_executesql`) are restored when the batch ends
   (`XACT_ABORT`, `LOCK_TIMEOUT` checked): batches set `NOCOUNT` and `XACT_ABORT` themselves without changing a caller's
@@ -469,9 +469,9 @@ provider options; pruning is a maintenance statement.
 - In an index without a unique key of its own, rows of equal key value are ordered by the clustered key, where
   PostgreSQL's B-tree orders them by heap position; claims of stale records through the generation index therefore
   reach records of one generation in key order, not in insertion order.
-- Batch input (request items, key sets, id lists) is a JSON parameter read with `OPENJSON` into a table variable, not
-  a framework table type: measured 0.35 s against 0.33 s for a table-valued parameter at 50 000 items, and no schema
-  type has to be versioned. `OPENJSON ... WITH (a varbinary(max))` decodes base64 values.
+- Batch input (request items, key sets, id lists) is a JSON parameter read with `OPENJSON`, not a framework table type:
+  measured 0.35 s against 0.33 s for a table-valued parameter at 50 000 items, and no schema type has to be versioned.
+  `OPENJSON ... WITH (a varbinary(max))` decodes base64 values.
 - The signals table is a framework table: a database is migrated before clients run, including clients that are
   never started, since lease operations signal in their statements.
 - `Microsoft.Data.SqlClient` 7.1.1, like every earlier version, depends on `System.Security.Cryptography.Pkcs` below the
@@ -483,34 +483,36 @@ provider options; pruning is a maintenance statement.
 - A source's first operation in a process reads its table in the catalog and verifies it as startup does: statements
   bind key parameters to the key columns' exact types and name the source's indexes in `INDEX()` hints, so a source
   without its indexes is refused by every operation, not only at startup.
-- Character columns of a table variable take tempdb's default collation, so comparing them with framework columns
-  fails with 468 when the server's collation differs from `Latin1_General_100_BIN2`. Table variables that hold keys
-  declare their character columns with the key collation.
-- Every provider batch declares table variables, and tempdb caches no temporary objects of batches run through
-  `sp_executesql`, so each execution creates them in tempdb's system tables. Under the conformance suite's
-  concurrency on 2025 (16 cores, six tempdb data files) `PAGELATCH_EX`/`PAGELATCH_SH` on tempdb's system pages
-  dominated the waits: about 1.5 million waits and 940 s of wait time in one 80 s run. Claim passes of a new
-  definition took up to 4.4 s and later passes 666 ms at p99, and time-sensitive scenarios failed. With
-  `ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED TEMPDB_METADATA = ON`, after a restart, the same run had 16 000
-  waits (27 s): the slowest first pass took 0.8 s, and later passes took 31 ms at p90 and 152 ms at p99, against 142 ms
-  and 666 ms before. The test server enables it. Measured again on 2025 with the outstanding-lease column, a full run
-  of the SQL Server tests: 1.48 million `PAGELATCH` waits (966 s) without the setting, job claim passes p50 20 ms and
-  p99 614 ms, and two timing-bound scenarios failed; 23 000 waits (43 s) with it, p50 13 ms and p99 155 ms, all
-  passed. A micro-benchmark of a claim-shaped batch (32 keys from `OPENJSON`, an `UPDATE` with `OUTPUT`, 16 clients,
-  2022 and 2025 alike) isolates the cost of the temporary objects themselves:
+- Character columns that `OPENJSON ... WITH` returns take the database's default collation, so comparing them with
+  framework columns fails with 468 when it differs from `Latin1_General_100_BIN2`; key columns are read with the key
+  collation. They are also read with the key column's exact type: with a wider one (`nvarchar(max)`) a seek on a
+  two-column key became a range seek (`GetRangeWithMismatchedTypes`) with the second column as a residual predicate,
+  so claims took `U` locks on other rows and waited for them (900 s of `LCK_M_U` in a run, failed scenarios).
+- `SYSUTCDATETIME()` advances in steps of about 4 ms on Linux (32 distinct values in 20 000 reads), so rows created
+  within one step share `created_at`. Orders that must be total add the id.
+- Table variables and temporary tables are created in tempdb's system tables on every execution of a batch run through
+  `sp_executesql`, which caches no temporary objects. With table variables in every provider batch, under the
+  conformance suite's concurrency on 2025 (16 cores, six tempdb data files), `PAGELATCH_EX`/`PAGELATCH_SH` on
+  tempdb's system pages dominated the waits: a full run of the SQL Server tests created 119 873 temporary tables and
+  had 1.48 million `PAGELATCH` waits (966 s); job claim passes took 20 ms at p50 and 614 ms at p99, and timing-bound
+  scenarios failed. Memory-optimized tempdb metadata (`ALTER SERVER CONFIGURATION SET MEMORY_OPTIMIZED
+  TEMPDB_METADATA = ON`, after a restart) brought that to 23 000 waits (43 s), p50 13 ms and p99 155 ms. Without
+  temporary objects (decision "No temporary objects"), at the default tempdb configuration, the same run created 472
+  temporary tables on 2025 and 388 on 2022, with 23 500 `PAGELATCH` waits (14 s) and 25 100 (9 s), and every
+  scenario passed. A micro-benchmark of a claim-shaped batch (32 keys from `OPENJSON`, an `UPDATE` with `OUTPUT`, 16
+  clients, 2022 and 2025 alike) isolates the cost of the temporary objects themselves:
 
-  | Batch | Without the setting | With it |
+  | Batch | Default tempdb | Memory-optimized tempdb metadata |
   |---|---|---|
-  | Three table variables, as the provider | 1 450–1 550/s, p50 10 ms | 2 530/s, p50 5 ms |
+  | Three table variables | 1 450–1 550/s, p50 10 ms | 2 530/s, p50 5 ms |
   | One table variable | 4 000–4 400/s, p50 3.6–4.0 ms | |
   | No temporary object (inline `OPENJSON`, `OUTPUT` to the client) | 12 400–13 300/s, p50 1.2 ms | 12 500/s |
   | The three table variables in a stored procedure | 10 900–11 000/s, p50 1.4 ms | 10 400/s |
   | Memory-optimized table types | 11 200–11 700/s, p50 1.3 ms | 11 500/s |
 
   One client alone: 570 batches/s with three table variables, 2 075/s without. At 64 clients the setting raised the
-  table-variable batch from 1 470/s to 2 540/s while the batch without temporary objects ran 13 700–14 700/s.
-  Memory-optimized tempdb metadata relieves the latch waits but not the cost of creating the objects; which approach
-  the provider takes is open (owner).
+  table-variable batch from 1 470/s to 2 540/s while the batch without temporary objects ran 13 700–14 700/s: the
+  setting relieves the latch waits but not the cost of creating the objects.
 - A SQL authentication login costs about twice as much on 2025 as on 2022 (about 80 ms against 37 ms per `sqlcmd`
   login on an idle container, with `PREEMPTIVE_OS_CRYPTOPS` and `PREEMPTIVE_OS_AUTHENTICATIONOPS` among 2025's top
   waits under the suite), and under the suite's load on 2025 a new connection took 80–830 ms (about 170 per run over
@@ -550,19 +552,25 @@ statement is named; statement times are `sys.dm_exec_query_stats` averages.
 
 | Operation | 1M jobs | 10M jobs | PostgreSQL, 1M |
 |---|---|---|---|
-| Claim pass of a definition (16 jobs, limits, fence, expiry scan, update) | 17.6 ms p50, 33.7 ms p99; statements 5.7 ms | 20.4 ms p50 | scan statements 0.8 ms |
+| Claim pass of a definition (16 jobs, limits, fence, expiry scan, update) | 9.9 ms p50, 13.2 ms p99 | 20.4 ms p50 | scan statements 0.8 ms |
 | Claim scan, per job (cursor fetch and row lock) | 0.08 ms | 0.18 ms | |
 | Definition-limit count | 0.86 ms | 0.92 ms | 0.3 ms |
 | Terminal transition (statements) | 2.0 ms | | |
-| Merging request, own transaction | 4.6 ms | 4.8 ms | 0.1 ms (statement) |
-| `RequestManyAsync` of 50 000 new subjects | 2.5 s (insert 1.0 s, input 0.3 s, identity locks 0.1 s) | 8.8 s | 0.7 s |
-| Status page of 500 subjects | 7.7 ms | 8.1 ms | 6 ms |
+| Merging request, own transaction | 1.7 ms | 4.8 ms | 0.1 ms (statement) |
+| `RequestManyAsync` of 50 000 new subjects | 2.5 s | 8.8 s | 0.7 s |
+| Status page of 500 subjects | 5.3 ms | 8.1 ms | 6 ms |
 | Retention of 1 000 jobs of a definition | 30 ms (delete 12 ms, locking scan 16 ms) | 145 ms | 7.5–9.4 ms |
-| Unserved report | 7.1–7.4 ms | 7.2 ms | 1.3 ms |
+| Unserved report | 5.7 ms | 7.2 ms | 1.3 ms |
 | Signal, commit to wake | p50 5.1 ms, p99 10.2 ms | | |
 | Commits/s at 8 clients without / with a signal | 6 662 / 6 084 | | |
 
-- The table variables of every batch account for part of the gap to PostgreSQL; the tempdb approach is open (owner).
+- The 1M values of claim passes, merging requests, `RequestManyAsync`, the status page and the unserved report are
+  measured without temporary objects; the 10M column and the other rows with table variables in every batch. The
+  same 1M run with table variables: claim passes 17.4 ms p50 and 31.7 ms p99, terminal transitions (whole call)
+  18.5 ms against 5.6 ms, merging requests 4.8 ms, status page 7.8 ms, unserved report 7.3 ms. `RequestManyAsync` of
+  50 000 took 2.47 s with table variables: its insert reads `OPENJSON`, whose fixed estimate of 50 rows gives a plan
+  that maintains each index row by row, where the table variable's row count gave one that sorts each index's rows
+  first (225 ms against 142 ms, three times the logical reads, at 10 000 items).
 - Fragmentation of the `uniqueidentifier` keys (ids sort randomly in SQL Server's order): `jobs` at 1M is 99%
   fragmented with pages 66% full (87 064 pages against 58 797 after a rebuild), at 10M 99% and 67% (862 000 pages).
   It costs space, not speed: claim passes 17.7 against 16.9 ms, merging requests 4.9 against 4.7 ms and fan-outs

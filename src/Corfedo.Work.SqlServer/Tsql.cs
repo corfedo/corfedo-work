@@ -264,7 +264,7 @@ internal static class Tsql
 
     public static SqlParameter Time(string name, DateTimeOffset? value) => new(name, SqlDbType.DateTime2) { Scale = 7, Value = value is { } v ? v.UtcDateTime : DBNull.Value };
 
-    /// <summary>A JSON array parameter, read with OPENJSON into a table variable.</summary>
+    /// <summary>A JSON array parameter, read with <c>OPENJSON</c>.</summary>
     public static SqlParameter Json(string name, string json) => new(name, SqlDbType.NVarChar, -1) { Value = json };
 
     /// <summary>A JSON array of strings, read with <c>OPENJSON</c>; its elements are in the column <c>value</c>.</summary>
