@@ -572,7 +572,19 @@ statement is named; statement times are `sys.dm_exec_query_stats` averages.
   18.5 ms against 5.6 ms, merging requests 4.8 ms, status page 7.8 ms, unserved report 7.3 ms. `RequestManyAsync` of
   50 000 took 2.47 s with table variables: its insert reads `OPENJSON`, whose fixed estimate of 50 rows gives a plan
   that maintains each index row by row, where the table variable's row count gave one that sorts each index's rows
-  first (225 ms against 142 ms, three times the logical reads, at 10 000 items).
+  first (225 ms against 142 ms, three times the logical reads, at 10 000 items). The sorted plan needs a plan compiled
+  for a large batch: a table variable's plan is compiled for the batch that runs it first and is reused, so after a
+  small batch it maintains the indexes row by row as well.
+- The narrow insert plan stays (owner, 2026-11-03). SQL Server 2022 and 2025 estimate 50 rows for `OPENJSON`. At 1M
+  jobs, with the request rolled back, the whole call took 510–534 ms for 10 000 new subjects and 2.51–2.54 s for
+  50 000 (insert statement 228 ms and 1.19–1.25 s, 1.29M logical reads). A table variable with `OPTION (RECOMPILE)`
+  sorts each index (insert 169 ms and 0.82–0.85 s, half the reads) but the call took 507–555 ms and 2.37–2.40 s, with
+  a tempdb object and a compile per batch, and a single item 9–12 ms against 2–5 ms. Without temporary objects no
+  variant gained: trace flag 8790 (per-index plan without sorts, sysadmin only) 530 ms and 2.58 s; nested `OPENJSON`
+  arrays, whose estimates multiply, sorted in a parallel plan whose sorts spilled to tempdb, a single item 18 ms; under
+  `TOP (@count)` with `OPTION (RECOMPILE)` 501–559 ms and 2.43–2.65 s, a single item 12–14 ms; `ORDER BY` the id no
+  gain. The cost is the per-row maintenance of the job indexes (about 25 logical reads per job), which the plan shape
+  only reorders.
 - Fragmentation of the `uniqueidentifier` keys (ids sort randomly in SQL Server's order): `jobs` at 1M is 99%
   fragmented with pages 66% full (87 064 pages against 58 797 after a rebuild), at 10M 99% and 67% (862 000 pages).
   It costs space, not speed: claim passes 17.7 against 16.9 ms, merging requests 4.9 against 4.7 ms and fan-outs
