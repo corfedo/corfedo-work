@@ -122,10 +122,11 @@ public sealed class ImportRunner(AppDb db) : ILeaseHandler<long>
     public async ValueTask RunAsync(LeaseRun<long> run, CancellationToken ct)
     {
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
-        await run.GuardAsync(db.Database.WorkTransaction(), ct);   // throws if another worker took over
+        var work = db.Database.WorkTransaction();
+        await run.GuardAsync(work, ct);   // throws if another worker took over
         // ... import and write the results ...
         await db.SaveChangesAsync(ct);
-        await run.EndAsync(db.Database.WorkTransaction(), cancellationToken: ct);
+        await run.EndAsync(work, cancellationToken: ct);
         await transaction.CommitAsync(ct);
     }
 
