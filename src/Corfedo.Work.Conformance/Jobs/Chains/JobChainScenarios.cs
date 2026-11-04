@@ -179,7 +179,8 @@ public abstract class JobChainScenarios(IJobConformanceProvider provider) : JobS
         var worker = await ProcessAsync(work =>
         {
             work.Services.AddSingleton(script);
-            work.AddJob<TestArgs, ScriptedJobHandler>(fan, job => job.Lease(TimeSpan.FromSeconds(2)));
+            // The fan inserts all children in one transaction, which must commit within the fan's lease.
+            work.AddJob<TestArgs, ScriptedJobHandler>(fan, job => job.Lease(TimeSpan.FromSeconds(30)));
             work.AddJob<TestArgs, ScriptedJobHandler>(child, job => job.Lease(TimeSpan.FromSeconds(10)).Capacity(32));
         });
 
