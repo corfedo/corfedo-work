@@ -40,7 +40,13 @@ if [ -z "${CORFEDO_WORK_SQLSERVER:-}" ]; then
   export CORFEDO_WORK_SQLSERVER="Server=127.0.0.1,$port;User ID=sa;Password=$password;TrustServerCertificate=True"
 fi
 
-dotnet test Corfedo.Work.slnx -c Release --no-build
+# Test projects run one at a time: the timing scenarios need free CPU, and parallel test projects with both database
+# servers leave none on a 4-vCPU host such as a GitHub runner.
+failed=0
+for project in tests/*.Tests/*.Tests.csproj; do
+  dotnet test "$project" -c Release --no-build || failed=1
+done
+[ "$failed" -eq 0 ]
 
 case $(uname -s)-$(uname -m) in
   Linux-x86_64) rid=linux-x64 ;;

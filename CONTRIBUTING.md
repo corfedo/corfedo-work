@@ -31,7 +31,7 @@ processes share a running server instead; `dev/check` starts one for its run, si
 host.
 
 ```sh
-dev/check    # Release build, all tests, Native AOT smoke publish; fails on any warning
+dev/check    # Release build, all tests one project at a time, Native AOT smoke publish; fails on any warning
 ```
 
 Testcontainers finds Docker through the usual environment variables. With colima on macOS:
