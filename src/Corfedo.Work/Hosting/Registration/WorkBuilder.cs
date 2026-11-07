@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.DependencyInjection;
@@ -216,6 +217,27 @@ public sealed class WorkBuilder
         where THandler : class, IJobHandler<TArgs, TResult>
     {
         Services.AddJob<TArgs, TResult, THandler>(definition, configure);
+        return this;
+    }
+
+    /// <summary>Runs jobs of <paramref name="definition"/> with <paramref name="handler"/>, which gets the service scope of the attempt.</summary>
+    public WorkBuilder AddJob<TArgs>(
+        JobDefinition<TArgs> definition,
+        Func<TArgs, JobRun, IServiceProvider, CancellationToken, ValueTask<JobDisposition>> handler,
+        Action<JobBuilder>? configure = null)
+    {
+        Services.AddJob(definition, handler, configure);
+        return this;
+    }
+
+    /// <summary>Runs jobs of <paramref name="definition"/>, which has a result type, with <paramref name="handler"/>, which gets the service scope of the attempt.</summary>
+    [OverloadResolutionPriority(1)]
+    public WorkBuilder AddJob<TArgs, TResult>(
+        JobDefinition<TArgs, TResult> definition,
+        Func<TArgs, JobRun<TResult>, IServiceProvider, CancellationToken, ValueTask<JobDisposition<TResult>>> handler,
+        Action<JobBuilder>? configure = null)
+    {
+        Services.AddJob(definition, handler, configure);
         return this;
     }
 

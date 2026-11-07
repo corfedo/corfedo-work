@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -128,6 +129,44 @@ public static class JobServiceCollectionExtensions
             services.GetRequiredService<IWorkStore>(),
             services.GetService<ILoggerFactory>()));
         return services.AddJob(definition, configure, static services => services.GetRequiredService<JobHandler<TArgs, TResult, THandler>>());
+    }
+
+    /// <summary>
+    /// Registers a job definition this process runs with <paramref name="handler"/>, which behaves as
+    /// <see cref="IJobHandler{TArgs}.RunAsync"/> and gets the service scope of the attempt. The process also requests and
+    /// cancels its jobs, and stores the definition by revision at startup.
+    /// </summary>
+    public static IServiceCollection AddJob<TArgs>(
+        this IServiceCollection services,
+        JobDefinition<TArgs> definition,
+        Func<TArgs, JobRun, IServiceProvider, CancellationToken, ValueTask<JobDisposition>> handler,
+        Action<JobBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return services.AddJob(definition, configure, services => new JobHandler<TArgs, DelegateJobHandler<TArgs>>(
+            new DelegateJobHandler<TArgs>(handler, services),
+            services.GetRequiredService<JobRegistry>(),
+            services.GetRequiredService<IWorkStore>(),
+            services.GetService<ILoggerFactory>()));
+    }
+
+    /// <summary>
+    /// Registers a job definition with a result type that this process runs with <paramref name="handler"/>, which
+    /// behaves as <see cref="IJobHandler{TArgs, TResult}.RunAsync"/> and gets the service scope of the attempt.
+    /// </summary>
+    [OverloadResolutionPriority(1)]
+    public static IServiceCollection AddJob<TArgs, TResult>(
+        this IServiceCollection services,
+        JobDefinition<TArgs, TResult> definition,
+        Func<TArgs, JobRun<TResult>, IServiceProvider, CancellationToken, ValueTask<JobDisposition<TResult>>> handler,
+        Action<JobBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        return services.AddJob(definition, configure, services => new JobHandler<TArgs, TResult, DelegateJobHandler<TArgs, TResult>>(
+            new DelegateJobHandler<TArgs, TResult>(handler, services),
+            services.GetRequiredService<JobRegistry>(),
+            services.GetRequiredService<IWorkStore>(),
+            services.GetService<ILoggerFactory>()));
     }
 
     internal static IServiceCollection AddJob<TArgs>(this IServiceCollection services, JobDefinition<TArgs> definition, Action<JobBuilder>? configure, Func<IServiceProvider, ILeaseHandler<JobId>> handler)

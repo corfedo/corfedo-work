@@ -47,6 +47,16 @@ public sealed class FeedSyncHandler : IJobHandler<SyncFeed>
 }
 ```
 
+A short handler can be a delegate instead of a class. It gets the service scope of the attempt:
+
+```csharp
+builder.Services.AddWork(work => work.AddJob(Jobs.FeedSync, async (args, run, services, ct) =>
+{
+    await services.GetRequiredService<FeedClient>().SyncAsync(args.Name, ct);
+    return JobResult.Completed;
+}));
+```
+
 Return `JobResult.Retry(after, code)` to retry on your own terms or `JobResult.Fail(code)` to stop retrying. After the
 last attempt the job ends as failed. The token fires when the job is cancelled, times out, loses its lease or the
 process stops.

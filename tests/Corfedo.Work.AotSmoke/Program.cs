@@ -19,8 +19,8 @@ using Npgsql;
 // and counts a job outcome that in-process listeners observe. A second host only registers its process. A third host
 // stores work in an in-memory database on a controllable clock: it claims a record and loses the lease when the clock
 // advances past its duration. A fourth host runs work on that database as another application: it requests a job and a
-// chain of two steps and a job with a result, serialized through the source-generated context it registers with
-// UseJson, and its handlers complete them. A fifth host only registers signals over PostgreSQL: it subscribes to a topic
+// chain of two steps, a job with a result and a job whose handler is a delegate, serialized through the
+// source-generated context it registers with UseJson, and its handlers complete them. A fifth host only registers signals over PostgreSQL: it subscribes to a topic
 // and stops listening when the subscription is disposed. A sixth host registers a definition whose argument type its
 // context lacks and fails when its registry is built.
 var partitions = new List<object?>();
@@ -165,7 +165,8 @@ jobsBuilder.Services.AddWork(work => work
     .UseJson(SmokeJson.Default)
     .AddJob<SyncFeed, FeedSyncHandler>(Sources.FeedSync, job => job.AcceptsArgs(1, 2))
     .AddJob<SyncFeed, FeedPruneHandler>(Sources.Prune)
-    .AddJob<SyncFeed, FeedReport, FeedReportHandler>(Sources.Summary));
+    .AddJob<SyncFeed, FeedReport, FeedReportHandler>(Sources.Summary)
+    .AddJob(Sources.Archive, (_, _, services, _) => ValueTask.FromResult<JobDisposition>(services.GetService<TimeProvider>() is null ? JobResult.Fail("no_clock") : JobResult.Completed)));
 using var jobsHost = jobsBuilder.Build();
 await jobsHost.StartAsync();
 var jobOperations = jobsHost.Services.GetRequiredService<JobOperations>();
@@ -185,6 +186,8 @@ using (var request = await memory.BeginAsync())
 }
 await jobOperations.WaitAsync(Sources.Summary, summarized.Id, TimeSpan.FromSeconds(30), waiting.Token);
 var summary = await jobOperations.GetOutcomeAsync(Sources.Summary, summarized.Id, waiting.Token);
+var archived = await jobOperations.RequestAsync(Sources.Archive, new SyncFeed("npm"));
+var archive = await jobOperations.WaitAsync(Sources.Archive, archived.Id, TimeSpan.FromSeconds(30), waiting.Token);
 ChainId requestedChain;
 using (var request = await memory.BeginAsync())
 {
@@ -228,7 +231,7 @@ if (restored != lease || hosted.Length != 1 || !ReferenceEquals(hosted[0], workH
     || !parsed.Digest.AsSpan().SequenceEqual(Sources.BusinessDays.Digest) || jobs.Calendars.Count != 1 || host.Services.GetServices<IWorkBackground>().Count() != 7
     || Sources.Report.Policy.Expect?.Deadline?.Calendar != Sources.BusinessDays.Name || !partitions.SequenceEqual(["tenant"]) || !sources.Contains("Corfedo.Work") || incidentHandlers.Single() is not IncidentNotifier
     || memoryClaim?.Lease.Epoch != 1 || completed?.Outcome != JobOutcome.Completed || ranChain?.Outcome != JobOutcome.Completed || ranChain.Steps.Count != 2
-    || summary?.Result.Feed != "npm" || summary.Result.Runs != 1 || unlisted?.Contains("[JsonSerializable(typeof(Unlisted))]", StringComparison.Ordinal) != true || !renewed.Valid || expired || fired != 1 || signalsHost.Services.GetServices<IHostedService>().Any()
+    || summary?.Result.Feed != "npm" || summary.Result.Runs != 1 || archive?.Outcome != JobOutcome.Completed || unlisted?.Contains("[JsonSerializable(typeof(Unlisted))]", StringComparison.Ordinal) != true || !renewed.Valid || expired || fired != 1 || signalsHost.Services.GetServices<IHostedService>().Any()
     || slot.Kind != CalendarSlotKind.Allowed || slot.Start != new DateTimeOffset(2027, 1, 4, 7, 0, 0, TimeSpan.Zero) || slot.End != new DateTimeOffset(2027, 1, 4, 17, 0, 0, TimeSpan.Zero))
 {
     Console.Error.WriteLine("smoke check failed");
@@ -297,6 +300,8 @@ internal static class Sources
     public static readonly JobDefinition<SyncFeed> Cleanup = JobDefinition.Create<SyncFeed>("feeds.cleanup");
 
     public static readonly JobDefinition<SyncFeed> Prune = JobDefinition.Create<SyncFeed>("feeds.prune");
+
+    public static readonly JobDefinition<SyncFeed> Archive = JobDefinition.Create<SyncFeed>("feeds.archive");
 
     public static readonly JobDefinition<SyncFeed> Nightly = JobDefinition.Create<SyncFeed>("feeds.nightly", 1, new JobPolicy { Late = Late.SkipAfter(TimeSpan.FromHours(1)) });
 
