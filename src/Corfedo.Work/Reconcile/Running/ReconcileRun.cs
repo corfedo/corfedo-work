@@ -84,9 +84,13 @@ public sealed class ReconcileRun<TKey>
 
     private ReconcileAttempt Attempt { get; }
 
-    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}"/>
+    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}(Lease{TKey}, WorkTransaction, CancellationToken)"/>
     public ValueTask GuardAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>
-        Lease.GuardAsync(transaction, cancellationToken);
+        Lease.GuardAsync(transaction, false, cancellationToken);
+
+    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}(Lease{TKey}, WorkTransaction, bool, CancellationToken)"/>
+    public ValueTask GuardAsync(WorkTransaction transaction, bool progressed, CancellationToken cancellationToken = default) =>
+        Lease.GuardAsync(transaction, progressed, cancellationToken);
 
     /// <summary>Renews in the caller's transaction, so progress written in it commits with the renewal.</summary>
     public ValueTask<RenewResult> RenewAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>

@@ -76,7 +76,7 @@ public sealed class GenerationFenceIsolationTests(PostgreSqlDatabase database) :
         switch (operation)
         {
             case Operation.Renew:
-                if (!(await Store.Leases.RenewAsync(transaction, lease, Cancel)).Valid)
+                if (!(await Store.Leases.RenewAsync(transaction, lease, false, Cancel)).Valid)
                 {
                     throw new LeaseLostException("renewal refused");
                 }

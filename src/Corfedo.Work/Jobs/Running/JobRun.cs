@@ -171,9 +171,13 @@ public partial class JobRun
         }
     }
 
-    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}"/>
+    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}(Lease{TKey}, WorkTransaction, CancellationToken)"/>
     public ValueTask GuardAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>
-        Lease.GuardAsync(transaction, cancellationToken);
+        Lease.GuardAsync(transaction, false, cancellationToken);
+
+    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}(Lease{TKey}, WorkTransaction, bool, CancellationToken)"/>
+    public ValueTask GuardAsync(WorkTransaction transaction, bool progressed, CancellationToken cancellationToken = default) =>
+        Lease.GuardAsync(transaction, progressed, cancellationToken);
 
     /// <summary>
     /// Applies <paramref name="result"/> in the domain's transaction, with the definition's outcome hook for a terminal

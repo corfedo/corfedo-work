@@ -108,7 +108,7 @@ remain, and a holder gives a record back with a result through `ReconcileOperati
 | `ClaimAsync(tx, source, candidates, limit)` | Inside the caller's transaction, claims up to `limit` of the given keys that are claimable. The caller rechecks domain eligibility and reserves resources in the same transaction (E7). |
 | `RenewAsync(lease)` | Extends a valid lease. Returns whether it is still valid and whether cancellation is requested (R8). |
 | `RenewAsync(lease, tx)` | The same inside the caller's transaction, so progress written in it commits with the renewal (E4). |
-| `GuardAsync(lease, tx)` | Inside the caller's transaction: requires a valid lease, extends it, and locks the record against claims and other writers until the transaction ends. Every transaction that commits a holder's output calls it (R3, E4). |
+| `GuardAsync(lease, tx)` | Inside the caller's transaction: requires a valid lease, extends it, and locks the record against claims and other writers until the transaction ends. Every transaction that commits a holder's output calls it (R3, E4). With `progressed: true` it also resets `Takeovers` when the transaction commits. |
 | `ReleaseAsync(lease, due, failed)` | Gives the record back, due at `due`; counts a failure when `failed` (E5, E11). Never counts a takeover. |
 | `EndAsync(lease, tx, completion)` | In the caller's transaction: clears the lease, sets `DueAt` to null, clears cancellation and records the completion identity (E6, W4). Returns `Ended`, or `Replayed` for a completion already recorded. |
 | `ScheduleAsync(tx, source, key, due, execution)` | Sets `DueAt` in the caller's transaction and wakes claimers after commit (R1, R7). A new `execution` id marks a deliberate new execution; omitted, the current one continues. Refused on reconciliation sources. |
@@ -159,7 +159,10 @@ time and of changed due times, on commit of the context's transaction, or after 
 ## Claims, takeovers and exhaustion
 
 A claim sets the owner, increments the epoch and sets the expiry. A claim of a record whose previous lease expired is
-a takeover and increments `Takeovers`; a release or end by a valid holder resets it (R9). Failed releases increment
+a takeover and increments `Takeovers`; a release or end by a valid holder resets it (R9), and so does a committed
+guard that marks progress (`GuardAsync(lease, tx, progressed: true)`). `Takeovers` therefore counts takeovers without
+progress: a holder that commits steps of a long hold keeps a record that crashes its holders between steps from being
+exhausted while each holder still gets work done. Failed releases increment
 `Failures`, successful releases and ends reset it (E11); the domain reads both and may keep its own counters.
 
 A source can register a **claim hook** that runs inside the claim transaction, before the claim commits (E8):

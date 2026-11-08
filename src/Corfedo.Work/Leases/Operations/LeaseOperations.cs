@@ -34,17 +34,27 @@ public sealed class LeaseOperations(IWorkStore store, WorkProcess process, Lease
 
     /// <summary>Renews inside the caller's transaction, so progress written in it commits with the renewal.</summary>
     public ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, WorkTransaction transaction, CancellationToken cancellationToken = default)
-        where TKey : notnull => Store.RenewAsync(transaction, lease, cancellationToken);
+        where TKey : notnull => Store.RenewAsync(transaction, lease, false, cancellationToken);
 
     /// <summary>
     /// Requires a valid lease inside the caller's transaction, extends it and holds the record's lock until the
     /// transaction ends. Every transaction that commits a holder's output calls it.
     /// </summary>
     /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
-    public async ValueTask GuardAsync<TKey>(Lease<TKey> lease, WorkTransaction transaction, CancellationToken cancellationToken = default)
+    public ValueTask GuardAsync<TKey>(Lease<TKey> lease, WorkTransaction transaction, CancellationToken cancellationToken = default)
+        where TKey : notnull => GuardAsync(lease, transaction, false, cancellationToken);
+
+    /// <summary>
+    /// Guards the transaction as <see cref="GuardAsync{TKey}(Lease{TKey}, WorkTransaction, CancellationToken)"/> does;
+    /// with <paramref name="progressed"/> set, it also marks that the transaction commits progress, which resets the
+    /// record's <c>Takeovers</c> when it commits: the counter, which <c>MaximumTakeovers</c> limits, counts takeovers
+    /// without progress.
+    /// </summary>
+    /// <exception cref="LeaseLostException">The lease is no longer valid; the transaction must not commit.</exception>
+    public async ValueTask GuardAsync<TKey>(Lease<TKey> lease, WorkTransaction transaction, bool progressed, CancellationToken cancellationToken = default)
         where TKey : notnull
     {
-        if (!(await Store.RenewAsync(transaction, lease, cancellationToken)).Valid)
+        if (!(await Store.RenewAsync(transaction, lease, progressed, cancellationToken)).Valid)
         {
             throw new LeaseLostException($"The lease on {lease.Source.Name} record {lease.Source.Key.Format(lease.Key)} at epoch {lease.Epoch} is no longer valid.");
         }

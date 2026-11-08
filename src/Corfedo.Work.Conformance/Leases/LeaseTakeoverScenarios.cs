@@ -77,6 +77,38 @@ public abstract class LeaseTakeoverScenarios(ILeaseConformanceProvider provider)
     }
 
     [Fact]
+    public async Task L9_AGuardThatMarksProgressResetsTheTakeovers()
+    {
+        var source = await SourceAsync(Policy(TimeSpan.FromMilliseconds(300), p => p with { MaximumTakeovers = 1, TakeoverBackoff = Backoff.None }));
+        var key = new TestKey("t", 1);
+        await InsertAsync(source, key, TimeSpan.Zero);
+        var client = await ClientAsync(source);
+        Assert.NotNull(await client.Operations.ClaimAsync(source, key, Cancel));
+        var holder = await ClaimEventuallyAsync(client.Operations, source, key, TimeSpan.FromSeconds(10), OwnerId.New());
+        Assert.Equal((1, false), (holder.Takeovers, holder.Exhausted));
+
+        // A progressed guard whose transaction rolls back resets nothing; one that commits resets the counter.
+        await using (var rolledBack = await BeginAsync())
+        {
+            await client.Operations.GuardAsync(holder.Lease, rolledBack.Work, progressed: true, Cancel);
+        }
+        Assert.Equal(1, (await ReadAsync(source, key)).Takeovers);
+        await using (var progressed = await BeginAsync())
+        {
+            await progressed.WriteProgressAsync(source.Store, key, "p1", Cancel);
+            await client.Operations.GuardAsync(holder.Lease, progressed.Work, progressed: true, Cancel);
+            await progressed.CommitAsync(Cancel);
+        }
+        Assert.Equal(0, (await ReadAsync(source, key)).Takeovers);
+
+        // The holder then disappears: the next takeover is the first without progress, so it is not exhausted.
+        var next = await ClaimEventuallyAsync(client.Operations, source, key, TimeSpan.FromSeconds(10), OwnerId.New());
+        Assert.Equal((ClaimReason.Takeover, 1, false), (next.Reason, next.Takeovers, next.Exhausted));
+        var last = await ClaimEventuallyAsync(client.Operations, source, key, TimeSpan.FromSeconds(10), OwnerId.New());
+        Assert.Equal((2, true), (last.Takeovers, last.Exhausted));
+    }
+
+    [Fact]
     public async Task L21_ExpiryProcessorSettlesAnUnclaimedExpiredLeaseOnce()
     {
         var source = await SourceAsync(Policy(TimeSpan.FromMilliseconds(500), p => p with { SettleExpiry = true }));

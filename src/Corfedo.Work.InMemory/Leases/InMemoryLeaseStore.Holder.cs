@@ -9,16 +9,16 @@ internal sealed partial class InMemoryLeaseStore
         where TKey : notnull
     {
         using var transaction = await database.BeginAsync(cancellationToken);
-        var result = Renew(transaction, lease);
+        var result = Renew(transaction, lease, false);
         transaction.Commit();
         return result;
     }
 
-    public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
-        where TKey : notnull => ValueTask.FromResult(Renew(Join(transaction), lease));
+    public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
+        where TKey : notnull => ValueTask.FromResult(Renew(Join(transaction), lease, progressed));
 
-    /// <summary>Extends the lease if it is still valid.</summary>
-    private RenewResult Renew<TKey>(InMemoryTransaction transaction, Lease<TKey> lease)
+    /// <summary>Extends the lease if it is still valid; a renewal that marks progress also resets the takeovers.</summary>
+    private RenewResult Renew<TKey>(InMemoryTransaction transaction, Lease<TKey> lease, bool progressed)
         where TKey : notnull
     {
         var rules = Rules(lease.Source);
@@ -28,7 +28,9 @@ internal sealed partial class InMemoryLeaseStore
         {
             return RenewResult.Lost;
         }
-        Write(transaction, rules, key, r, [Set(rules.Fields.LeaseExpiresAt, now + rules.Policy.Duration)]);
+        Write(transaction, rules, key, r, progressed
+            ? [Set(rules.Fields.LeaseExpiresAt, now + rules.Policy.Duration), Set(rules.Fields.Takeovers, 0)]
+            : [Set(rules.Fields.LeaseExpiresAt, now + rules.Policy.Duration)]);
         return new RenewResult(true, r.Time(rules.Fields.CancelRequestedAt) is not null, rules.Policy.Duration);
     }
 

@@ -79,7 +79,7 @@ public sealed class GenerationFenceIsolationTests(SqlServerDatabase database) : 
         switch (operation)
         {
             case Operation.Renew:
-                if (!(await Store.Leases.RenewAsync(transaction, lease, Cancel)).Valid)
+                if (!(await Store.Leases.RenewAsync(transaction, lease, false, Cancel)).Valid)
                 {
                     throw new LeaseLostException("renewal refused");
                 }

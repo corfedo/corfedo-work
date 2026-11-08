@@ -130,7 +130,8 @@ public sealed class ImportRunner(AppDb db) : ILeaseHandler<long>
 - **Guard every write.** `GuardAsync` locks the row and checks its fence number, so the lock holds until your
   transaction commits and a takeover cannot slip in between. Long work commits in several guarded transactions.
 - **Failures and crashes.** A handler that throws gives the row back as failed, due again after the source's
-  `FailureBackoff` and counted in `failures`. A crash counts in `takeovers`.
+  `FailureBackoff` and counted in `failures`. A crash counts in `takeovers`. A long run that commits steps calls
+  `run.GuardAsync(tx, progressed: true)` in each, so only crashes without progress count toward `MaximumTakeovers`.
 - **Waiting.** A run that waits for something external, such as a tool result, calls
   `run.ReleaseAsync(Due.None)`, and your code sets `due_at` when the result arrives.
 - **Cancellation.** `leases.RequestCancelAsync(tx, Imports, id)` from any process fires the holder's token within one

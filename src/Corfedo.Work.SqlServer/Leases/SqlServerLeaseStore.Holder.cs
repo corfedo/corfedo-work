@@ -13,16 +13,16 @@ internal sealed partial class SqlServerLeaseStore
         return await RetryDeadlocksAsync(async () =>
         {
             await using var connection = await OpenAsync(cancellationToken);
-            return await RenewAsync(connection, null, sql, lease, cancellationToken);
+            return await RenewAsync(connection, null, sql, lease, false, cancellationToken);
         });
     }
 
-    public async ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+    public async ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = SqlServerTransaction.From(transaction);
         var sql = await SqlAsync(lease.Source, cancellationToken);
-        return await RenewAsync(work.Connection, work, sql, lease, cancellationToken);
+        return await RenewAsync(work.Connection, work, sql, lease, progressed, cancellationToken);
     }
 
     /// <summary>
@@ -30,9 +30,9 @@ internal sealed partial class SqlServerLeaseStore
     /// Without a transaction both statements run in a transaction of the batch. In the caller's transaction on a
     /// superseding source, the generation fence is taken first, before the row lock, since the renewal authorizes
     /// what that transaction commits, and the transaction must be READ COMMITTED; a renewal of its own only compares
-    /// the generation.
+    /// the generation. A renewal that marks progress also resets the takeovers.
     /// </summary>
-    private static async Task<RenewResult> RenewAsync<TKey>(SqlConnection connection, SqlServerTransaction? work, LeaseSql sql, Lease<TKey> lease, CancellationToken cancellationToken)
+    private static async Task<RenewResult> RenewAsync<TKey>(SqlConnection connection, SqlServerTransaction? work, LeaseSql sql, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var source = lease.Source;
@@ -40,7 +40,7 @@ internal sealed partial class SqlServerLeaseStore
         var body = $"""
             DECLARE @held int, @expires datetime2(7), @cancel bit, @valid_for bigint;
             SELECT @held = 1 FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK) WHERE {sql.KeyMatch};
-            UPDATE r SET @expires = {LeaseSql.Bare(sql.Expires)} = {Tsql.AddTicks("SYSUTCDATETIME()", "@duration")},
+            UPDATE r SET @expires = {LeaseSql.Bare(sql.Expires)} = {Tsql.AddTicks("SYSUTCDATETIME()", "@duration")},{(progressed ? $" {LeaseSql.Bare(sql.Takeovers)} = 0," : "")}
                 @cancel = {Tsql.Bit($"{sql.Cancel} IS NOT NULL")}, @valid_for = {Tsql.Micros("SYSUTCDATETIME()", Tsql.AddTicks("SYSUTCDATETIME()", "@duration"))}
             FROM {sql.Table} AS r WHERE {sql.KeyMatch} AND {sql.Valid};
             """;

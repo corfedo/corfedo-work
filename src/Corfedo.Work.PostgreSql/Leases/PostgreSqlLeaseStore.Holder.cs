@@ -10,14 +10,14 @@ internal sealed partial class PostgreSqlLeaseStore
         where TKey : notnull
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-        return await RenewAsync(connection, null, lease, cancellationToken);
+        return await RenewAsync(connection, null, lease, false, cancellationToken);
     }
 
-    public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+    public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = PostgreSqlTransaction.From(transaction);
-        return RenewAsync(work.Connection, work.Transaction, lease, cancellationToken);
+        return RenewAsync(work.Connection, work.Transaction, lease, progressed, cancellationToken);
     }
 
     /// <summary>
@@ -25,9 +25,9 @@ internal sealed partial class PostgreSqlLeaseStore
     /// Without a transaction both statements run in the batch's implicit transaction. In the caller's transaction on a
     /// superseding source, the generation fence is taken first, before the row lock, since the renewal authorizes
     /// what that transaction commits, and the transaction must be READ COMMITTED; a renewal of its own only compares
-    /// the generation.
+    /// the generation. A renewal that marks progress also resets the takeovers.
     /// </summary>
-    private async ValueTask<RenewResult> RenewAsync<TKey>(NpgsqlConnection connection, NpgsqlTransaction? transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+    private async ValueTask<RenewResult> RenewAsync<TKey>(NpgsqlConnection connection, NpgsqlTransaction? transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var source = lease.Source;
@@ -40,7 +40,7 @@ internal sealed partial class PostgreSqlLeaseStore
         }
         batch.BatchCommands.Add(KeyCommand($"SELECT 1 FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} FOR UPDATE OF r", source, lease.Key));
         batch.BatchCommands.Add(KeyCommand(
-            $"UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.Expires)} = clock_timestamp() + ${k + 3} "
+            $"UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.Expires)} = clock_timestamp() + ${k + 3}{(progressed ? $", {LeaseSql.Bare(sql.Takeovers)} = 0" : "")} "
             + $"WHERE {sql.KeyMatch(1)} AND {sql.Valid(k + 1, k + 2)} "
             + $"RETURNING {sql.Cancel} IS NOT NULL, extract(epoch FROM {sql.Expires} - clock_timestamp())::float8",
             source,

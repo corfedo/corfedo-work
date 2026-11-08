@@ -45,14 +45,18 @@ public sealed class LeaseRun<TKey>
     /// <summary>The run's <c>corfedo.work.run</c> span, null while nothing listens.</summary>
     internal Activity? Span { get; set; }
 
-    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}"/>
-    public async ValueTask GuardAsync(WorkTransaction transaction, CancellationToken cancellationToken = default)
+    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}(Lease{TKey}, WorkTransaction, CancellationToken)"/>
+    public ValueTask GuardAsync(WorkTransaction transaction, CancellationToken cancellationToken = default) =>
+        GuardAsync(transaction, false, cancellationToken);
+
+    /// <inheritdoc cref="LeaseOperations.GuardAsync{TKey}(Lease{TKey}, WorkTransaction, bool, CancellationToken)"/>
+    public async ValueTask GuardAsync(WorkTransaction transaction, bool progressed, CancellationToken cancellationToken = default)
     {
         using var span = WorkTelemetry.Source.StartActivity("corfedo.work.guard");
         span?.SetTag(WorkTelemetry.SourceTag, Lease.Source.Name);
         try
         {
-            await operations.GuardAsync(Lease, transaction, cancellationToken);
+            await operations.GuardAsync(Lease, transaction, progressed, cancellationToken);
         }
         catch (Exception exception)
         {

@@ -42,8 +42,12 @@ public interface ILeaseStore
     ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, CancellationToken cancellationToken)
         where TKey : notnull;
 
-    /// <summary>Extends a valid lease in the caller's transaction, which then holds the record's write lock.</summary>
-    ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, CancellationToken cancellationToken)
+    /// <summary>
+    /// Extends a valid lease in the caller's transaction, which then holds the record's write lock. When
+    /// <paramref name="progressed"/> is set, the renewal also resets <c>Takeovers</c>, which counts takeovers without
+    /// progress.
+    /// </summary>
+    ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>Gives a validly held record back, due as given; counts a failure when <paramref name="failed"/>.</summary>
