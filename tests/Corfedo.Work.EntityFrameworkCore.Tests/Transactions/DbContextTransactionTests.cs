@@ -27,7 +27,7 @@ public abstract class DbContextTransactionTests(TestDatabase database) : IAsyncL
         var collection = new ServiceCollection();
         collection.AddSingleton(database);
         database.AddWorkStore(collection);
-        collection.AddWork(work => work.PollingInterval(TimeSpan.FromMilliseconds(200)).AddJob<ShipOrder, ShipOrderHandler>(Shop.Ship));
+        collection.AddWork(work => work.PollingInterval(TimeSpan.FromMilliseconds(200)).AddJob<ShipOrder, ShipOrderHandler>(Shop.Ship, job => job.OnEnded<ShipmentRecorded>()));
         services = collection.BuildServiceProvider();
         hosted = [.. services.GetServices<IHostedService>()];
         foreach (var service in hosted)
@@ -62,6 +62,36 @@ public abstract class DbContextTransactionTests(TestDatabase database) : IAsyncL
         var outcome = await Jobs.WaitAsync(Shop.Ship, job, TimeSpan.FromSeconds(10), Cancel);
         Assert.Equal(JobOutcome.Completed, outcome?.Outcome);
         Assert.Equal("shipped", await StatusAsync(order));
+    }
+
+    [Fact]
+    public async Task AnOutcomeHookWritesThroughADbContextJoinedToTheTransitionTransaction()
+    {
+        var order = Guid.NewGuid();
+        await using (var context = Context())
+        {
+            context.Orders.Add(new Order { Id = order, Status = "placed" });
+            await context.SaveChangesAsync(Cancel);
+        }
+
+        // The hook's write commits with the ending transition, here a cancellation outside any handler.
+        JobId job;
+        await using (var context = Context())
+        {
+            await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
+            var options = new JobRequestOptions { MergeKey = order.ToString() };
+            job = (await Jobs.RequestAsync(context.Database.WorkTransaction(), Shop.Ship, new ShipOrder(order, 0), Schedule.After(TimeSpan.FromHours(1)), options, Cancel)).Id;
+            await transaction.CommitAsync(Cancel);
+        }
+        await using (var context = Context())
+        {
+            await using var transaction = await context.Database.BeginTransactionAsync(Cancel);
+            await Jobs.CancelAsync(context.Database.WorkTransaction(), Shop.Ship, order.ToString(), Cancel);
+            await transaction.CommitAsync(Cancel);
+        }
+
+        await using var read = Context();
+        Assert.Equal(["Cancelled"], await read.Shipments.Where(s => s.Job == job.Value).Select(s => s.Outcome).ToListAsync(Cancel));
     }
 
     [Fact]
@@ -148,18 +178,51 @@ internal sealed class Order
     public required string Status { get; set; }
 }
 
+internal sealed class Shipment
+{
+    public Guid Id { get; set; }
+
+    public Guid Job { get; set; }
+
+    public required string Outcome { get; set; }
+}
+
 internal sealed class ShopContext(TestDatabase database) : DbContext
 {
     public DbSet<Order> Orders => Set<Order>();
 
+    public DbSet<Shipment> Shipments => Set<Shipment>();
+
     protected override void OnConfiguring(DbContextOptionsBuilder builder) => database.Configure(builder);
 
-    protected override void OnModelCreating(ModelBuilder model) => model.Entity<Order>(order =>
+    protected override void OnModelCreating(ModelBuilder model)
     {
-        order.ToTable("orders", "shop");
-        order.Property(o => o.Id).HasColumnName("id");
-        order.Property(o => o.Status).HasColumnName("status");
-    });
+        model.Entity<Order>(order =>
+        {
+            order.ToTable("orders", "shop");
+            order.Property(o => o.Id).HasColumnName("id");
+            order.Property(o => o.Status).HasColumnName("status");
+        });
+        model.Entity<Shipment>(shipment =>
+        {
+            shipment.ToTable("shipments", "shop");
+            shipment.Property(s => s.Id).HasColumnName("id");
+            shipment.Property(s => s.Job).HasColumnName("job_id");
+            shipment.Property(s => s.Outcome).HasColumnName("outcome");
+        });
+    }
+}
+
+/// <summary>Records each shipping job's outcome as a new row, in the transaction of the transition that ends it.</summary>
+internal sealed class ShipmentRecorded(TestDatabase database) : IJobEnded
+{
+    public async ValueTask EndedAsync(JobEnd end, WorkTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var context = new ShopContext(database);
+        await context.Database.UseWorkTransactionAsync(transaction, cancellationToken);
+        context.Shipments.Add(new Shipment { Id = Guid.NewGuid(), Job = end.Job.Value, Outcome = end.Outcome.ToString() });
+        await context.SaveChangesAsync(cancellationToken);
+    }
 }
 
 /// <summary>

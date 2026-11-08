@@ -13,6 +13,7 @@
     <InternalsVisibleTo Include="Corfedo.Work.PostgreSql" />
     <InternalsVisibleTo Include="Corfedo.Work.SqlServer" />
     <InternalsVisibleTo Include="Corfedo.Work.InMemory" />
+    <InternalsVisibleTo Include="Corfedo.Work.EntityFrameworkCore" />
     <InternalsVisibleTo Include="Corfedo.Work.Jobs.Tests" />
     <InternalsVisibleTo Include="Corfedo.Work.Leases.Tests" />
     <InternalsVisibleTo Include="Corfedo.Work.Signals.Tests" />

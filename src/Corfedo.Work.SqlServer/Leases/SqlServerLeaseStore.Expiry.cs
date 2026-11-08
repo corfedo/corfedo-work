@@ -10,7 +10,8 @@ internal sealed partial class SqlServerLeaseStore
     /// Settles expired leases one record per transaction, each time locking the earliest expired, unsettled record that
     /// no other transaction holds, that is not waiting for a settlement retry and that has not failed in this call.
     /// Locked and failing records therefore never keep later records from being settled. A failed settlement counts in
-    /// <c>SettleFailures</c> and is retried after the source's settlement backoff.
+    /// <c>SettleFailures</c> and is retried after the source's settlement backoff; one whose handler found a row locked
+    /// without waiting for it counts nothing and is left for a later call, as a locked record is.
     /// </summary>
     public async ValueTask<int> SettleExpiredAsync<TKey>(LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, int limit, CancellationToken cancellationToken)
         where TKey : notnull
@@ -87,6 +88,13 @@ internal sealed partial class SqlServerLeaseStore
             try
             {
                 await handler(expiry, DbWorkTransaction.Of(transaction), cancellationToken);
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested && Busy(exception))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                failed.Add(expiry.Key);
+                LogCallbackBusy(logger, source.Name, source.Key.Format(expiry.Key));
+                return Settlement.Failed;
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {

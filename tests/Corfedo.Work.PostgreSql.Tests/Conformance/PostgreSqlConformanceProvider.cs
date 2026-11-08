@@ -227,6 +227,15 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task LockWithoutWaitingAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
+    {
+        var npgsql = transaction.Npgsql();
+        await using var command = new NpgsqlCommand($"SELECT 1 FROM {Name(table)} WHERE tenant = $1 AND id = $2 FOR UPDATE NOWAIT", npgsql.Connection, npgsql);
+        command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = key.Tenant });
+        command.Parameters.Add(new NpgsqlParameter<long> { TypedValue = key.Id });
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task InsertInTransactionAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
     {
         var npgsql = transaction.Npgsql();

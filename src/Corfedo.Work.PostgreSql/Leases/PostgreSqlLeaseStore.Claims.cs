@@ -12,18 +12,19 @@ internal sealed partial class PostgreSqlLeaseStore
         var sql = Sql(source);
         var claims = new List<LeaseClaim<TKey>>();
         DateTimeOffset cutoff = default;
-        // A call attempts at most twice its limit: up to limit records whose claim hook or expiry handler fails do not
-        // reduce what it claims, and records that keep failing cannot keep it running.
+        // A call attempts at most twice its limit: up to limit records whose claim hook or expiry handler fails or finds
+        // a row locked do not reduce what it claims, and records that keep failing cannot keep it running.
         var budget = 2 * limit;
         var attempts = 0;
         var busy = new HashSet<string>(StringComparer.Ordinal);
+        var passed = new HashSet<string>(StringComparer.Ordinal);
         var skips = 0;
         while (claims.Count < limit && attempts < budget)
         {
             ClaimPass<TKey> result;
             try
             {
-                result = await ClaimDuePassAsync(sql, source, callbacks, owner, Math.Min(limit - claims.Count, budget - attempts), [.. busy], cancellationToken);
+                result = await ClaimDuePassAsync(sql, source, callbacks, owner, Math.Min(limit - claims.Count, budget - attempts), [.. busy], passed, cancellationToken);
             }
             catch (Exception exception) when (claims.Count > 0)
             {
@@ -37,16 +38,19 @@ internal sealed partial class PostgreSqlLeaseStore
                 break;
             }
             claims.AddRange(result.Claims);
-            attempts += result.Claims.Count + result.Failed;
+            attempts += result.Claims.Count + result.Failed + result.PassedOver.Count;
             // Limits can reject candidates beyond a scope's free slots; the next pass excludes the scopes this pass
             // filled. Failed claims moved their records back, so the next pass reaches records due after them, within
             // the attempt budget. A limit scope another transaction holds is not waited for: its records are skipped
             // and later passes of the call leave its partition out, so a long transaction holding one scope delays
             // neither other partitions nor the dispatcher's other sources. A busy owner scope ends the call, since every
-            // claim needs it. Skipped records are claimed by a later call. Every pass that continues claims, fails a
-            // record or leaves out a new partition, at most limit times, so the loop ends.
+            // claim needs it. A record whose callback found a row locked without waiting is passed over: later passes
+            // of the call leave it out, as they would a record another transaction holds. Skipped and passed-over
+            // records are claimed by a later call. Every pass that continues claims, fails or passes over a record, or
+            // leaves out a new partition, at most limit times, so the loop ends.
             var refill = result.RejectedByLimits > 0 && result.Claims.Count > 0;
-            var retry = result.Failed > 0;
+            var passedOver = result.PassedOver.Count(passed.Add) > 0;
+            var retry = result.Failed > 0 || passedOver;
             var skip = !result.OwnerBusy && result.BusyPartitions.Count(busy.Add) > 0 && skips++ < limit;
             if (result.OwnerBusy || (!refill && !retry && !skip))
             {
@@ -57,10 +61,11 @@ internal sealed partial class PostgreSqlLeaseStore
     }
 
     /// <summary>
-    /// One pass of a due claim in its own transaction, leaving out partitions whose limit scope was found busy. Its
+    /// One pass of a due claim in its own transaction, leaving out partitions whose limit scope was found busy and the
+    /// records <paramref name="passed"/> names, whose callbacks found a row locked in an earlier pass. Its
     /// cutoff is the transaction's <c>now()</c>, which bounds its scans.
     /// </summary>
-    private async Task<ClaimPass<TKey>> ClaimDuePassAsync<TKey>(LeaseSql sql, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, int limit, string[] busy, CancellationToken cancellationToken)
+    private async Task<ClaimPass<TKey>> ClaimDuePassAsync<TKey>(LeaseSql sql, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, int limit, string[] busy, IReadOnlySet<string> passed, CancellationToken cancellationToken)
         where TKey : notnull
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -73,7 +78,13 @@ internal sealed partial class PostgreSqlLeaseStore
             await reader.ReadAsync(cancellationToken);
             return new([], 0, 0) { Cutoff = reader.GetFieldValue<DateTimeOffset>(0) };
         }
-        var (locked, cutoff) = await LockDueAsync(work, sql, source, sql.ClaimableFor(callbacks), owner, limit, busy, cancellationToken);
+        // Passed-over records may be among the earliest due, so the scans take as many more; they stay locked unclaimed
+        // until the pass commits.
+        var (locked, cutoff) = await LockDueAsync(work, sql, source, sql.ClaimableFor(callbacks), owner, limit + passed.Count, busy, cancellationToken);
+        if (passed.Count > 0)
+        {
+            locked = [.. locked.Where(k => !passed.Contains(source.Key.Format(k))).Take(limit)];
+        }
         if (locked.Count == 0)
         {
             return new([], 0, 0) { Cutoff = cutoff };
@@ -325,6 +336,9 @@ internal sealed partial class PostgreSqlLeaseStore
         public bool OwnerBusy { get; init; }
 
         public IReadOnlyList<string> BusyPartitions { get; init; } = [];
+
+        /// <summary>Records whose callback found a row locked without waiting, by their formatted keys.</summary>
+        public IReadOnlyList<string> PassedOver { get; init; } = [];
     }
 
     /// <summary>
@@ -364,8 +378,9 @@ internal sealed partial class PostgreSqlLeaseStore
         string? busy = null;
         var ownerBusy = false;
         IReadOnlyList<string> busyPartitions = [];
+        var passedOver = new List<string>();
         ClaimPass<TKey> Pass(List<LeaseClaim<TKey>> claimed, int failed) =>
-            new(claimed, rejectedByLimits, failed, busy) { OwnerBusy = ownerBusy, BusyPartitions = busyPartitions };
+            new(claimed, rejectedByLimits, failed, busy) { OwnerBusy = ownerBusy, BusyPartitions = busyPartitions, PassedOver = passedOver };
         if (policy.HasStoreLimits)
         {
             var ownerScope = policy.OwnerLimit is null ? null : sql.ScopePrefix + "o|" + owner;
@@ -449,7 +464,9 @@ internal sealed partial class PostgreSqlLeaseStore
         // Failures and moves the record by the failure backoff (a claim by key reports it to the caller instead). A
         // failing expiry handler is a failed settlement of the previous lease, not an attempt: it counts in
         // SettleFailures and waits for the settlement backoff, leaving the record unclaimed. Errors of the provider's
-        // own statements are not accounted; they abort the claim.
+        // own statements are not accounted; they abort the claim. A callback that found a row locked without waiting
+        // for it (Busy) is neither: the record is left as it was for a later call, as a record another transaction
+        // holds is.
         var failed = 0;
         foreach (var candidate in accepted)
         {
@@ -460,6 +477,13 @@ internal sealed partial class PostgreSqlLeaseStore
                 try
                 {
                     await expired(new LeaseExpiry<TKey>(source, candidate.Key, candidate.Owner!.Value, candidate.Epoch, candidate.Partition), work.Work, cancellationToken);
+                }
+                catch (Exception exception) when (!cancellationToken.IsCancellationRequested && Busy(exception))
+                {
+                    await work.Transaction.RollbackAsync(savepoint, CancellationToken.None);
+                    passedOver.Add(source.Key.Format(candidate.Key));
+                    LogCallbackBusy(logger, source.Name, source.Key.Format(candidate.Key));
+                    continue;
                 }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -476,6 +500,13 @@ internal sealed partial class PostgreSqlLeaseStore
                 try
                 {
                     await claimed(claim, work.Work, cancellationToken);
+                }
+                catch (Exception exception) when (!rethrow && !cancellationToken.IsCancellationRequested && Busy(exception))
+                {
+                    await work.Transaction.RollbackAsync(savepoint, CancellationToken.None);
+                    passedOver.Add(source.Key.Format(candidate.Key));
+                    LogCallbackBusy(logger, source.Name, source.Key.Format(candidate.Key));
+                    continue;
                 }
                 catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -797,6 +828,25 @@ internal sealed partial class PostgreSqlLeaseStore
 
     [LoggerMessage(EventId = 5, EventName = "lease.claim_settlement_failed", Level = LogLevel.Warning, Message = "Settling the expired lease on {Source} record {Key} in a claim failed; the record waits for the settlement backoff: {Error}")]
     private static partial void LogClaimSettlementFailed(ILogger logger, Exception? exception, string source, string key, string error);
+
+    /// <summary>
+    /// Whether a callback failed because a row it would have waited for was locked: <c>NOWAIT</c> or
+    /// <c>lock_timeout</c> raise 55P03, directly or wrapped by the callback's data access.
+    /// </summary>
+    internal static bool Busy(Exception exception)
+    {
+        for (var e = exception; e is not null; e = e.InnerException)
+        {
+            if (e is PostgresException { SqlState: PostgresErrorCodes.LockNotAvailable })
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [LoggerMessage(EventId = 6, EventName = "lease.callback_busy", Level = LogLevel.Debug, Message = "A callback of {Source} record {Key} found a row locked; the record is left for a later claim or settlement")]
+    internal static partial void LogCallbackBusy(ILogger logger, string source, string key);
 
     [LoggerMessage(EventId = 1, EventName = "lease.claim_rolled_back", Level = LogLevel.Warning, Message = "Claim of {Source} record {Key} rolled back by its claim hook; counted as a failure: {Error}")]
     private static partial void LogClaimRolledBack(ILogger logger, Exception? exception, string source, string key, string error);

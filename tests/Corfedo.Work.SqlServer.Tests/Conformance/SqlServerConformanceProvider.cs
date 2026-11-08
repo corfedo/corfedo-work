@@ -240,6 +240,13 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task LockWithoutWaitingAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
+    {
+        var sql = transaction.SqlServer();
+        await using var command = KeyCommand(sql.Connection!, sql, $"SELECT 1 FROM {Name(table)} WITH (UPDLOCK, ROWLOCK, NOWAIT) WHERE tenant = @tenant AND id = @id", key);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task InsertInTransactionAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
     {
         var sql = transaction.SqlServer();

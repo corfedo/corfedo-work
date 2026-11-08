@@ -108,6 +108,49 @@ public abstract class LeaseTakeoverScenarios(ILeaseConformanceProvider provider)
     }
 
     [Fact]
+    public async Task L21_AnExpiryHandlerThatFindsARowLockedIsRetriedWithoutASettlementFailure()
+    {
+        RequireConcurrentTransactions();
+        var source = await SourceAsync(Policy(TimeSpan.FromMilliseconds(500), p => p with { SettleExpiry = true, SettlementBackoff = Backoff.Constant(TimeSpan.FromMinutes(5)) }));
+        var parent = new TestKey("t", 100);
+        var key = new TestKey("t", 1);
+        await InsertAsync(source, parent, null);
+        await InsertAsync(source, key, TimeSpan.Zero);
+        var expiry = new ExpiryScript
+        {
+            Expired = async (expired, transaction, cancellationToken) =>
+            {
+                await Provider.LockWithoutWaitingAsync(transaction, source.Store, parent, cancellationToken);
+                await Provider.JournalAsync(transaction, source.Store, $"release {expired.Key} {expired.Epoch}", cancellationToken);
+            },
+        };
+        var crashed = await ClientAsync(source);
+        Assert.NotNull(await crashed.Operations.ClaimAsync(source, key, Cancel));
+
+        // While an application transaction holds the parent row, the handler cannot take it, and no settlement fails.
+        await using (var holder = await BeginAsync())
+        {
+            await holder.LockAsync(source.Store, parent, Cancel);
+            await ProcessAsync(work =>
+            {
+                work.Services.AddSingleton(expiry);
+                work.AddLeaseSource(source, s => s.OnExpired<ScriptedExpiryHandler>());
+            });
+            await Task.Delay(2000, Cancel);
+
+            var waiting = await ReadAsync(source, key);
+            Assert.Equal((0L, 0), (waiting.SettledEpoch, waiting.SettleFailures));
+            await holder.RollbackAsync(Cancel);
+        }
+
+        // Without a settlement backoff to wait for, a later pass settles it.
+        await EventuallyAsync(async () => (await JournalAsync(source)).Count == 1, TimeSpan.FromSeconds(5), "the expired lease is settled");
+        Assert.Equal([$"release {key} 1"], await JournalAsync(source));
+        var state = await ReadAsync(source, key);
+        Assert.Equal((1L, 0), (state.SettledEpoch, state.SettleFailures));
+    }
+
+    [Fact]
     public async Task L22_RacingSettlementsAndClaimsSettleEachEpochOnce()
     {
         var source = await SourceAsync(Policy(TimeSpan.FromMilliseconds(400), p => p with { SettleExpiry = true }));

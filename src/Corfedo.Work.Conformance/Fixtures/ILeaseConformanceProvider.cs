@@ -52,6 +52,12 @@ public interface ILeaseConformanceProvider
     /// </summary>
     Task InsertInTransactionAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Locks a record in a work transaction without waiting, as a callback takes a row that application transactions
+    /// lock before the work record. A record another transaction holds fails with the store's lock-not-available error.
+    /// </summary>
+    Task LockWithoutWaitingAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken);
+
     /// <summary>Committed journal entries in insertion order.</summary>
     Task<IReadOnlyList<string>> ReadJournalAsync(StoreLocation table, CancellationToken cancellationToken);
 }

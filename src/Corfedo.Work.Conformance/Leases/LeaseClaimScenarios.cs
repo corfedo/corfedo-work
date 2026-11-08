@@ -317,6 +317,53 @@ public abstract class LeaseClaimScenarios(ILeaseConformanceProvider provider) : 
     }
 
     [Fact]
+    public async Task L20_AClaimHookThatFindsARowLockedLeavesTheRecordForALaterClaimWithoutAFailure()
+    {
+        RequireConcurrentTransactions();
+        var source = await SourceAsync(Policy(TimeSpan.FromSeconds(30), p => p with { FailureBackoff = Backoff.Constant(TimeSpan.FromSeconds(30)) }));
+        var parent = new TestKey("t", 100);
+        var busy = new TestKey("t", 1);
+        var healthy = new TestKey("t", 2);
+        await InsertAsync(source, parent, null);
+        await InsertAsync(source, busy, TimeSpan.FromSeconds(-2));
+        await InsertAsync(source, healthy, TimeSpan.FromSeconds(-1));
+        var hook = new ClaimHookScript
+        {
+            Claimed = async (claim, transaction, cancellationToken) =>
+            {
+                if (claim.Key == busy)
+                {
+                    await Provider.LockWithoutWaitingAsync(transaction, source.Store, parent, cancellationToken);
+                    await Provider.JournalAsync(transaction, source.Store, "claimed " + claim.Key, cancellationToken);
+                }
+            },
+        };
+        var client = await ProcessAsync(
+            work =>
+            {
+                work.Services.AddSingleton(hook);
+                work.AddLeaseSource(source, s => s.OnClaimed<ScriptedClaimHook>());
+            },
+            start: false);
+
+        // An application transaction holds the parent row the hook takes without waiting.
+        await using (var holder = await BeginAsync())
+        {
+            await holder.LockAsync(source.Store, parent, Cancel);
+
+            var claims = await client.Operations.ClaimDueAsync(source, 1, Cancel);
+
+            Assert.Equal([healthy], claims.Select(c => c.Key));
+            var state = await ReadAsync(source, busy);
+            Assert.Equal((DueState.Past, 0, 0L, false), (state.Due, state.Failures, state.Epoch, state.Held));
+            await holder.RollbackAsync(Cancel);
+        }
+
+        Assert.Equal([busy], (await client.Operations.ClaimDueAsync(source, 1, Cancel)).Select(c => c.Key));
+        Assert.Equal(["claimed " + busy], await JournalAsync(source));
+    }
+
+    [Fact]
     public async Task L30_ARecordDueAfterAClaimsCutoffMakesTheNextDueTimeZero()
     {
         var source = await SourceAsync(Policy(TimeSpan.FromSeconds(30)));

@@ -158,6 +158,9 @@ public class InMemoryConformanceProvider : IReconcileConformanceProvider, IJobCo
         return Task.CompletedTask;
     }
 
+    /// <summary>The in-memory store serializes transactions, so no record is ever held by another one.</summary>
+    public Task LockWithoutWaitingAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken) => Task.CompletedTask;
+
     public Task InsertInTransactionAsync(WorkTransaction transaction, StoreLocation table, TestKey key, CancellationToken cancellationToken)
     {
         transaction.InMemory().Insert(table, new Dictionary<string, object?> { ["tenant"] = key.Tenant, ["id"] = key.Id });

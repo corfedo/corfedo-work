@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 
@@ -19,5 +20,29 @@ public static class EntityFrameworkWork
         var current = database.CurrentTransaction
             ?? throw new InvalidOperationException("The DbContext has no active transaction; begin one with Database.BeginTransactionAsync so the work commits with its changes.");
         return current.GetDbTransaction();
+    }
+
+    /// <summary>
+    /// Runs the context's commands in <paramref name="transaction"/>, a transaction Work began, such as the one a claim
+    /// hook, an expiry handler or an outcome hook receives, so the context's changes commit or roll back with it. The
+    /// context must not have opened a connection of its own yet; a context from the callback's scope has not. The
+    /// context neither commits nor closes the transaction's connection.
+    /// </summary>
+    /// <exception cref="ArgumentException">The transaction is not an ADO.NET transaction, as on the in-memory store.</exception>
+    public static async Task UseWorkTransactionAsync(this DatabaseFacade database, WorkTransaction transaction, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+        var ado = transaction switch
+        {
+            DbWorkTransaction work => work.Transaction,
+            null => throw new ArgumentNullException(nameof(transaction)),
+            _ => throw new ArgumentException("The transaction is not an ADO.NET transaction.", nameof(transaction)),
+        };
+        var connection = ado.Connection ?? throw new InvalidOperationException("The transaction is no longer active.");
+        if (!ReferenceEquals(database.GetDbConnection(), connection))
+        {
+            database.SetDbConnection(connection, contextOwnsConnection: false);
+        }
+        await database.UseTransactionAsync(ado, cancellationToken);
     }
 }
