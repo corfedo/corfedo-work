@@ -136,6 +136,6 @@ public sealed class ImportRunner(AppDb db) : ILeaseHandler<long>
 - **Cancellation.** `leases.RequestCancelAsync(tx, Imports, id)` from any process fires the holder's token within one
   renewal.
 
-Claims can also take one row by key or a set your code selected, run hooks in the claim transaction, settle
-resources held by expired leases, and serve holders in other processes through an opaque token. See the
+Claims can also take one row by key or a set your code selected, run hooks in the claim transaction (see
+[callbacks](transactions.md#callbacks-in-works-transactions)), settle resources held by expired leases, and serve holders in other processes through an opaque token. See the
 [leases design](../design/leases.md).

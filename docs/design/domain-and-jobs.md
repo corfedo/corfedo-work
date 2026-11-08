@@ -87,7 +87,8 @@ public sealed class FeedSyncEnded : IJobEnded
     public ValueTask EndedAsync(JobEnd end, WorkTransaction tx, CancellationToken cancellationToken)
     {
         // end.Subject, end.Partition, end.Occurrence, end.Outcome, end.Reason ("lease_lost", "args_version", ...)
-        // Record the outcome on the feed through the domain's data access bound to tx.
+        // Insert the outcome into the feed's sync history through the domain's data access bound to tx. The feed row,
+        // which domain transactions lock before the job, is updated by the handler with run.CompleteAsync(tx).
     }
 }
 ```
@@ -100,6 +101,10 @@ public sealed class FeedSyncEnded : IJobEnded
 - The hook may run more than once if its transaction rolls back and the transition is retried; its committed effects
   happen exactly once, together with the transition. Hooks make no external calls; work that must reach outside is
   requested as a job from the hook.
+- A transition Work makes in its own transaction has locked the job before the hook runs. The hook therefore inserts
+  rows or writes rows that domain transactions lock after the job, never the subject's row that they lock before it;
+  see the lock order of [callbacks](leases.md#operations). A hook that finds a row locked without waiting fails the
+  transition, which rolls back and is retried.
 
 ### Reading status by subject
 

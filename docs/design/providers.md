@@ -60,7 +60,7 @@ savepoints operations take inside the transaction.
 | Application uses | Adapter |
 |---|---|
 | ADO.NET | The `NpgsqlTransaction` itself, by the implicit conversion |
-| EF Core | `Corfedo.Work.EntityFrameworkCore`: `context.Database.WorkTransaction()`, from the `DbContext`'s current transaction, for work and signals |
+| EF Core | `Corfedo.Work.EntityFrameworkCore`: `context.Database.WorkTransaction()`, from the `DbContext`'s current transaction, for work and signals; `context.Database.UseWorkTransactionAsync(handle)` in the other direction, for callbacks |
 | The in-memory store | Its transactions are handles themselves |
 | A document store | The provider's session type, for example a MongoDB client session |
 
@@ -80,6 +80,11 @@ other levels: an invalidation changes the source's generation, not the record, s
 would still authorize an obsolete holder's output. Leases and reconciliation on domain records require the domain data and the work fields to be in the
 same store; that is what makes `GuardAsync` and `CompleteAsync` atomic. Hooks that run inside framework-initiated
 transactions (claim hooks, outcome hooks, expiry handlers) receive the handle and bind their own data access to it.
+Each provider turns a handle back into its transaction: `Npgsql()` and `SqlServer()` return the ADO.NET transaction,
+whose connection the callback's commands use, `InMemory()` the in-memory one, and the EF package's
+`context.Database.UseWorkTransactionAsync(handle)` joins a `DbContext` that has not opened a connection to the handle's
+connection and transaction, without taking ownership of either. A callback neither commits, rolls back nor changes the
+isolation of the transaction; the lock order callbacks follow is in [leases](leases.md#operations).
 
 ## Schema ownership
 

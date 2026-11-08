@@ -46,6 +46,45 @@ The same handle works for jobs, leases, reconciliation and signals.
 - **Fenced writes.** A handler that writes its results calls `run.GuardAsync(transaction)` first. It locks the row and
   checks that the run still holds it, so a worker that lost its lease cannot commit. See [leases](leases.md).
 
+## Callbacks in Work's transactions
+
+Claim hooks, expiry handlers and outcome hooks run inside the transaction of the claim, settlement or job transition
+and receive its handle. Work began that transaction, except for a transition your code makes in its own, such as
+`CancelAsync(tx)`. Writes made through the handle commit or roll back with the transition. Turn the handle back into
+your data access:
+
+| You use | In the callback |
+|---|---|
+| Npgsql | `tx.Npgsql()` returns the `NpgsqlTransaction`; run commands on its `Connection` |
+| SqlClient | `tx.SqlServer()` returns the `SqlTransaction`; run commands on its `Connection` |
+| EF Core | `await db.Database.UseWorkTransactionAsync(tx)` on a `DbContext` that has not opened a connection yet, such as one from the callback's scope |
+
+```csharp
+public sealed class ImportEnded(ImportsContext db) : IJobEnded
+{
+    public async ValueTask EndedAsync(JobEnd end, WorkTransaction tx, CancellationToken ct)
+    {
+        await db.Database.UseWorkTransactionAsync(tx, ct);
+        db.ImportOutcomes.Add(new ImportOutcome(end.Job, end.Outcome));
+        await db.SaveChangesAsync(ct);
+    }
+}
+```
+
+- **Only the given connection.** Write through the handle's connection. Work does not see writes made on another
+  connection, and they do not roll back with it.
+- **Leave the transaction to Work.** Do not commit, roll back or change its isolation level. Work commits it after
+  the callback returns and rolls the callback's work back when it throws.
+- **No external calls.** A callback can run more than once when its transaction rolls back. Request a job for work
+  that must reach outside.
+- **Work's record is locked first.** Write rows that your own transactions lock after the work record, or insert new
+  rows. A row your transactions lock before it, such as a parent row, belongs in the handler's first guarded
+  transaction or in `run.CompleteAsync(tx)`. A callback that must take such a row tries the lock without waiting:
+  `FOR UPDATE NOWAIT` on PostgreSQL, `WITH (UPDLOCK, NOWAIT)` on SQL Server. When the row is locked, Work leaves the
+  claim or settlement for later without counting a failure, and rolls a job transition back and retries it. On SQL Server keep `XACT_ABORT` off for that statement,
+  as SqlClient and EF Core do by default. With it on, the lock error ends Work's whole transaction. See the
+  [leases design](../design/leases.md#operations) for the lock order.
+
 ## Work that is not in a transaction
 
 An operator action, such as pausing a definition or rerunning a job, runs in its own transaction when the operation

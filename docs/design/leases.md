@@ -130,10 +130,26 @@ every moment. Short guarded transactions matter for liveness, not for correctnes
 
 Lock order is the application's. Claimers never wait for locked records, and a claim in a transaction of the framework
 waits for a limit scope only while it holds no record lock, so neither a guard nor an application transaction that
-claimed in a limit scope can deadlock with a claim; deadlocks can arise only between application transactions, which
-must lock records in a consistent order. When the
+claimed in a limit scope can deadlock with a claim whose callbacks follow the rule below; deadlocks can arise only
+between application transactions, which must lock records in a consistent order. When the
 work record is the domain record being changed, guard first and then write it. When the work record is separate (a
 job), guard after the domain's own locks, to hold the work record's lock for the shortest time.
+
+Callbacks (claim hooks, expiry handlers, outcome hooks) run in the transaction of the claim, settlement or transition.
+In a transaction Work starts, Work has locked its record before the callback runs, so every row the callback locks
+comes after the work record. A callback therefore writes rows that the application's transactions lock after the
+work record, or inserts new rows. Work that must lock a row the application locks before the work record, such as
+journalling an attempt on a parent row, goes in the handler's first guarded transaction or in the domain transaction
+of `run.CompleteAsync(tx)`, where the application takes its locks in its own order. A callback may still try such a
+lock without waiting: a callback that fails with the store's lock-not-available error (PostgreSQL 55P03, SQL Server
+1222, also wrapped in the exception of the callback's data access) is busy. A busy claim hook or expiry handler in a
+claim leaves the record as it was, counting nothing, and the rest of the call passes it over; a busy expiry handler in
+the expiry processor leaves the epoch unsettled for a later pass; a busy outcome hook fails the transition, which
+rolls back and is retried. A callback that waits for such a row instead can deadlock with an application
+transaction, and the database may choose the application's transaction as the victim; that transaction then fails
+and must be retried as any deadlock victim is. On SQL Server, a callback's statement that tries a lock runs with
+`XACT_ABORT` off, as SqlClient leaves it: with it on, the error rolls back Work's whole transaction, and the claim or
+settlement fails as a whole.
 
 Domain code may write `DueAt` through its own data access; such changes are picked up by polling and next-due timers
 instead of an immediate wake-up. The EF package emits the wake-up for tracked changes of mapped `DueAt` properties on
@@ -154,7 +170,8 @@ public sealed class InstanceClaimed : ILeaseClaimHook<InstanceKey>
     public ValueTask ClaimedAsync(LeaseClaim<InstanceKey> claim, WorkTransaction tx, CancellationToken cancellationToken)
     {
         // claim.Reason: Due, ByKey, Takeover; claim.PreviousOwner, claim.PreviousEpoch
-        // Settle the interrupted attempt, start a new one, journal it. No external calls here.
+        // Through tx: mark the interrupted attempt row abandoned and insert the new attempt row. Rows locked before the
+        // instance, such as its run, are written in the handler's first guarded transaction. No external calls here.
     }
 }
 ```
@@ -162,7 +179,9 @@ public sealed class InstanceClaimed : ILeaseClaimHook<InstanceKey>
 A failing hook rolls the claim back. A claim by key reports the hook's exception and leaves the record as it was.
 Claims of several records roll back only the record whose hook failed, log it and count a failure: `Failures`
 increments and the record is due again after the source's `FailureBackoff`, so a record whose hook keeps failing does
-not hold back the records due after it. An expiry handler failing in a claim counts as a failed settlement (see
+not hold back the records due after it. A hook that is busy (see [operations](#operations)) is no failure: the
+record keeps its due time and counts nothing, the rest of the call passes it over as it passes a record another
+transaction holds, and a later call claims it. A claim by key reports a busy hook's exception like any other. An expiry handler failing in a claim counts as a failed settlement (see
 [expiry settlement](#expiry-settlement)). Errors of the provider's own statements are not counted against the record;
 they abort the claim. Hooks and expiry handlers are resolved in a new DI scope for every call.
 
@@ -187,7 +206,9 @@ treats its expired leases alike, and the processes that can release the resource
   by default; with `Backoff.None` on every pass of the expiry processor); until then neither the expiry processor nor
   a claim runs the handler for it, and the record is not claimed. A failed settlement is not a failed attempt of the record: `Failures` and `DueAt` are unchanged;
 - the expiry processor takes records one at a time, passing records another transaction has locked and records whose
-  handler failed in the same pass, so neither keeps later records from being settled;
+  handler failed in the same pass, so neither keeps later records from being settled; a handler that is busy (see
+  [operations](#operations)) rolls the settlement back without counting in `SettleFailures`, and the record is
+  passed in that pass and settled by a later one;
 - the expiry processor runs at the earliest known expiry and at least every 750 ms, also when it knows of no expiry:
   a claim can commit after its lease expired and a record can stay locked past expiry, and neither is signalled. The
   wait bounds how long such a lease waits once it is committed, expired and unlocked;
@@ -230,8 +251,8 @@ the scope: it leaves that partition out for the rest of the call, or ends the ca
 so a long application transaction delays neither other partitions nor the dispatcher's other sources; a later call
 claims the skipped records. A claim by key waits for the scope before it locks its record again.
 
-A due claim attempts at most twice its limit: up to that many records whose claim hook or expiry handler fails do
-not reduce what it claims, and records that keep failing cannot keep it running.
+A due claim attempts at most twice its limit: up to that many records whose claim hook or expiry handler fails or is
+busy do not reduce what it claims, and records that keep failing cannot keep it running.
 
 ## Holding a lease
 
