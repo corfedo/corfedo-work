@@ -44,4 +44,17 @@ public sealed class PostgreSqlDatabase(PostgreSqlServer server) : IAsyncLifetime
     }
 
     public ValueTask DisposeAsync() => DataSource.DisposeAsync();
+
+    /// <summary>
+    /// Creates a login role without privileges beyond PostgreSQL's defaults and returns its name and a connection string
+    /// to this database under it.
+    /// </summary>
+    public async Task<(string Role, string ConnectionString)> CreateLoginAsync(CancellationToken cancellationToken = default)
+    {
+        var role = "login_" + Guid.NewGuid().ToString("N")[..12];
+        var password = Guid.NewGuid().ToString("N");
+        await using var command = DataSource.CreateCommand($"CREATE ROLE {role} LOGIN PASSWORD '{password}'");
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return (role, new NpgsqlConnectionStringBuilder(ConnectionString) { Username = role, Password = password }.ConnectionString);
+    }
 }

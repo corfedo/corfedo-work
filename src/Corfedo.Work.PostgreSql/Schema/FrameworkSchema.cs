@@ -3,8 +3,8 @@ using Npgsql;
 namespace Corfedo.Work.PostgreSql.Schema;
 
 /// <summary>
-/// The framework's own tables, created by a baseline script and upgraded by numbered scripts after it. Scripts are
-/// applied in order under a session-level advisory lock, so concurrent starts apply each script once.
+/// The framework's own tables, created by a baseline script and upgraded by numbered scripts after it. Each script keeps
+/// the previous release working, so a deployment applies it before that release's processes stop.
 /// </summary>
 internal static class FrameworkSchema
 {
@@ -424,55 +424,142 @@ internal static class FrameworkSchema
             """),
     ];
 
-    public static async Task MigrateAsync(NpgsqlDataSource dataSource, string schema, CancellationToken cancellationToken)
+    /// <summary>The schema version this release needs: the number of its last script.</summary>
+    public static int Version => Scripts[^1].Version;
+
+    /// <summary>
+    /// One statement that applies the scripts not yet recorded, in order and in one transaction, under a
+    /// transaction-level advisory lock on the schema, so concurrent runs apply each script once. It creates the schema
+    /// only when it is missing, so an owner of a schema created for it needs no <c>CREATE</c> on the database. Each of
+    /// <paramref name="runtimeRoles"/> then loses every privilege on the schema and its objects and gets the runtime
+    /// set: <c>USAGE</c> on the schema, <c>SELECT</c>, <c>INSERT</c>, <c>UPDATE</c> and <c>DELETE</c> on its tables,
+    /// <c>USAGE</c> and <c>SELECT</c> on its sequences and <c>EXECUTE</c> on its functions.
+    /// </summary>
+    public static string Script(string schema, IReadOnlyList<string> runtimeRoles)
     {
         var quoted = Leases.LeaseSql.Quote(schema);
+        var text = new System.Text.StringBuilder();
+        text.Append($"""
+            DO $corfedo_work$
+            DECLARE
+                applied integer := 0;
+            BEGIN
+                PERFORM pg_advisory_xact_lock(hashtextextended({Leases.LeaseSql.Literal(LockKey(schema))}, 0));
+                IF to_regnamespace({Leases.LeaseSql.Literal(quoted)}) IS NULL THEN
+                    CREATE SCHEMA {quoted};
+                END IF;
+                IF to_regclass({Leases.LeaseSql.Literal(quoted + ".schema_versions")}) IS NOT NULL THEN
+                    SELECT coalesce(max(version), 0) INTO applied FROM {quoted}.schema_versions;
+                END IF;
+
+            """);
+        foreach (var (version, script) in Scripts)
+        {
+            var tag = $"$corfedo_work_{version}$";
+            text.Append($"""
+                    IF applied < {version} THEN
+                        EXECUTE {tag}{script.Replace("{schema}", quoted, StringComparison.Ordinal)}{tag};
+                        INSERT INTO {quoted}.schema_versions (version) VALUES ({version});
+                    END IF;
+
+                """);
+        }
+        foreach (var role in runtimeRoles)
+        {
+            var grantee = Leases.LeaseSql.Quote(role);
+            text.Append($"""
+                    REVOKE ALL ON SCHEMA {quoted} FROM {grantee};
+                    REVOKE ALL ON ALL TABLES IN SCHEMA {quoted} FROM {grantee};
+                    REVOKE ALL ON ALL SEQUENCES IN SCHEMA {quoted} FROM {grantee};
+                    REVOKE ALL ON ALL FUNCTIONS IN SCHEMA {quoted} FROM {grantee};
+                    GRANT USAGE ON SCHEMA {quoted} TO {grantee};
+                    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {quoted} TO {grantee};
+                    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {quoted} TO {grantee};
+                    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA {quoted} TO {grantee};
+
+                """);
+        }
+        text.Append("END\n$corfedo_work$;\n");
+        return text.ToString();
+    }
+
+    public static async Task MigrateAsync(NpgsqlDataSource dataSource, string schema, IReadOnlyList<string> runtimeRoles, CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand(Script(schema, runtimeRoles));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Checks, without changing anything, that the schema exists, that the login may use every object in it as the
+    /// runtime set allows, and that it is at this release's version or a later one, which a rolling deployment
+    /// applies before the last process of this release stops.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The schema is missing, older than this release, or not usable by the login.</exception>
+    public static async Task VerifyAsync(NpgsqlDataSource dataSource, string schema, CancellationToken cancellationToken)
+    {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-        await using (var lockCommand = new NpgsqlCommand("SELECT pg_advisory_lock(hashtextextended($1, 0))", connection))
+        string user;
+        bool exists;
+        bool usage;
+        string[] tables;
+        string[] functions;
+        await using (var command = new NpgsqlCommand("""
+            WITH s AS (SELECT oid FROM pg_namespace WHERE nspname = $1)
+            SELECT current_user::text, EXISTS (SELECT FROM s), coalesce((SELECT has_schema_privilege(s.oid, 'USAGE') FROM s), false),
+                   ARRAY(SELECT c.relname::text FROM pg_class AS c JOIN s ON c.relnamespace = s.oid
+                         WHERE c.relkind IN ('r', 'p') AND NOT (has_table_privilege(c.oid, 'SELECT') AND has_table_privilege(c.oid, 'INSERT')
+                               AND has_table_privilege(c.oid, 'UPDATE') AND has_table_privilege(c.oid, 'DELETE'))
+                         ORDER BY 1),
+                   ARRAY(SELECT p.proname::text FROM pg_proc AS p JOIN s ON p.pronamespace = s.oid
+                         WHERE NOT has_function_privilege(p.oid, 'EXECUTE') ORDER BY 1)
+            """, connection))
         {
-            lockCommand.Parameters.Add(new NpgsqlParameter<string> { TypedValue = "corfedo-work|schema|" + schema });
-            await lockCommand.ExecuteNonQueryAsync(cancellationToken);
+            command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = schema });
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            await reader.ReadAsync(cancellationToken);
+            user = reader.GetString(0);
+            exists = reader.GetBoolean(1);
+            usage = reader.GetBoolean(2);
+            tables = reader.GetFieldValue<string[]>(3);
+            functions = reader.GetFieldValue<string[]>(4);
         }
-        try
+        if (!exists)
         {
-            await using (var create = new NpgsqlCommand($"CREATE SCHEMA IF NOT EXISTS {quoted}", connection))
-            {
-                await create.ExecuteNonQueryAsync(cancellationToken);
-            }
-            var applied = 0;
-            await using (var exists = new NpgsqlCommand("SELECT to_regclass($1) IS NOT NULL", connection))
-            {
-                exists.Parameters.Add(new NpgsqlParameter<string> { TypedValue = quoted + ".schema_versions" });
-                if ((bool)(await exists.ExecuteScalarAsync(cancellationToken))!)
-                {
-                    await using var current = new NpgsqlCommand($"SELECT coalesce(max(version), 0) FROM {quoted}.schema_versions", connection);
-                    applied = (int)(await current.ExecuteScalarAsync(cancellationToken))!;
-                }
-            }
-            foreach (var (version, script) in Scripts)
-            {
-                if (version <= applied)
-                {
-                    continue;
-                }
-                await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-                await using (var apply = new NpgsqlCommand(script.Replace("{schema}", quoted, StringComparison.Ordinal), connection, transaction))
-                {
-                    await apply.ExecuteNonQueryAsync(cancellationToken);
-                }
-                await using (var record = new NpgsqlCommand($"INSERT INTO {quoted}.schema_versions (version) VALUES ($1)", connection, transaction))
-                {
-                    record.Parameters.Add(new NpgsqlParameter<int> { TypedValue = version });
-                    await record.ExecuteNonQueryAsync(cancellationToken);
-                }
-                await transaction.CommitAsync(cancellationToken);
-            }
+            throw new InvalidOperationException(
+                $"The framework schema {schema} does not exist; this release needs version {Version}. Apply it in the migrate step with "
+                + "PostgreSqlWorkSchema.MigrateAsync or the script of PostgreSqlWorkSchema.Script, or register the store with WorkSchemaMode.Migrate.");
         }
-        finally
+        var missing = new List<string>();
+        if (!usage)
         {
-            await using var unlock = new NpgsqlCommand("SELECT pg_advisory_unlock(hashtextextended($1, 0))", connection);
-            unlock.Parameters.Add(new NpgsqlParameter<string> { TypedValue = "corfedo-work|schema|" + schema });
-            await unlock.ExecuteNonQueryAsync(CancellationToken.None);
+            missing.Add($"USAGE on schema {schema}");
+        }
+        if (tables.Length > 0)
+        {
+            missing.Add($"SELECT, INSERT, UPDATE and DELETE on table{(tables.Length == 1 ? "" : "s")} {string.Join(", ", tables)}");
+        }
+        if (functions.Length > 0)
+        {
+            missing.Add($"EXECUTE on function{(functions.Length == 1 ? "" : "s")} {string.Join(", ", functions)}");
+        }
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Login {user} lacks privileges on the framework schema {schema}: {string.Join("; ", missing)}. "
+                + "Grant them by naming its role in the runtime roles of PostgreSqlWorkSchema.MigrateAsync or PostgreSqlWorkSchema.Script.");
+        }
+        var quoted = Leases.LeaseSql.Quote(schema);
+        await using (var command = new NpgsqlCommand($"SELECT CASE WHEN to_regclass($1) IS NULL THEN 0 ELSE (SELECT coalesce(max(version), 0) FROM {quoted}.schema_versions) END", connection))
+        {
+            command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = quoted + ".schema_versions" });
+            var applied = (int)(await command.ExecuteScalarAsync(cancellationToken))!;
+            if (applied < Version)
+            {
+                throw new InvalidOperationException(
+                    $"The framework schema {schema} is at version {applied}; this release needs version {Version}. Run this release's migrate step first.");
+            }
         }
     }
+
+    private static string LockKey(string schema) => "corfedo-work|schema|" + schema;
 }

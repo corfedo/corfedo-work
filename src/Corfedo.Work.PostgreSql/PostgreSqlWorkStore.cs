@@ -17,18 +17,24 @@ public sealed class PostgreSqlWorkStore : IWorkStore
 {
     private readonly NpgsqlDataSource dataSource;
     private readonly string schema;
+    private readonly WorkSchemaMode schemaMode;
 
-    public PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time)
-        : this(dataSource, schema, loggerFactory, time, WorkTelemetryOptions.Default)
+    /// <summary>
+    /// A store with its framework tables in <paramref name="schema"/>; <paramref name="schemaMode"/> says whether a
+    /// starting process applies the schema or only verifies it.
+    /// </summary>
+    public PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
+        : this(dataSource, schema, loggerFactory, time, WorkTelemetryOptions.Default, schemaMode)
     {
     }
 
-    internal PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkTelemetryOptions telemetry)
+    internal PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkTelemetryOptions telemetry, WorkSchemaMode schemaMode)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
         this.dataSource = dataSource;
         this.schema = schema;
+        this.schemaMode = schemaMode;
         var logger = loggerFactory.CreateLogger("Corfedo.Work.PostgreSql");
         var signals = new PostgreSqlSignalSender(dataSource, PostgreSqlSignalSql.For(schema), logger, telemetry);
         var leases = new PostgreSqlLeaseStore(dataSource, schema, signals, logger, telemetry);
@@ -61,5 +67,7 @@ public sealed class PostgreSqlWorkStore : IWorkStore
 
     public ISignalTransport Signals { get; }
 
-    public ValueTask MigrateAsync(CancellationToken cancellationToken) => new(FrameworkSchema.MigrateAsync(dataSource, schema, cancellationToken));
+    public ValueTask PrepareAsync(CancellationToken cancellationToken) => new(schemaMode == WorkSchemaMode.Verify
+        ? FrameworkSchema.VerifyAsync(dataSource, schema, cancellationToken)
+        : FrameworkSchema.MigrateAsync(dataSource, schema, [], cancellationToken));
 }

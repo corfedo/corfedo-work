@@ -15,14 +15,14 @@ namespace Corfedo.Work.SqlServer.Signals;
 /// rows older than the retention; one that has not read for longer than the retention may have missed pruned rows, so
 /// it resyncs.
 /// </summary>
-internal sealed partial class SqlServerSignalTransport(string connectionString, SqlServerSignalSql sql, SqlServerSignalOptions options, TimeProvider time, ILogger logger, WorkTelemetryOptions telemetry) : ISignalTransport
+internal sealed partial class SqlServerSignalTransport(string connectionString, SqlServerSignalSql sql, SqlServerSignalOptions options, TimeProvider time, ILogger logger, WorkTelemetryOptions telemetry, bool ensureTable = true) : ISignalTransport
 {
     private static readonly TimeSpan Reconnect = TimeSpan.FromSeconds(1);
 
     /// <summary>Rows one pruning statement deletes at most.</summary>
     private const int PruneBatch = 1000;
 
-    private volatile bool ensured;
+    private volatile bool ensured = !ensureTable;
 
     public async ValueTask SendAsync(WorkTransaction? transaction, SignalTopic topic, string key, CancellationToken cancellationToken)
     {
@@ -131,7 +131,7 @@ internal sealed partial class SqlServerSignalTransport(string connectionString, 
 
     /// <summary>
     /// Creates the signals table when an application signals without a store, whose framework schema creates it
-    /// otherwise.
+    /// otherwise; a store that only verifies its schema creates nothing.
     /// </summary>
     private async Task EnsureTableAsync(SqlConnection connection, CancellationToken cancellationToken)
     {

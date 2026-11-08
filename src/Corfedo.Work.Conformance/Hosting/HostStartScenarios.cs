@@ -32,7 +32,7 @@ public abstract class HostStartScenarios(IJobConformanceProvider provider) : Job
             pollingInterval: TimeSpan.FromMilliseconds(200));
         var host = process.Services.GetRequiredService<IWorkHost>();
 
-        // The host's own start applies the schema and stores definitions, so the application can request work.
+        // The host's own start prepares the schema and stores definitions, so the application can request work.
         await InTransactionAsync(tx => Jobs(process).RequestAsync(tx, definition, new TestArgs("requested"), cancellationToken: Cancel));
         await Task.Delay(1500, Cancel);
         Assert.Empty(runs);

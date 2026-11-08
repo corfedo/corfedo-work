@@ -8,11 +8,18 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Corfedo.Work.SqlServer.Tests.Conformance;
 
-/// <summary>Runs the conformance scenarios against a fresh SQL Server database per test class.</summary>
+/// <summary>
+/// Runs the conformance scenarios against a fresh SQL Server database per test class, as a deployment with a separate
+/// migrate step runs: the database's owner migrates the framework schemas and creates the application's tables, and
+/// stores and application transactions use a runtime user that holds only the runtime permissions on the framework
+/// schema, and DML and VIEW DEFINITION, which source verification needs, on the application's schema. Stores verify their schema, so a statement that needs more fails.
+/// </summary>
 public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IReconcileConformanceProvider, IJobConformanceProvider, IAsyncLifetime
 {
     private const string Schema = "app";
     private string connectionString = "";
+    private string runtime = "";
+    private string user = "";
     private readonly SemaphoreSlim clockGate = new(1, 1);
     private SqlConnection clock = null!;
     private int tables;
@@ -28,19 +35,25 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
     public async ValueTask InitializeAsync()
     {
         connectionString = await server.CreateDatabaseAsync();
+        (user, runtime) = await server.CreateLoginAsync(connectionString);
         await ExecuteAsync($"CREATE SCHEMA {Schema}", CancellationToken.None);
-        await CreateStore().MigrateAsync(CancellationToken.None);
+        await ExecuteAsync($"GRANT SELECT, INSERT, UPDATE, DELETE, VIEW DEFINITION ON SCHEMA::{Schema} TO [{user}]", CancellationToken.None);
+        await SqlServerWorkSchema.MigrateAsync(connectionString, "work", [user]);
         clock = await OpenAsync(CancellationToken.None);
     }
 
     public ValueTask DisposeAsync() => clock.DisposeAsync();
 
-    public void AddStore(IServiceCollection services) => services.AddSqlServerWorkStore(connectionString);
+    public void AddStore(IServiceCollection services) => services.AddSqlServerWorkStore(runtime, schemaMode: WorkSchemaMode.Verify);
 
-    /// <summary>Each application has its own framework schema in the shared database.</summary>
-    public void AddApplicationStore(IServiceCollection services, string application) => services.AddSqlServerWorkStore(connectionString, "work_" + application);
+    /// <summary>Each application has its own framework schema in the shared database, migrated before its store starts.</summary>
+    public void AddApplicationStore(IServiceCollection services, string application)
+    {
+        SqlServerWorkSchema.MigrateAsync(connectionString, "work_" + application, [user]).GetAwaiter().GetResult();
+        services.AddSqlServerWorkStore(runtime, "work_" + application, schemaMode: WorkSchemaMode.Verify);
+    }
 
-    public IWorkStore CreateStore() => new SqlServerWorkStore(connectionString, "work", NullLoggerFactory.Instance, TimeProvider.System);
+    public IWorkStore CreateStore() => new SqlServerWorkStore(runtime, "work", NullLoggerFactory.Instance, TimeProvider.System, WorkSchemaMode.Verify);
 
     /// <summary>
     /// A table with the lease fields of every prefix and the indexes SQL Server sources need: the due index over unheld
@@ -214,7 +227,8 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
 
     public async Task<IConformanceTransaction> BeginAsync(CancellationToken cancellationToken)
     {
-        var connection = await OpenAsync(cancellationToken);
+        var connection = new SqlConnection(runtime);
+        await connection.OpenAsync(cancellationToken);
         return new Transaction(connection, (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken));
     }
 

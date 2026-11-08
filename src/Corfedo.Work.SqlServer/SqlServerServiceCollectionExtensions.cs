@@ -13,8 +13,11 @@ public static class SqlServerServiceCollectionExtensions
     /// <see cref="IWorkSignals"/>. Framework tables, including the signals table, live in <paramref name="schema"/>.
     /// The database must read committed snapshots (<c>READ_COMMITTED_SNAPSHOT ON</c>); the store refuses to start
     /// otherwise. <paramref name="signals"/> sets how the listener polls the signals table and how long signals are kept.
+    /// With <see cref="WorkSchemaMode.Migrate"/> a starting process applies the schema; with
+    /// <see cref="WorkSchemaMode.Verify"/> it only checks the schema that the migrate step applied with
+    /// <see cref="SqlServerWorkSchema"/>.
     /// </summary>
-    public static IServiceCollection AddSqlServerWorkStore(this IServiceCollection services, string connectionString, string schema = "work", SqlServerSignalOptions? signals = null)
+    public static IServiceCollection AddSqlServerWorkStore(this IServiceCollection services, string connectionString, string schema = "work", SqlServerSignalOptions? signals = null, WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
@@ -27,7 +30,8 @@ public static class SqlServerServiceCollectionExtensions
             options,
             provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance,
             provider.GetService<TimeProvider>() ?? TimeProvider.System,
-            WorkTelemetryOptions.From(provider)));
+            WorkTelemetryOptions.From(provider),
+            schemaMode));
         services.TryAddSingleton(provider => provider.GetRequiredService<IWorkStore>().Signals!);
         return services.AddWorkSignals();
     }

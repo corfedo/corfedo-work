@@ -118,7 +118,7 @@ public sealed class SignalTests(SqlServerDatabase database) : IClassFixture<SqlS
     private async Task<Listening> ListenAsync(string schema, SqlServerSignalOptions? options = null)
     {
         var store = new SqlServerWorkStore(database.ConnectionString, schema, options ?? new SqlServerSignalOptions(), NullLoggerFactory.Instance, TimeProvider.System);
-        await store.MigrateAsync(Cancel);
+        await store.PrepareAsync(Cancel);
         var signals = new WorkSignals(store.Signals);
         var listening = new Listening(schema, store, signals);
         listening.Subscription = signals.Subscribe(Orders, listening);

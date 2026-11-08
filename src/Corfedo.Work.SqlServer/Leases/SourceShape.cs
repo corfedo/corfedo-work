@@ -116,22 +116,23 @@ internal static class SourceCatalog
     /// partition with the same filter, carrying LeaseOwner for spread limits; an index led by the owner for owner
     /// limits; and on reconciliation sources an index led by AttemptedGeneration
     /// without a filter. The table must not escalate locks, since a table lock would hold off every claim, which skips
-    /// only locked rows: the store disables escalation on a table that has it.
+    /// only locked rows: when <paramref name="alterTables"/> is set, the store disables escalation on a table that has it.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The table, a field or an index is missing or has the wrong type, or the table escalates locks and the store could not disable it.</exception>
-    public static async Task<SourceShape> ReadAsync<TKey>(string connectionString, LeaseSource<TKey> source, CancellationToken cancellationToken)
+    /// <exception cref="InvalidOperationException">The table, a field or an index is missing or has the wrong type, or the table escalates locks and the store did not disable it.</exception>
+    public static async Task<SourceShape> ReadAsync<TKey>(string connectionString, LeaseSource<TKey> source, bool alterTables, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var table = Tsql.Quote(source.Store.Schema) + "." + Tsql.Quote(source.Store.Name);
         var columns = new Dictionary<string, Column>(StringComparer.Ordinal);
         var indexes = new List<Index>();
         string? escalation;
+        var definitions = false;
         await using (var connection = new SqlConnection(connectionString))
         {
             await connection.OpenAsync(cancellationToken);
             await using var command = Tsql.Command(connection, null, """
                 DECLARE @id int = OBJECT_ID(@table, N'U');
-                SELECT lock_escalation_desc FROM sys.tables WHERE object_id = @id;
+                SELECT lock_escalation_desc, CAST(COALESCE(HAS_PERMS_BY_NAME(@table, N'OBJECT', N'VIEW DEFINITION'), 0) AS bit) FROM sys.tables WHERE object_id = @id;
                 SELECT c.name, t.name, c.max_length, c.collation_name, CAST(COALESCE(COLLATIONPROPERTY(c.collation_name, 'CodePage'), 0) AS int),
                     CAST(CASE WHEN c.is_nullable = 0 THEN 1 ELSE 0 END AS bit),
                     CASE WHEN cc.is_persisted = 1 THEN cc.definition END
@@ -146,6 +147,7 @@ internal static class SourceCatalog
                 Tsql.Text("@table", table, 600));
             await using var reader = await command.ReaderAsync(cancellationToken);
             escalation = await reader.NextRowAsync(cancellationToken) ? reader.GetString(0) : null;
+            definitions = escalation is not null && reader.GetBoolean(1);
             await reader.NextSetAsync(cancellationToken);
             while (await reader.NextRowAsync(cancellationToken))
             {
@@ -179,8 +181,18 @@ internal static class SourceCatalog
         {
             throw new InvalidOperationException($"Lease source {source.Name}: table {table} does not exist.");
         }
+        if (!definitions)
+        {
+            // SQL Server shows index filters and computed column definitions only to users with VIEW DEFINITION.
+            throw new InvalidOperationException(
+                $"Lease source {source.Name}: the user cannot read the index filters and computed columns of {table}, which verification checks; grant it VIEW DEFINITION on the table.");
+        }
         var problems = new List<string>();
-        if (escalation != "DISABLE" && await DisableEscalationAsync(connectionString, table, cancellationToken) is { } refused)
+        if (escalation != "DISABLE" && !alterTables)
+        {
+            problems.Add($"the table escalates locks ({escalation}); claims skip locked rows and cannot skip a table lock, and a store that verifies its schema changes no table, so disable it with ALTER TABLE {table} SET (LOCK_ESCALATION = DISABLE)");
+        }
+        else if (escalation != "DISABLE" && await DisableEscalationAsync(connectionString, table, cancellationToken) is { } refused)
         {
             problems.Add($"the table escalates locks ({escalation}) and the store could not disable it ({refused}); claims skip locked rows and cannot skip a table lock, so disable it with ALTER TABLE {table} SET (LOCK_ESCALATION = DISABLE)");
         }

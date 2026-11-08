@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Corfedo.Work;
 
-/// <summary>Registers a process that runs no other work: applies the framework schema, then keeps the process registered until it stops.</summary>
+/// <summary>Registers a process that runs no other work: prepares the framework schema, then keeps the process registered until it stops.</summary>
 internal sealed class ProcessHost(IServiceProvider services, IWorkStore store, WorkProcess process, ProcessOptions options, TimeProvider time) : IHostedService
 {
     private readonly ProcessHeartbeat heartbeat = new(
@@ -17,7 +17,7 @@ internal sealed class ProcessHost(IServiceProvider services, IWorkStore store, W
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        await store.MigrateAsync(cancellationToken);
+        await store.PrepareAsync(cancellationToken);
         await heartbeat.StartAsync(cancellationToken);
     }
 

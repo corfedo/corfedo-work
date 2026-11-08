@@ -85,12 +85,28 @@ transactions (claim hooks, outcome hooks, expiry handlers) receive the handle an
 
 - **Framework tables** (jobs, chains, run history, definitions, calendars, source generations, expectation states, incidents,
   processes)
-  are created and upgraded by the provider's versioned scripts, applied at startup under a store-level lock, or by an
-  explicit command for deployments that do not change schemas at runtime. The application's ORM migrations never
-  contain them. A provider isolates applications that share a database (R19); PostgreSQL gives each its own
-  framework schema, from which lock keys and the signal channel derive as well.
-- **Grants.** The provider ships the permissions each process role needs on framework tables (request-only,
-  executing, migrating) as scripts, so roles with their own database logins get least privilege.
+  are created and upgraded by the provider's versioned scripts. The application's ORM migrations never contain them.
+  A provider isolates applications that share a database (R19); PostgreSQL gives each its own framework schema, from
+  which lock keys and the signal channel derive as well.
+- **Who applies them.** The store's registration chooses a schema mode. With `Migrate`, the default, every starting
+  process applies the scripts its release adds, under a store-level lock. With `Verify`, starting processes change no
+  schema: a separate migrate step applies it, and a starting process checks that the schema exists at its release's
+  version or a later one and that its login holds the runtime privileges, and refuses to start otherwise, naming what
+  is missing. The migrate step calls the provider's schema entry point (`PostgreSqlWorkSchema`,
+  `SqlServerWorkSchema`): `MigrateAsync`, or `Script`, the same SQL as one idempotent statement or batch for migrate
+  steps that run SQL files. Both run every pending script in one transaction under the store-level lock and create
+  the schema only when it is missing, so the owner of a schema created for it needs no right to create schemas.
+- **Rolling deployments.** A script keeps the previous release working, so a deployment applies the new release's
+  scripts while processes of the previous release still run. A verifying process accepts a later version for the same
+  reason.
+- **Grants.** There is one runtime privilege set: what every process needs on the framework schema without changing
+  it. A request-only process that cancels a job writes jobs, run history, expectation states and incidents, so
+  narrower sets per process role would differ in little and are not offered. The migrate step names the database
+  roles its runtime logins use; each of them then holds exactly the runtime set on the framework schema and its
+  objects, and loses any other privilege it held on them. Grants are the desired state of the current release, not a
+  history: applying them again changes nothing, privileges on tables a release adds arrive in the same step, and
+  privileges a release no longer needs disappear. The conformance suites run under such a runtime login with a
+  verifying store, so a statement that needs more fails a provider's tests.
 - **Domain records** belong to the application. Its own migrations add the lease and reconciliation fields; the EF
   package offers `HasLease(source)` and `HasReconciliation(source)` model helpers. They map the entity to the
   source's table, map each field as a property named after its column in Pascal case (`DueAt` for `due_at`; the
@@ -462,6 +478,11 @@ The first provider.
   12 000 items: 172 ms against 171 ms at 12 000, within noise at 50 000, 1 636 ms against 1 530 ms at 100 000. A
   `set_config('jit', 'off', true)` command added to the claim batch made no measurable difference.
 - Clock: `clock_timestamp()` for every time.
+- Schema: the migrate statement is one `DO` block under a transaction-level advisory lock on the schema, which runs
+  each pending script with `EXECUTE`. The runtime set is `USAGE` on the schema, `SELECT`, `INSERT`, `UPDATE` and
+  `DELETE` on its tables, `USAGE` and `SELECT` on its sequences and `EXECUTE` on its functions. PostgreSQL grants
+  `EXECUTE` on new functions to `PUBLIC`, which reaches them only with `USAGE` on the schema. Verification reads the
+  catalog with `has_schema_privilege`, `has_table_privilege` and `has_function_privilege` for the current user.
 - Signals ([signals](signals.md)): `NOTIFY` on one channel per application, `corfedo_work:<schema>`, with the topic,
   a space and the key as payload, sent by each process in batches for the transactions that have committed, which it
   finds by their transaction ids. The channel name is at most

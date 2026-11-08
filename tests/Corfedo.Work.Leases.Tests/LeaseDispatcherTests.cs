@@ -167,7 +167,7 @@ public sealed class LeaseDispatcherTests
 
         public ISignalTransport? Signals => null;
 
-        public ValueTask MigrateAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask PrepareAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 
         public WorkTransaction Transaction(System.Data.Common.DbTransaction transaction) => throw new NotSupportedException();
     }

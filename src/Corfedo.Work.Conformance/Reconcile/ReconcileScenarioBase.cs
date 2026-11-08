@@ -40,7 +40,7 @@ public abstract class ReconcileScenarioBase(IReconcileConformanceProvider provid
     /// <summary>A new table and a source on it, with the framework schema applied for processes that are not started.</summary>
     protected async Task<ReconcileSource<TestKey>> ReconcileSourceAsync(ReconcilePolicy policy, bool partitioned = false)
     {
-        await Provider.CreateStore().MigrateAsync(Cancel);
+        await Provider.CreateStore().PrepareAsync(Cancel);
         var table = await Provider.CreateReconcileTableAsync(Cancel);
         return ReconcileSource.Define("r-" + table.Name, table, TestKey.Codec, policy, partitioned ? "tenant" : null);
     }

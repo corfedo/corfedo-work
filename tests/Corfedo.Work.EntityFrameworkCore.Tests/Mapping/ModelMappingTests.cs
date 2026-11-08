@@ -27,7 +27,7 @@ public abstract class ModelMappingTests(TestDatabase database) : IAsyncLifetime
         database.AddWorkStore(collection);
         collection.AddWork(work => work.AddLeaseSource(Fleet.Instances).AddReconcileSource(Fleet.Placements));
         services = collection.BuildServiceProvider();
-        await Store.MigrateAsync(Cancel);
+        await Store.PrepareAsync(Cancel);
     }
 
     public async ValueTask DisposeAsync() => await services.DisposeAsync();

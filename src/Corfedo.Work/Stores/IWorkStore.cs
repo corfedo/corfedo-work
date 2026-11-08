@@ -22,6 +22,9 @@ public interface IWorkStore
     /// <summary>The signal transport, or null when the store has none and dispatchers rely on timers and polling.</summary>
     ISignalTransport? Signals { get; }
 
-    /// <summary>Applies the framework's schema scripts, serialized across processes.</summary>
-    ValueTask MigrateAsync(CancellationToken cancellationToken);
+    /// <summary>
+    /// Prepares the store for a starting process: applies the framework's schema scripts, serialized across processes,
+    /// or, for a store registered with <see cref="WorkSchemaMode.Verify"/>, checks the schema without changing it.
+    /// </summary>
+    ValueTask PrepareAsync(CancellationToken cancellationToken);
 }

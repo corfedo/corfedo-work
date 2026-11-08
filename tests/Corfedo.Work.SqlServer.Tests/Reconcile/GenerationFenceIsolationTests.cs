@@ -108,7 +108,7 @@ public sealed class GenerationFenceIsolationTests(SqlServerDatabase database) : 
 
     private async Task<(ReconcileSource<TestKey> Source, Lease<TestKey> Lease)> ClaimedAsync()
     {
-        await Store.MigrateAsync(Cancel);
+        await Store.PrepareAsync(Cancel);
         var table = "fence_" + Guid.NewGuid().ToString("N");
         await database.ExecuteAsync($"""
             CREATE TABLE dbo.{table} (

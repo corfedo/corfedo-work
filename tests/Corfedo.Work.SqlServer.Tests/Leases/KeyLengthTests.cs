@@ -56,7 +56,7 @@ public sealed class KeyLengthTests(SqlServerDatabase database) : IClassFixture<S
             INSERT INTO {table} (id, due_at) VALUES (N'{key}', SYSUTCDATETIME());
             """, Cancel);
         var store = new SqlServerWorkStore(database.ConnectionString, "work", NullLoggerFactory.Instance, TimeProvider.System);
-        await store.MigrateAsync(Cancel);
+        await store.PrepareAsync(Cancel);
         return (LeaseSource.Define(table, StoreLocation.Table("dbo", table), KeyCodec.String("id"), new LeasePolicy { Duration = TimeSpan.FromMinutes(1) }), store);
     }
 }

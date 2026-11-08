@@ -6,7 +6,7 @@ using Microsoft.Extensions.Logging;
 
 namespace Corfedo.Work.SqlServer.Leases;
 
-internal sealed partial class SqlServerLeaseStore(string connectionString, string schema, SqlServerSignalSql signals, ILogger logger, WorkTelemetryOptions telemetry) : ILeaseStore
+internal sealed partial class SqlServerLeaseStore(string connectionString, string schema, SqlServerSignalSql signals, ILogger logger, WorkTelemetryOptions telemetry, bool alterTables = true) : ILeaseStore
 {
     /// <summary>Attempts of a provider transaction chosen as a deadlock victim before the error reaches the caller.</summary>
     private const int DeadlockAttempts = 5;
@@ -30,7 +30,7 @@ internal sealed partial class SqlServerLeaseStore(string connectionString, strin
         {
             return sql;
         }
-        var shape = source.Job is null ? await SourceCatalog.ReadAsync(connectionString, source, cancellationToken) : SourceShape.Jobs;
+        var shape = source.Job is null ? await SourceCatalog.ReadAsync(connectionString, source, alterTables, cancellationToken) : SourceShape.Jobs;
         return statements.GetOrAdd(source, Build(source, shape));
     }
 
@@ -41,7 +41,7 @@ internal sealed partial class SqlServerLeaseStore(string connectionString, strin
     public async ValueTask VerifyAsync<TKey>(LeaseSource<TKey> source, CancellationToken cancellationToken)
         where TKey : notnull
     {
-        var shape = await SourceCatalog.ReadAsync(connectionString, source, cancellationToken);
+        var shape = await SourceCatalog.ReadAsync(connectionString, source, alterTables, cancellationToken);
         statements[source] = Build(source, shape);
     }
 

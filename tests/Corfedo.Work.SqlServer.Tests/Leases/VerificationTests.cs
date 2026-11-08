@@ -102,6 +102,18 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
     }
 
     [Fact]
+    public async Task AStoreThatVerifiesItsSchemaRefusesAnEscalatingTableWithoutAlteringIt()
+    {
+        var source = await SourceAsync("escalating_verified", Indexes, escalation: false);
+        var store = new SqlServerWorkStore(database.ConnectionString, "work", NullLoggerFactory.Instance, TimeProvider.System, WorkSchemaMode.Verify).Leases;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(async () => await store.VerifyAsync(source, Cancel));
+
+        Assert.Contains("ALTER TABLE [dbo].[escalating_verified] SET (LOCK_ESCALATION = DISABLE)", error.Message, StringComparison.Ordinal);
+        Assert.Equal("TABLE", (string?)await database.ScalarAsync("SELECT lock_escalation_desc FROM sys.tables WHERE object_id = OBJECT_ID(N'dbo.escalating_verified')", Cancel));
+    }
+
+    [Fact]
     public async Task ALoginThatCannotAlterAnEscalatingTableIsRefusedWithTheStatement()
     {
         var source = await SourceAsync("escalating_readonly", Indexes, escalation: false);
@@ -110,7 +122,7 @@ public sealed class VerificationTests(SqlServerDatabase database) : IClassFixtur
         await database.ExecuteAsync($"""
             CREATE LOGIN [{login}] WITH PASSWORD = '{password}', CHECK_POLICY = OFF;
             CREATE USER [{login}] FOR LOGIN [{login}];
-            GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.escalating_readonly TO [{login}];
+            GRANT SELECT, INSERT, UPDATE, DELETE, VIEW DEFINITION ON dbo.escalating_readonly TO [{login}];
             """, Cancel);
         var connectionString = new SqlConnectionStringBuilder(database.ConnectionString) { UserID = login, Password = password, Pooling = false }.ConnectionString;
         try

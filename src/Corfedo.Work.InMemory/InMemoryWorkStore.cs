@@ -60,5 +60,5 @@ public sealed class InMemoryWorkStore : IWorkStore
     public ISignalTransport Signals { get; }
 
     /// <summary>The in-memory store has no schema to apply.</summary>
-    public ValueTask MigrateAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    public ValueTask PrepareAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
 }

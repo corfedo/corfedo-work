@@ -5,9 +5,9 @@ using Microsoft.Data.SqlClient;
 namespace Corfedo.Work.SqlServer.Schema;
 
 /// <summary>
-/// The framework's own tables, created by a baseline script and upgraded by numbered scripts after it. Scripts are
-/// applied in order under a session applock, so concurrent starts apply each script once. Every table disables lock
-/// escalation: claims skip locked rows, and a table lock cannot be skipped.
+/// The framework's own tables, created by a baseline script and upgraded by numbered scripts after it. Each script keeps
+/// the previous release working, so a deployment applies it before that release's processes stop. Every table disables
+/// lock escalation: claims skip locked rows, and a table lock cannot be skipped.
 /// </summary>
 internal static class FrameworkSchema
 {
@@ -468,68 +468,144 @@ internal static class FrameworkSchema
         + $"IF SCHEMA_ID({Tsql.Literal(schema)}) IS NULL EXEC ({Tsql.Literal("CREATE SCHEMA " + Tsql.Quote(schema))});\n"
         + SignalsTable(schema));
 
+    /// <summary>The schema version this release needs: the number of its last script.</summary>
+    public static int Version => Scripts[^1].Version;
+
+    /// <summary>The framework tables, from the scripts that create them.</summary>
+    private static readonly string[] Tables =
+    [
+        .. Scripts.SelectMany(s => System.Text.RegularExpressions.Regex.Matches(s.Script, @"CREATE TABLE \{schema\}\.(\w+)").Select(m => m.Groups[1].Value)),
+        "signals",
+    ];
+
     /// <summary>
-    /// Refuses a database without READ_COMMITTED_SNAPSHOT, then applies the scripts not yet recorded, each in its own
-    /// transaction, holding a session applock on the schema for the whole run.
+    /// One batch that refuses a database without READ_COMMITTED_SNAPSHOT, then applies the scripts not yet recorded, in
+    /// order and in one transaction, under a transaction applock on the schema, so concurrent runs apply each script
+    /// once. It creates the schema only when it is missing and leaves lock escalation disabled on every framework
+    /// table. Each of <paramref name="runtimeRoles"/> then loses every permission on the schema and its objects and
+    /// gets the runtime set: <c>SELECT</c>, <c>INSERT</c>, <c>UPDATE</c>, <c>DELETE</c> and <c>VIEW DEFINITION</c> on
+    /// the schema; the store reads the index definitions of the incidents table, which SQL Server shows only with
+    /// <c>VIEW DEFINITION</c>.
     /// </summary>
-    public static async Task MigrateAsync(string connectionString, string schema, CancellationToken cancellationToken)
+    public static string Script(string schema, IReadOnlyList<string> runtimeRoles)
+    {
+        var quoted = Tsql.Quote(schema);
+        var text = new System.Text.StringBuilder();
+        text.Append($"""
+            SET XACT_ABORT ON;
+            SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+            IF (SELECT is_read_committed_snapshot_on FROM sys.databases WHERE database_id = DB_ID()) = 0
+            BEGIN
+                DECLARE @refused nvarchar(2048) = CONCAT(N'Database ', DB_NAME(), N' does not use READ_COMMITTED_SNAPSHOT, which Corfedo Work requires; enable it with ALTER DATABASE ', QUOTENAME(DB_NAME()), N' SET READ_COMMITTED_SNAPSHOT ON.');
+                THROW 51000, @refused, 1;
+            END
+            BEGIN TRANSACTION;
+            DECLARE @schema_lock int, @schema sysname = {Tsql.Literal(schema)}, @applied int = 0, @revoke nvarchar(max);
+            EXEC @schema_lock = sp_getapplock @Resource = {Tsql.Literal(Tsql.LockName("schema", schema))}, @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = -1;
+            IF @schema_lock < 0 THROW 51000, N'The framework schema lock was not granted.', 1;
+            IF SCHEMA_ID(@schema) IS NULL EXEC ({Tsql.Literal("CREATE SCHEMA " + quoted)});
+            IF OBJECT_ID({Tsql.Literal(quoted + ".schema_versions")}, N'U') IS NOT NULL
+                EXEC sp_executesql {Tsql.Literal($"SELECT @version = COALESCE(MAX(version), 0) FROM {quoted}.schema_versions")}, N'@version int OUTPUT', @version = @applied OUTPUT;
+
+            """);
+        foreach (var (version, script) in Scripts)
+        {
+            text.Append($"""
+                IF @applied < {version}
+                BEGIN
+                    EXEC ({Tsql.Literal(script.Replace("{schema}", quoted, StringComparison.Ordinal))});
+                {(version == 1 ? "    " + SignalsTable(schema) : "")}    EXEC ({Tsql.Literal($"INSERT INTO {quoted}.schema_versions (version) VALUES ({version});")});
+                END
+
+                """);
+        }
+        text.Append(DisableEscalation).Append('\n');
+        foreach (var role in runtimeRoles)
+        {
+            text.Append($"""
+                SELECT @revoke = STRING_AGG(CONVERT(nvarchar(max), N'REVOKE ' + p.permission_name COLLATE DATABASE_DEFAULT + N' ON '
+                    + CASE p.class WHEN 3 THEN N'SCHEMA::' + QUOTENAME(@schema) ELSE N'OBJECT::' + QUOTENAME(@schema) + N'.' + QUOTENAME(o.name COLLATE DATABASE_DEFAULT) END
+                    + N' FROM ' + {Tsql.Literal(Tsql.Quote(role))} + N' CASCADE;'), N' ')
+                FROM sys.database_permissions AS p LEFT JOIN sys.objects AS o ON p.class = 1 AND o.object_id = p.major_id
+                WHERE p.grantee_principal_id = DATABASE_PRINCIPAL_ID({Tsql.Literal(role)})
+                    AND ((p.class = 3 AND p.major_id = SCHEMA_ID(@schema)) OR (p.class = 1 AND o.schema_id = SCHEMA_ID(@schema)));
+                IF @revoke IS NOT NULL EXEC (@revoke);
+                GRANT SELECT, INSERT, UPDATE, DELETE, VIEW DEFINITION ON SCHEMA::{quoted} TO {Tsql.Quote(role)};
+
+                """);
+        }
+        text.Append("COMMIT;\n");
+        return text.ToString();
+    }
+
+    /// <summary>Refuses a database without READ_COMMITTED_SNAPSHOT, then runs <see cref="Script"/>.</summary>
+    public static async Task MigrateAsync(string connectionString, string schema, IReadOnlyList<string> runtimeRoles, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await RequireSnapshotReadsAsync(connection, cancellationToken);
+        await using var command = Tsql.Command(connection, null, Script(schema, runtimeRoles));
+        await command.NonQueryAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Checks, without changing anything, that the database reads committed snapshots, that the schema exists at this
+    /// release's version or a later one, which a rolling deployment applies before the last process of this release
+    /// stops, and that the login holds the runtime permissions on every framework table.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The schema is missing, older than this release, or not usable by the login.</exception>
+    public static async Task VerifyAsync(string connectionString, string schema, CancellationToken cancellationToken)
     {
         var quoted = Tsql.Quote(schema);
         await using var connection = new SqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await RequireSnapshotReadsAsync(connection, cancellationToken);
-        var lockName = Tsql.LockName("schema", schema);
-        await using (var lockCommand = Tsql.Command(connection, null,
-            "DECLARE @r int; EXEC @r = sp_getapplock @Resource = @lock, @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = -1; "
-            + "IF @r < 0 THROW 51000, N'The framework schema lock was not granted.', 1;",
-            Tsql.Text("@lock", lockName, 255)))
+        var names = string.Join(", ", Tables.Select(t => $"({Tsql.Literal(t)})"));
+        string user;
+        bool exists;
+        string? tables;
+        await using (var command = Tsql.Command(connection, null, $"""
+            SELECT USER_NAME(), CAST(CASE WHEN SCHEMA_ID(@schema) IS NULL THEN 0 ELSE 1 END AS bit),
+                (SELECT STRING_AGG(t.name, N', ') WITHIN GROUP (ORDER BY t.name) FROM (VALUES {names}) AS t (name)
+                 WHERE EXISTS (SELECT 1 FROM (VALUES (N'SELECT'), (N'INSERT'), (N'UPDATE'), (N'DELETE'), (N'VIEW DEFINITION')) AS p (name)
+                               WHERE COALESCE(HAS_PERMS_BY_NAME(QUOTENAME(@schema) + N'.' + QUOTENAME(t.name), N'OBJECT', p.name), 0) = 0));
+            """, Tsql.Text("@schema", schema, 128)))
         {
-            await lockCommand.NonQueryAsync(cancellationToken);
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
+            user = reader.GetString(0);
+            exists = reader.GetBoolean(1);
+            tables = reader.IsDBNull(2) ? null : reader.GetString(2);
         }
-        try
+        if (!exists)
         {
-            await using (var create = Tsql.Command(connection, null,
-                "IF SCHEMA_ID(@schema) IS NULL EXEC (N'CREATE SCHEMA ' + @quoted);",
-                Tsql.Text("@schema", schema, 128),
-                Tsql.Text("@quoted", quoted, 300)))
+            throw new InvalidOperationException(
+                $"The framework schema {schema} does not exist, or user {user} has no permission on it; this release needs version {Version}. Apply it in the migrate step with "
+                + "SqlServerWorkSchema.MigrateAsync or the script of SqlServerWorkSchema.Script, naming the user's role in its runtime roles, or register the store with WorkSchemaMode.Migrate.");
+        }
+        var privileges = tables is null
+            ? null
+            : new InvalidOperationException(
+                $"User {user} lacks SELECT, INSERT, UPDATE, DELETE or VIEW DEFINITION on framework tables of {schema}: {tables}. "
+                + "Grant them by naming its role in the runtime roles of SqlServerWorkSchema.MigrateAsync or SqlServerWorkSchema.Script.");
+        if (tables is not null && tables.Split(", ").Contains("schema_versions"))
+        {
+            throw privileges!;
+        }
+        await using (var command = Tsql.Command(connection, null,
+            $"IF OBJECT_ID(@table, N'U') IS NULL SELECT 0 ELSE SELECT COALESCE(MAX(version), 0) FROM {quoted}.schema_versions;",
+            Tsql.Text("@table", quoted + ".schema_versions", 400)))
+        {
+            var applied = (int)(await command.ScalarAsync(cancellationToken))!;
+            if (applied < Version)
             {
-                await create.NonQueryAsync(cancellationToken);
-            }
-            var applied = 0;
-            await using (var current = Tsql.Command(connection, null,
-                $"IF OBJECT_ID(@table, N'U') IS NULL SELECT 0 ELSE EXEC (N'SELECT COALESCE(MAX(version), 0) FROM ' + @table);",
-                Tsql.Text("@table", quoted + ".schema_versions", 400)))
-            {
-                applied = (int)(await current.ScalarAsync(cancellationToken))!;
-            }
-            foreach (var (version, script) in Scripts)
-            {
-                if (version <= applied)
-                {
-                    continue;
-                }
-                await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-                var text = script.Replace("{schema}", quoted, StringComparison.Ordinal) + (version == 1 ? "\n" + SignalsTable(schema) : "");
-                await using (var apply = Tsql.Command(connection, transaction, text))
-                {
-                    await apply.NonQueryAsync(cancellationToken);
-                }
-                await using (var record = Tsql.Command(connection, transaction,
-                    DisableEscalation + $"\nINSERT INTO {quoted}.schema_versions (version) VALUES (@version);",
-                    Tsql.Text("@schema", schema, 128),
-                    Tsql.Int32("@version", version)))
-                {
-                    await record.NonQueryAsync(cancellationToken);
-                }
-                await transaction.CommitAsync(cancellationToken);
+                throw new InvalidOperationException(
+                    $"The framework schema {schema} is at version {applied}; this release needs version {Version}. Run this release's migrate step first.");
             }
         }
-        finally
+        if (privileges is not null)
         {
-            await using var unlock = Tsql.Command(connection, null,
-                "EXEC sp_releaseapplock @Resource = @lock, @LockOwner = 'Session';",
-                Tsql.Text("@lock", lockName, 255));
-            await unlock.ExecuteNonQueryAsync(CancellationToken.None);
+            throw privileges;
         }
     }
 

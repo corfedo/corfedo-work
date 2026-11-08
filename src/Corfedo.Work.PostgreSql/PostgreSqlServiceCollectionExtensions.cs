@@ -13,9 +13,11 @@ public static class PostgreSqlServiceCollectionExtensions
     /// Stores work in PostgreSQL through <paramref name="dataSource"/>, with the store's signals as the process's
     /// <see cref="IWorkSignals"/>. Framework tables live in <paramref name="schema"/>, at most 50 bytes, which also
     /// names the application's signal channel; listening for signals needs a session-level connection, so a
-    /// transaction-mode pooler needs a direct data source.
+    /// transaction-mode pooler needs a direct data source. With <see cref="WorkSchemaMode.Migrate"/> a starting process
+    /// applies the schema; with <see cref="WorkSchemaMode.Verify"/> it only checks the schema that the migrate step
+    /// applied with <see cref="PostgreSqlWorkSchema"/>.
     /// </summary>
-    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, NpgsqlDataSource dataSource, string schema = "work")
+    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, NpgsqlDataSource dataSource, string schema = "work", WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(dataSource);
@@ -26,7 +28,8 @@ public static class PostgreSqlServiceCollectionExtensions
             schema,
             provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance,
             provider.GetService<TimeProvider>() ?? TimeProvider.System,
-            WorkTelemetryOptions.From(provider)));
+            WorkTelemetryOptions.From(provider),
+            schemaMode));
         services.TryAddSingleton(provider => provider.GetRequiredService<IWorkStore>().Signals!);
         return services.AddWorkSignals();
     }

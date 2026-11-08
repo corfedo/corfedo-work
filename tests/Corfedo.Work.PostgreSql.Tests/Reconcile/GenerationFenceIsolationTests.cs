@@ -98,7 +98,7 @@ public sealed class GenerationFenceIsolationTests(PostgreSqlDatabase database) :
 
     private async Task<(ReconcileSource<TestKey> Source, Lease<TestKey> Lease)> ClaimedAsync()
     {
-        await Store.MigrateAsync(Cancel);
+        await Store.PrepareAsync(Cancel);
         var table = "fence_" + Guid.NewGuid().ToString("N");
         await using (var command = database.DataSource.CreateCommand($"""
             CREATE TABLE public.{table} (

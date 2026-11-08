@@ -19,18 +19,28 @@ public sealed class SqlServerWorkStore : IWorkStore
 {
     private readonly string connectionString;
     private readonly string schema;
+    private readonly WorkSchemaMode schemaMode;
 
-    public SqlServerWorkStore(string connectionString, string schema, ILoggerFactory loggerFactory, TimeProvider time)
-        : this(connectionString, schema, new SqlServerSignalOptions(), loggerFactory, time, WorkTelemetryOptions.Default)
+    /// <summary>
+    /// A store with its framework tables in <paramref name="schema"/>; <paramref name="schemaMode"/> says whether a
+    /// starting process applies the schema or only verifies it.
+    /// </summary>
+    public SqlServerWorkStore(string connectionString, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
+        : this(connectionString, schema, new SqlServerSignalOptions(), loggerFactory, time, WorkTelemetryOptions.Default, schemaMode)
     {
     }
 
-    public SqlServerWorkStore(string connectionString, string schema, SqlServerSignalOptions signalOptions, ILoggerFactory loggerFactory, TimeProvider time)
-        : this(connectionString, schema, signalOptions, loggerFactory, time, WorkTelemetryOptions.Default)
+    /// <summary>
+    /// A store with its framework tables in <paramref name="schema"/> and its signals polled as
+    /// <paramref name="signalOptions"/> say; <paramref name="schemaMode"/> says whether a starting process applies the
+    /// schema or only verifies it.
+    /// </summary>
+    public SqlServerWorkStore(string connectionString, string schema, SqlServerSignalOptions signalOptions, ILoggerFactory loggerFactory, TimeProvider time, WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
+        : this(connectionString, schema, signalOptions, loggerFactory, time, WorkTelemetryOptions.Default, schemaMode)
     {
     }
 
-    internal SqlServerWorkStore(string connectionString, string schema, SqlServerSignalOptions signalOptions, ILoggerFactory loggerFactory, TimeProvider time, WorkTelemetryOptions telemetry)
+    internal SqlServerWorkStore(string connectionString, string schema, SqlServerSignalOptions signalOptions, ILoggerFactory loggerFactory, TimeProvider time, WorkTelemetryOptions telemetry, WorkSchemaMode schemaMode)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
@@ -38,9 +48,10 @@ public sealed class SqlServerWorkStore : IWorkStore
         signalOptions.Validate();
         this.connectionString = connectionString;
         this.schema = schema;
+        this.schemaMode = schemaMode;
         var signals = new SqlServerSignalSql(schema);
         var logger = loggerFactory.CreateLogger("Corfedo.Work.SqlServer");
-        var leases = new SqlServerLeaseStore(connectionString, schema, signals, logger, telemetry);
+        var leases = new SqlServerLeaseStore(connectionString, schema, signals, logger, telemetry, alterTables: schemaMode == WorkSchemaMode.Migrate);
         Leases = leases;
         Reconcile = new SqlServerReconcileStore(leases, signals);
         var calendars = new SqlServerCalendarStore(connectionString, leases, schema);
@@ -51,7 +62,7 @@ public sealed class SqlServerWorkStore : IWorkStore
         Jobs = jobs;
         Chains = jobs;
         Processes = new SqlServerProcessStore(connectionString, schema);
-        Signals = new SqlServerSignalTransport(connectionString, signals, signalOptions, time, logger, telemetry);
+        Signals = new SqlServerSignalTransport(connectionString, signals, signalOptions, time, logger, telemetry, ensureTable: schemaMode == WorkSchemaMode.Migrate);
     }
 
     public ILeaseStore Leases { get; }
@@ -70,5 +81,7 @@ public sealed class SqlServerWorkStore : IWorkStore
 
     public ISignalTransport Signals { get; }
 
-    public ValueTask MigrateAsync(CancellationToken cancellationToken) => new(FrameworkSchema.MigrateAsync(connectionString, schema, cancellationToken));
+    public ValueTask PrepareAsync(CancellationToken cancellationToken) => new(schemaMode == WorkSchemaMode.Verify
+        ? FrameworkSchema.VerifyAsync(connectionString, schema, cancellationToken)
+        : FrameworkSchema.MigrateAsync(connectionString, schema, [], cancellationToken));
 }

@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Corfedo.Work;
 
 /// <summary>
-/// Starts the process's work: applies the framework schema, runs the layers' initializers (job definitions are
+/// Starts the process's work: prepares the framework schema, runs the layers' initializers (job definitions are
 /// stored by revision), verifies every registered source, registers the process with its job definitions when it
 /// describes itself, runs a handler, declares a recurrence, registers a calendar or monitors, recording whether it
 /// monitors, then subscribes to due and cancellation signals and starts dispatchers, expiry processors and the layers' background loops. A source with a handler runs in its pool, or in a dispatcher of its own
@@ -129,10 +129,10 @@ internal sealed class WorkHost : IHostedService, IWorkHost
         }
     }
 
-    /// <summary>Applies the schema, runs the initializers and verifies every registered source.</summary>
+    /// <summary>Prepares the schema, runs the initializers and verifies every registered source.</summary>
     private async Task InitializeAsync(CancellationToken cancellationToken)
     {
-        await store.MigrateAsync(cancellationToken);
+        await store.PrepareAsync(cancellationToken);
         foreach (var initializer in initializers)
         {
             await initializer.InitializeAsync(store, cancellationToken);

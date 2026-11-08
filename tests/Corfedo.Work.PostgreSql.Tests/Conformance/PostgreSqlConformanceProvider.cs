@@ -6,11 +6,18 @@ using Npgsql;
 
 namespace Corfedo.Work.PostgreSql.Tests.Conformance;
 
-/// <summary>Runs the conformance scenarios against a fresh PostgreSQL database per test class.</summary>
+/// <summary>
+/// Runs the conformance scenarios against a fresh PostgreSQL database per test class, as a deployment with a separate
+/// migrate step runs: the database's owner migrates the framework schemas and creates the application's tables, and
+/// stores and application transactions use a runtime login that holds only the runtime privileges on the framework
+/// schema and DML on the application's tables. Stores verify their schema, so a statement that needs more fails.
+/// </summary>
 public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IReconcileConformanceProvider, IJobConformanceProvider, IAsyncLifetime
 {
     private const string Schema = "app";
     private NpgsqlDataSource dataSource = null!;
+    private NpgsqlDataSource runtime = null!;
+    private string role = "";
     private int tables;
 
     public bool HasSignals => true;
@@ -19,19 +26,40 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
 
     public async ValueTask InitializeAsync()
     {
-        dataSource = NpgsqlDataSource.Create(await server.CreateDatabaseAsync());
-        await using var command = dataSource.CreateCommand($"CREATE SCHEMA {Schema}");
-        await command.ExecuteNonQueryAsync();
+        var connectionString = await server.CreateDatabaseAsync();
+        dataSource = NpgsqlDataSource.Create(connectionString);
+        role = "runtime_" + Guid.NewGuid().ToString("N")[..12];
+        var password = Guid.NewGuid().ToString("N");
+        await using (var command = dataSource.CreateCommand($"""
+            CREATE ROLE {role} LOGIN PASSWORD '{password}';
+            CREATE SCHEMA {Schema};
+            GRANT USAGE ON SCHEMA {Schema} TO {role};
+            ALTER DEFAULT PRIVILEGES IN SCHEMA {Schema} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {role};
+            ALTER DEFAULT PRIVILEGES IN SCHEMA {Schema} GRANT USAGE, SELECT ON SEQUENCES TO {role};
+            """))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+        await PostgreSqlWorkSchema.MigrateAsync(dataSource, "work", [role]);
+        runtime = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(connectionString) { Username = role, Password = password }.ConnectionString);
     }
 
-    public ValueTask DisposeAsync() => dataSource.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await runtime.DisposeAsync();
+        await dataSource.DisposeAsync();
+    }
 
-    public void AddStore(IServiceCollection services) => services.AddPostgreSqlWorkStore(dataSource);
+    public void AddStore(IServiceCollection services) => services.AddPostgreSqlWorkStore(runtime, schemaMode: WorkSchemaMode.Verify);
 
-    /// <summary>Each application has its own framework schema in the shared database.</summary>
-    public void AddApplicationStore(IServiceCollection services, string application) => services.AddPostgreSqlWorkStore(dataSource, "work_" + application);
+    /// <summary>Each application has its own framework schema in the shared database, migrated before its store starts.</summary>
+    public void AddApplicationStore(IServiceCollection services, string application)
+    {
+        PostgreSqlWorkSchema.MigrateAsync(dataSource, "work_" + application, [role]).GetAwaiter().GetResult();
+        services.AddPostgreSqlWorkStore(runtime, "work_" + application, WorkSchemaMode.Verify);
+    }
 
-    public IWorkStore CreateStore() => new PostgreSqlWorkStore(dataSource, "work", NullLoggerFactory.Instance, TimeProvider.System);
+    public IWorkStore CreateStore() => new PostgreSqlWorkStore(runtime, "work", NullLoggerFactory.Instance, TimeProvider.System, WorkSchemaMode.Verify);
 
     public async Task<StoreLocation> CreateTableAsync(IReadOnlyList<string> prefixes, CancellationToken cancellationToken)
     {
@@ -187,7 +215,7 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
 
     public async Task<IConformanceTransaction> BeginAsync(CancellationToken cancellationToken)
     {
-        var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        var connection = await runtime.OpenConnectionAsync(cancellationToken);
         return new Transaction(connection, await connection.BeginTransactionAsync(cancellationToken));
     }
 

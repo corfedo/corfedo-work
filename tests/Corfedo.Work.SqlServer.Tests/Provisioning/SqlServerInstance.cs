@@ -22,6 +22,7 @@ public sealed class SqlServerInstance : IAsyncLifetime
 
     private readonly MsSqlContainer? container = Shared is null ? new MsSqlBuilder(Image).Build() : null;
     private readonly List<string> databases = [];
+    private readonly List<string> logins = [];
 
     private string Master => Shared ?? container!.GetConnectionString();
 
@@ -50,6 +51,49 @@ public sealed class SqlServerInstance : IAsyncLifetime
             await using var command = new SqlCommand($"IF DB_ID(N'{name}') IS NOT NULL BEGIN ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]; END", connection);
             await command.ExecuteNonQueryAsync();
         }
+        foreach (var name in logins)
+        {
+            // A login is dropped once its sessions have ended, which dropping their database or KILL only requests.
+            await using var command = new SqlCommand($"""
+                DECLARE @kill nvarchar(max) = N'', @waits int = 0;
+                SELECT @kill += N'KILL ' + CAST(session_id AS nvarchar(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{name}';
+                EXEC (@kill);
+                WHILE EXISTS (SELECT 1 FROM sys.dm_exec_sessions WHERE login_name = N'{name}') AND @waits < 100
+                BEGIN
+                    WAITFOR DELAY '00:00:00.020';
+                    SET @waits += 1;
+                END
+                IF SUSER_ID(N'{name}') IS NOT NULL DROP LOGIN [{name}];
+                """, connection);
+            await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Creates a login with a user of the same name in the database of <paramref name="connectionString"/>, without
+    /// permissions beyond SQL Server's defaults, and returns the name and a connection string to that database under it.
+    /// </summary>
+    public async Task<(string User, string ConnectionString)> CreateLoginAsync(string connectionString, CancellationToken cancellationToken = default)
+    {
+        var name = "login_" + Guid.NewGuid().ToString("N")[..12];
+        var password = "Cw-" + Guid.NewGuid().ToString("N");
+        lock (logins)
+        {
+            logins.Add(name);
+        }
+        await using (var connection = new SqlConnection(Master))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqlCommand($"CREATE LOGIN [{name}] WITH PASSWORD = N'{password}', CHECK_POLICY = OFF", connection);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        await using (var connection = new SqlConnection(connectionString))
+        {
+            await connection.OpenAsync(cancellationToken);
+            await using var command = new SqlCommand($"CREATE USER [{name}] FOR LOGIN [{name}]", connection);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        return (name, new SqlConnectionStringBuilder(connectionString) { UserID = name, Password = password }.ConnectionString);
     }
 
     /// <summary>

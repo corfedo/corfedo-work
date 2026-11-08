@@ -22,7 +22,7 @@ public sealed class CancellationTests(SqlServerDatabase database) : IClassFixtur
         collection.AddSqlServerWorkStore(database.ConnectionString);
         collection.AddWork(work => work.AddJobDefinition(Definition));
         services = collection.BuildServiceProvider();
-        await services.GetRequiredService<IWorkStore>().MigrateAsync(Cancel);
+        await services.GetRequiredService<IWorkStore>().PrepareAsync(Cancel);
     }
 
     public async ValueTask DisposeAsync() => await services.DisposeAsync();

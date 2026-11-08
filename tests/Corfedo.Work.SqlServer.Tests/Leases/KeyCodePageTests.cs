@@ -105,7 +105,7 @@ public sealed class KeyCodePageTests(SqlServerDatabase database) : IClassFixture
             INSERT INTO {table} ({keys}) VALUES {rows};
             """, Cancel);
         var store = new SqlServerWorkStore(database.ConnectionString, "work", NullLoggerFactory.Instance, TimeProvider.System);
-        await store.MigrateAsync(Cancel);
+        await store.PrepareAsync(Cancel);
         return (LeaseSource.Define(table, StoreLocation.Table("dbo", table), codec, new LeasePolicy { Duration = TimeSpan.FromMinutes(1) }), store);
     }
 

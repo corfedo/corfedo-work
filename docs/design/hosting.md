@@ -58,7 +58,8 @@ share its schema; reports and operations cover one application.
 
 At startup the host:
 
-1. applies the provider's framework schema scripts, or verifies them when migrations are run separately;
+1. applies the provider's framework schema scripts, or, for a store registered with `WorkSchemaMode.Verify`, verifies
+   the schema a separate migrate step applied ([schema ownership](providers.md#schema-ownership));
 2. stores definitions, calendars and code-defined recurrences by revision (R18);
 3. verifies the fields and indexes of every registered domain source;
 4. registers the process in the [process registry](#processes) when it is recorded, and starts dispatchers.
