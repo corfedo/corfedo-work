@@ -97,6 +97,51 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         await Verifying(runtime, "scripted").PrepareAsync(Cancel);
     }
 
+    [Fact]
+    public async Task AVerifyingStoreReportsASchemaCreatedForTheMigrateStepAsVersionZero()
+    {
+        var (role, connectionString) = await database.CreateLoginAsync(Cancel);
+        await ExecuteAsync($"CREATE SCHEMA unmigrated; GRANT USAGE ON SCHEMA unmigrated TO {role}");
+        await using var runtime = NpgsqlDataSource.Create(connectionString);
+
+        var older = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Verifying(runtime, "unmigrated").PrepareAsync(Cancel));
+
+        Assert.Contains("is at version 0; this release needs version 14", older.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TheScriptQuotesSchemaAndRoleNamesThatHoldItsDollarQuoteTags()
+    {
+        var role = "r$corfedo_work$" + Guid.NewGuid().ToString("N")[..8];
+        await ExecuteAsync($"CREATE ROLE \"{role}\"");
+
+        await ExecuteAsync(PostgreSqlWorkSchema.Script("s$corfedo_work$x$corfedo_work_14$", [role]));
+
+        Assert.Equal(new[] { 14 }, await VersionsAsync("\"s$corfedo_work$x$corfedo_work_14$\""));
+    }
+
+    [Fact]
+    public async Task AMigrationWaitsForTheSessionSchemaLockOfAnEarlierRelease()
+    {
+        // Releases up to 0.3.0 hold the same advisory key at session level while they migrate.
+        await using var earlier = await database.DataSource.OpenConnectionAsync(Cancel);
+        await using (var take = new NpgsqlCommand("SELECT pg_advisory_lock(hashtextextended('corfedo-work|schema|locked', 0))", earlier))
+        {
+            await take.ExecuteNonQueryAsync(Cancel);
+        }
+
+        var migration = PostgreSqlWorkSchema.MigrateAsync(database.DataSource, "locked", cancellationToken: Cancel);
+        await Task.Delay(500, Cancel);
+        Assert.False(migration.IsCompleted);
+
+        await using (var release = new NpgsqlCommand("SELECT pg_advisory_unlock(hashtextextended('corfedo-work|schema|locked', 0))", earlier))
+        {
+            await release.ExecuteNonQueryAsync(Cancel);
+        }
+        await migration;
+        Assert.Equal(new[] { 14 }, await VersionsAsync("locked"));
+    }
+
     private static PostgreSqlWorkStore Verifying(NpgsqlDataSource dataSource, string schema) =>
         new(dataSource, schema, NullLoggerFactory.Instance, TimeProvider.System, WorkSchemaMode.Verify);
 

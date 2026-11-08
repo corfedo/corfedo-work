@@ -111,6 +111,30 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
         await Verifying(connectionString, "scripted").PrepareAsync(Cancel);
     }
 
+    [Fact]
+    public async Task AMigrationWaitsForTheSessionSchemaLockOfAnEarlierRelease()
+    {
+        // Releases up to 0.3.0 hold the same applock at session level while they migrate.
+        await using var earlier = new SqlConnection(database.ConnectionString);
+        await earlier.OpenAsync(Cancel);
+        var name = Tsql.LockName("schema", "locked");
+        await using (var take = new SqlCommand($"EXEC sp_getapplock @Resource = N'{name}', @LockMode = 'Exclusive', @LockOwner = 'Session'", earlier))
+        {
+            await take.ExecuteNonQueryAsync(Cancel);
+        }
+
+        var migration = SqlServerWorkSchema.MigrateAsync(database.ConnectionString, "locked", cancellationToken: Cancel);
+        await Task.Delay(500, Cancel);
+        Assert.False(migration.IsCompleted);
+
+        await using (var release = new SqlCommand($"EXEC sp_releaseapplock @Resource = N'{name}', @LockOwner = 'Session'", earlier))
+        {
+            await release.ExecuteNonQueryAsync(Cancel);
+        }
+        await migration;
+        Assert.Equal("1", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') FROM locked.schema_versions", Cancel));
+    }
+
     private static SqlServerWorkStore Verifying(string connectionString, string schema) =>
         new(connectionString, schema, NullLoggerFactory.Instance, TimeProvider.System, WorkSchemaMode.Verify);
 }

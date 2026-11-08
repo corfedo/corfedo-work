@@ -438,9 +438,8 @@ internal static class FrameworkSchema
     public static string Script(string schema, IReadOnlyList<string> runtimeRoles)
     {
         var quoted = Leases.LeaseSql.Quote(schema);
-        var text = new System.Text.StringBuilder();
+        var text = new System.Text.StringBuilder("\n");
         text.Append($"""
-            DO $corfedo_work$
             DECLARE
                 applied integer := 0;
             BEGIN
@@ -455,10 +454,9 @@ internal static class FrameworkSchema
             """);
         foreach (var (version, script) in Scripts)
         {
-            var tag = $"$corfedo_work_{version}$";
             text.Append($"""
                     IF applied < {version} THEN
-                        EXECUTE {tag}{script.Replace("{schema}", quoted, StringComparison.Ordinal)}{tag};
+                        EXECUTE {DollarQuoted(script.Replace("{schema}", quoted, StringComparison.Ordinal), "corfedo_work_" + version)};
                         INSERT INTO {quoted}.schema_versions (version) VALUES ({version});
                     END IF;
 
@@ -479,8 +477,22 @@ internal static class FrameworkSchema
 
                 """);
         }
-        text.Append("END\n$corfedo_work$;\n");
-        return text.ToString();
+        text.Append("END\n");
+        return "DO " + DollarQuoted(text.ToString(), "corfedo_work") + ";\n";
+    }
+
+    /// <summary>
+    /// <paramref name="body"/> as a dollar-quoted string whose tag, <paramref name="name"/> or a numbered variant of it,
+    /// does not occur in the body, which may hold schema and role names.
+    /// </summary>
+    private static string DollarQuoted(string body, string name)
+    {
+        var tag = $"${name}$";
+        for (var n = 1; body.Contains(tag, StringComparison.Ordinal); n++)
+        {
+            tag = $"${name}_x{n}$";
+        }
+        return tag + body + tag;
     }
 
     public static async Task MigrateAsync(NpgsqlDataSource dataSource, string schema, IReadOnlyList<string> runtimeRoles, CancellationToken cancellationToken)
@@ -503,6 +515,7 @@ internal static class FrameworkSchema
         bool usage;
         string[] tables;
         string[] functions;
+        bool versioned;
         await using (var command = new NpgsqlCommand("""
             WITH s AS (SELECT oid FROM pg_namespace WHERE nspname = $1)
             SELECT current_user::text, EXISTS (SELECT FROM s), coalesce((SELECT has_schema_privilege(s.oid, 'USAGE') FROM s), false),
@@ -511,7 +524,8 @@ internal static class FrameworkSchema
                                AND has_table_privilege(c.oid, 'UPDATE') AND has_table_privilege(c.oid, 'DELETE'))
                          ORDER BY 1),
                    ARRAY(SELECT p.proname::text FROM pg_proc AS p JOIN s ON p.pronamespace = s.oid
-                         WHERE NOT has_function_privilege(p.oid, 'EXECUTE') ORDER BY 1)
+                         WHERE NOT has_function_privilege(p.oid, 'EXECUTE') ORDER BY 1),
+                   EXISTS (SELECT FROM pg_class AS c JOIN s ON c.relnamespace = s.oid WHERE c.relname = 'schema_versions')
             """, connection))
         {
             command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = schema });
@@ -522,6 +536,7 @@ internal static class FrameworkSchema
             usage = reader.GetBoolean(2);
             tables = reader.GetFieldValue<string[]>(3);
             functions = reader.GetFieldValue<string[]>(4);
+            versioned = reader.GetBoolean(5);
         }
         if (!exists)
         {
@@ -548,16 +563,17 @@ internal static class FrameworkSchema
                 $"Login {user} lacks privileges on the framework schema {schema}: {string.Join("; ", missing)}. "
                 + "Grant them by naming its role in the runtime roles of PostgreSqlWorkSchema.MigrateAsync or PostgreSqlWorkSchema.Script.");
         }
-        var quoted = Leases.LeaseSql.Quote(schema);
-        await using (var command = new NpgsqlCommand($"SELECT CASE WHEN to_regclass($1) IS NULL THEN 0 ELSE (SELECT coalesce(max(version), 0) FROM {quoted}.schema_versions) END", connection))
+        // A schema created for the migrate step that has not run yet has no version table.
+        var applied = 0;
+        if (versioned)
         {
-            command.Parameters.Add(new NpgsqlParameter<string> { TypedValue = quoted + ".schema_versions" });
-            var applied = (int)(await command.ExecuteScalarAsync(cancellationToken))!;
-            if (applied < Version)
-            {
-                throw new InvalidOperationException(
-                    $"The framework schema {schema} is at version {applied}; this release needs version {Version}. Run this release's migrate step first.");
-            }
+            await using var command = new NpgsqlCommand($"SELECT coalesce(max(version), 0) FROM {Leases.LeaseSql.Quote(schema)}.schema_versions", connection);
+            applied = (int)(await command.ExecuteScalarAsync(cancellationToken))!;
+        }
+        if (applied < Version)
+        {
+            throw new InvalidOperationException(
+                $"The framework schema {schema} is at version {applied}; this release needs version {Version}. Run this release's migrate step first.");
         }
     }
 
