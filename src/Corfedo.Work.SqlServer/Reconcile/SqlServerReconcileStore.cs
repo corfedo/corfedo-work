@@ -45,7 +45,9 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
     /// In one command: locks the records in the order of the keys, then schedules them as <see cref="RequestAsync{TKey}"/>
     /// does with a clock reading taken after the locks are held, signals the holders of superseded runs once each,
     /// signals claimers once if any record is due and not held, and returns the keys found. Keys longer than their
-    /// columns match no record.
+    /// columns match no record. The lock statement disables the batch sort of optimized nested loops, which would lock
+    /// in index order within each batch instead of the order of the keys. The keys returned are the requested values,
+    /// which can differ from the stored ones under the column's collation.
     /// </summary>
     public async ValueTask<IReadOnlyList<TKey>> RequestManyAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, ReconcileRequest request, CancellationToken cancellationToken)
         where TKey : notnull
@@ -57,18 +59,19 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
         {
             return [];
         }
-        var held = $"{sql.Expires} > SYSUTCDATETIME()";
+        var held = $"{sql.Expires} > @now";
         var cancel = sql.Supersedes
             ? signals.InsertFrom(WorkTopics.Cancel, SqlServerSignalSql.CancelKey("h.owner", "@source"), "(SELECT DISTINCT owner FROM @held WHERE owner IS NOT NULL) AS h")
             : "";
         var text = $"""
-            DECLARE @locked int;
+            DECLARE @locked int, @now datetime2;
             DECLARE @held TABLE (owner uniqueidentifier);
-            SELECT @locked = COUNT(*) FROM {sql.KeyedRows("UPDLOCK, ROWLOCK")};
+            SELECT @locked = COUNT(*) FROM {sql.KeyedRows("UPDLOCK, ROWLOCK")} OPTION (USE HINT ('DISABLE_OPTIMIZED_NESTED_LOOP'));
+            SET @now = SYSUTCDATETIME();
             UPDATE r SET {Schedule(sql, request, held)}
-            OUTPUT CASE WHEN deleted.{LeaseSql.Bare(sql.Expires)} > SYSUTCDATETIME() THEN deleted.{LeaseSql.Bare(sql.Owner)} END INTO @held (owner)
+            OUTPUT CASE WHEN deleted.{LeaseSql.Bare(sql.Expires)} > @now THEN deleted.{LeaseSql.Bare(sql.Owner)} END INTO @held (owner)
             FROM {sql.KeyedRows()};
-            {signals.InsertIf(WorkTopics.Due, "@source", $"EXISTS (SELECT 1 FROM {sql.KeyedRows()} WHERE {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL)")}{cancel}SELECT {sql.KeyList} FROM {sql.KeyedRows()};
+            {signals.InsertIf(WorkTopics.Due, "@source", $"EXISTS (SELECT 1 FROM {sql.KeyedRows()} WHERE {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL)")}{cancel}SELECT {string.Join(", ", sql.KeyColumns.Split(", ").Select(c => "u." + c))} FROM {sql.KeyedRows()};
             """;
         await using var command = SqlServerLeaseStore.KeysCommand(work.Connection, work.Transaction, sql, source.Leases, fitting, text, Parameters(source, request));
         var found = new HashSet<string>(StringComparer.Ordinal);

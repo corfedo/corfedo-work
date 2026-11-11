@@ -73,7 +73,9 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
         var sql = leases.Sql(source.Leases);
         var k = sql.KeyCount;
         await using var batch = new NpgsqlBatch(work.Connection, work.Transaction);
-        var locks = new NpgsqlBatchCommand($"SELECT {sql.KeyList} FROM {sql.Table} AS r JOIN {sql.OrderedUnnest} ON {sql.KeyJoin} ORDER BY u.ord FOR UPDATE OF r");
+        // Returns the requested key values, which can differ from the stored ones under the column's collation.
+        var requested = string.Join(", ", Enumerable.Range(0, k).Select(i => $"u.k{i}"));
+        var locks = new NpgsqlBatchCommand($"SELECT {requested} FROM {sql.Table} AS r JOIN {sql.OrderedUnnest} ON {sql.KeyJoin} ORDER BY u.ord FOR UPDATE OF r");
         AddKeys(locks.Parameters, source.Leases, keys);
         batch.BatchCommands.Add(locks);
         // The CTE is named u so that the key join of the update reads its key columns.

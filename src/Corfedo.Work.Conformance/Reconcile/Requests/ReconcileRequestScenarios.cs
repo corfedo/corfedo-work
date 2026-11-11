@@ -141,7 +141,7 @@ public abstract class ReconcileRequestScenarios(IReconcileConformanceProvider pr
         var waiting = new TestKey("t", 2);
         var held = new TestKey("t", 3);
         await InsertAsync(source, idle);
-        await InsertAsync(source, waiting, DueState.Future);
+        await InsertAsync(source, waiting, DueState.Past);
         await InsertAsync(source, held, DueState.Past);
         var client = await ClientAsync(source);
         var holder = await ClientAsync(source);
@@ -149,6 +149,7 @@ public abstract class ReconcileRequestScenarios(IReconcileConformanceProvider pr
         Assert.NotNull(claim);
         await using var signals = await SignalsAsync();
 
+        var request = new ReconcileRequest { Debounce = Debounce.Trailing(TimeSpan.FromMinutes(1)) };
         IReadOnlyList<TestKey> requested;
         await using (var transaction = await BeginAsync())
         {
@@ -157,23 +158,31 @@ public abstract class ReconcileRequestScenarios(IReconcileConformanceProvider pr
                 transaction.Work,
                 source,
                 [held, new TestKey("t", 9), waiting, idle, idle, idle with { Tenant = new string('t', TestKey.TenantLength + 1) }],
-                ReconcileRequest.Default,
+                request,
                 Cancel);
+            await transaction.CommitAsync(Cancel);
+        }
+        if (signals.Enabled)
+        {
+            await EventuallyAsync(() => signals.Received.Any(s => s.Topic == WorkTopics.Due), TimeSpan.FromSeconds(5), "claimers are signalled");
+        }
+        // Requesting only a held record records the request for the run's result and wakes no claimer.
+        await using (var transaction = await BeginAsync())
+        {
+            Assert.Equal([held], await Reconciliation(client).RequestManyAsync(transaction.Work, source, [held], request, Cancel));
             await transaction.CommitAsync(Cancel);
         }
 
         Assert.Equal([idle, waiting, held], requested);
-        foreach (var key in new[] { idle, waiting })
-        {
-            var state = await ReadAsync(source, key);
-            Assert.Equal((1L, true, DueState.Past, false), (state.RequestedRevision, state.FirstRequested, state.Lease.Due, state.Lease.Held));
-        }
+        var idleState = await ReadAsync(source, idle);
+        Assert.Equal((1L, true, DueState.Future, false), (idleState.RequestedRevision, idleState.FirstRequested, idleState.Lease.Due, idleState.Lease.Held));
+        var waitingState = await ReadAsync(source, waiting);
+        Assert.Equal((1L, true, DueState.Past, false), (waitingState.RequestedRevision, waitingState.FirstRequested, waitingState.Lease.Due, waitingState.Lease.Held));
         var during = await ReadAsync(source, held);
-        Assert.Equal((1L, true, claim.Lease.Epoch), (during.RequestedRevision, during.Lease.Valid, during.Lease.Epoch));
+        Assert.Equal((2L, true, claim.Lease.Epoch, DueState.Future), (during.RequestedRevision, during.Lease.Valid, during.Lease.Epoch, during.Lease.Due));
         Assert.True((await holder.Operations.RenewAsync(claim.Lease, Cancel)).Valid);
         if (signals.Enabled)
         {
-            await EventuallyAsync(() => signals.Received.Any(s => s.Topic == WorkTopics.Due), TimeSpan.FromSeconds(5), "claimers are signalled");
             await Task.Delay(300, Cancel);
             Assert.Single(signals.Received, s => s.Topic == WorkTopics.Due && s.Key == source.Name);
         }
@@ -236,21 +245,26 @@ public abstract class ReconcileRequestScenarios(IReconcileConformanceProvider pr
         var descending = await ClientAsync(source);
         const int rounds = 10;
 
+        // Overlapping, unequal sets: the first forty keys ascending and the last forty descending, where canonical order
+        // ("t/10" before "t/9") differs from numeric order.
+        var low = keys[..40];
+        var high = keys[10..].Reverse().ToArray();
         for (var round = 0; round < rounds; round++)
         {
-            await Task.WhenAll(RequestAllAsync(ascending, keys), RequestAllAsync(descending, keys.Reverse()));
+            await Task.WhenAll(RequestAllAsync(ascending, low), RequestAllAsync(descending, high));
         }
 
         foreach (var key in keys)
         {
-            Assert.Equal(2L * rounds, (await ReadAsync(source, key)).RequestedRevision);
+            var expected = (low.Contains(key) ? rounds : 0) + (high.Contains(key) ? rounds : 0);
+            Assert.Equal(expected, (await ReadAsync(source, key)).RequestedRevision);
         }
 
-        async Task RequestAllAsync(TestProcess process, IEnumerable<TestKey> order)
+        async Task RequestAllAsync(TestProcess process, TestKey[] order)
         {
             await Task.Yield();
             await using var transaction = await BeginAsync();
-            Assert.Equal(keys.Length, (await Reconciliation(process).RequestManyAsync(transaction.Work, source, order, Cancel)).Count);
+            Assert.Equal(order.Length, (await Reconciliation(process).RequestManyAsync(transaction.Work, source, order, Cancel)).Count);
             await transaction.CommitAsync(Cancel);
         }
     }
