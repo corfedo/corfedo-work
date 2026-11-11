@@ -111,6 +111,7 @@ internal sealed partial class InMemoryJobStore
         var next = recurrence.NextAt;
         var waiting = recurrence.WaitingAt;
         var awaited = recurrence.Awaited;
+        var lastEnded = recurrence.LastEndedAt;
         // The occurrence an after-completion schedule awaits; it is named by its occurrence identity when planned in
         // this pass, so an insert that met an existing occurrence names that one.
         string? awaitedOccurrence = null;
@@ -118,7 +119,8 @@ internal sealed partial class InMemoryJobStore
         {
             if (afterCompletion && next is null && occurrence.Uuid(JobColumns.Id) == awaited)
             {
-                next = occurrence.Time(JobColumns.EndedAt)!.Value + schedule.Period;
+                lastEnded = occurrence.Time(JobColumns.EndedAt)!.Value;
+                next = lastEnded + schedule.Period;
                 awaited = null;
             }
         }
@@ -189,6 +191,7 @@ internal sealed partial class InMemoryJobStore
             NextAt = next?.ToUniversalTime(),
             WaitingAt = waiting?.ToUniversalTime(),
             Awaited = awaited,
+            LastEndedAt = lastEnded,
             UpdatedAt = Now,
         });
         return created;

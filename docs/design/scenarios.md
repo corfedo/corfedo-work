@@ -89,7 +89,7 @@ hourly schedules.
 |---|---|---|---|
 | J-1 | Fire-and-forget request committed with a domain change; another rolled back. | One job runs; the rolled-back request never existed. | R1 |
 | J-2 | One-shot jobs at a time, after a delay and now. | Each runs once, not before its time. | J1 |
-| J-3 | `Every(interval, AfterCompletion)` with runs of varying length. | The gap between the end of one occurrence and the start of the next is at least the interval. | J1 |
+| J-3 | `Every(interval, AfterCompletion)` with runs of varying length; a new recurrence with a long interval; a recurrence replaced with another interval while no occurrence is outstanding. | The gap between the end of one occurrence and the start of the next is at least the interval; the new recurrence's first occurrence runs at once; the replaced one runs the new interval after the last end, not after the replacement. | J1 |
 | J-4 | `Every(interval, FixedRate, anchor)` with one slow occurrence, `Overlap.Wait`. | Starts stay on the grid; occurrences due during the slow one collapse into one that starts when it ends. | J1, J15 |
 | J-5 | Daily cron at 02:30 in a time zone across both daylight-saving changes. | One occurrence per day: at 02:30 when it exists, at the first instant after the gap on the spring day, once on the autumn day. | J1 |
 | J-6 | All processes are down across three cron occurrences, with `Missed.Skip` and `Missed.RunLatest`. | `Skip`: nothing runs until the next future occurrence. `RunLatest`: the latest missed occurrence runs once, then the schedule continues. | J2 |

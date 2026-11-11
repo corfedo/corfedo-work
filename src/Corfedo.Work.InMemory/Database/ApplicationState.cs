@@ -155,6 +155,9 @@ internal sealed record RecurrenceRow(
 
     /// <summary>The closed-window policy of its occurrences when it has a calendar.</summary>
     public Closed? CalendarClosed { get; init; }
+
+    /// <summary>The end of the last occurrence that advanced the after-completion schedule; null for other schedules.</summary>
+    public DateTimeOffset? LastEndedAt { get; init; }
 }
 
 internal readonly record struct PauseKey(string Definition, string SubjectKind, string SubjectId)

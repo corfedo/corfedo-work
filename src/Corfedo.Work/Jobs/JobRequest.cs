@@ -75,7 +75,7 @@ public sealed record Schedule
 
     /// <summary>
     /// Recurring every <paramref name="period"/>: <see cref="Interval.AfterCompletion"/> measures it from the end of
-    /// the previous occurrence; <see cref="Interval.FixedRate"/> plans occurrences on a grid that starts at
+    /// the previous occurrence, and a new recurrence is due at once; <see cref="Interval.FixedRate"/> plans occurrences on a grid that starts at
     /// <paramref name="anchor"/>, by default the Unix epoch, so every process computes the same instants.
     /// </summary>
     public static Schedule Every(TimeSpan period, Interval interval, DateTimeOffset? anchor = null)
@@ -164,7 +164,7 @@ public enum ScheduleKind
 /// <summary>How a recurring <see cref="Schedule.Every"/> measures its interval.</summary>
 public enum Interval
 {
-    /// <summary>Each occurrence is due the interval after the previous one ended.</summary>
+    /// <summary>The first occurrence is due when the recurrence is created; each later one the interval after the previous one ended.</summary>
     AfterCompletion,
 
     /// <summary>Occurrences are due on a fixed grid from the anchor, however long each one runs.</summary>

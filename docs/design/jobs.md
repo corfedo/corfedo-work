@@ -200,7 +200,7 @@ rollback of the caller's own transaction does not remove the job.
 | `Schedule.At(time)` | At a point in time, given with any offset; the instant is kept. | Earliest due time wins. |
 | `Schedule.After(delay)` | After a delay from the request. | Earliest due time wins. |
 | `Schedule.Debounce(delay, maximum)` | `delay` after the latest request, at most `maximum` after the first outstanding one. | The due time moves later, up to the ceiling. |
-| `Schedule.Every(interval, Interval.AfterCompletion)` | Recurring; each occurrence is due `interval` after the previous one ended. | Replaces the recurrence. |
+| `Schedule.Every(interval, Interval.AfterCompletion)` | Recurring; the first occurrence is due when the recurrence is created, each later one `interval` after the previous one ended. | Replaces the recurrence. |
 | `Schedule.Every(interval, Interval.FixedRate, anchor)` | Recurring on a fixed grid from the anchor. | Replaces the recurrence. |
 | `Schedule.Cron(expression, timeZone)` | Recurring on a cron expression in the time zone. | Replaces the recurrence. |
 
@@ -291,7 +291,15 @@ that hold domain locks. It leaves the ended occurrence unconsumed; the planner c
 - any ended occurrence releases an occurrence waiting under `Overlap.Wait` once no other occurrence of the recurrence
   is outstanding, and an `AfterCompletion` instant that came due while another occurrence was outstanding; until then
   the planner leaves that recurrence out of its passes and its next wake-up;
-- triggered occurrences, occurrences recorded skipped and occurrences of a replaced schedule set no instant.
+- triggered occurrences, occurrences recorded skipped and occurrences of a replaced schedule set no instant, except
+  the occurrence an `AfterCompletion` schedule awaits when another `AfterCompletion` schedule replaces it.
+
+**First instant.** A new or replaced cron or fixed-rate schedule starts at its next instant after the store's clock.
+An `AfterCompletion` schedule measures its interval from the end of the last occurrence that advanced it, which the
+recurrence records: a new recurrence has none and is due at once, as is one whose last end plus the new interval has
+passed. One that replaces an `AfterCompletion` schedule awaiting an occurrence keeps awaiting it, so that occurrence's
+end plus the new interval sets the next instant (D-7). A process restart that finds its declared recurrence stored
+changes nothing, so it runs nothing again.
 
 Occurrences have no follow-ups: work that must run again after a running occurrence is a trigger, which the overlap
 policy queues, or a standalone job.

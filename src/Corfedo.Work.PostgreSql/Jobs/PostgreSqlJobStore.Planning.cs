@@ -241,6 +241,7 @@ internal sealed partial class PostgreSqlJobStore
         var next = recurrence.NextAt;
         var waiting = recurrence.WaitingAt;
         var awaited = recurrence.Awaited;
+        DateTimeOffset? lastEnded = null;
         // The occurrence an after-completion schedule awaits; it is named by its occurrence identity when planned in
         // this pass, so an insert that met an existing occurrence names that one.
         string? awaitedOccurrence = null;
@@ -248,7 +249,8 @@ internal sealed partial class PostgreSqlJobStore
         {
             if (afterCompletion && next is null && occurrence.Id == awaited)
             {
-                next = occurrence.EndedAt + schedule.Period;
+                lastEnded = occurrence.EndedAt;
+                next = lastEnded + schedule.Period;
                 awaited = null;
             }
         }
@@ -314,13 +316,14 @@ internal sealed partial class PostgreSqlJobStore
             }
         }
         commands.Add(Command(
-            $"UPDATE {recurrences} SET next_at = $2, waiting_at = $3, updated_at = clock_timestamp(), "
+            $"UPDATE {recurrences} SET next_at = $2, waiting_at = $3, last_ended_at = COALESCE($6, last_ended_at), updated_at = clock_timestamp(), "
             + $"awaited_job = CASE WHEN $5::text IS NULL THEN $4 ELSE (SELECT j.id FROM {sql.Table} AS j WHERE j.recurrence_id = $1 AND j.occurrence = $5) END WHERE id = $1",
             Uuid(recurrence.Id),
             Nullable(next?.ToUniversalTime(), NpgsqlDbType.TimestampTz),
             Nullable(waiting?.ToUniversalTime(), NpgsqlDbType.TimestampTz),
             Nullable(awaited, NpgsqlDbType.Uuid),
-            Nullable(awaitedOccurrence, NpgsqlDbType.Text)));
+            Nullable(awaitedOccurrence, NpgsqlDbType.Text),
+            Nullable(lastEnded?.ToUniversalTime(), NpgsqlDbType.TimestampTz)));
         await using var batch = new NpgsqlBatch(work.Connection, work.Transaction);
         foreach (var command in commands)
         {

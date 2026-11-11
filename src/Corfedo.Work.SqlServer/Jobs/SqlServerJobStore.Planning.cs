@@ -224,6 +224,7 @@ internal sealed partial class SqlServerJobStore
         var next = recurrence.NextAt;
         var waiting = recurrence.WaitingAt;
         var awaited = recurrence.Awaited;
+        DateTimeOffset? lastEnded = null;
         // The occurrence an after-completion schedule awaits; it is named by its occurrence identity when planned in
         // this pass, so an insert that met an existing occurrence names that one.
         string? awaitedOccurrence = null;
@@ -231,7 +232,8 @@ internal sealed partial class SqlServerJobStore
         {
             if (afterCompletion && next is null && occurrence.Id == awaited)
             {
-                next = occurrence.EndedAt + schedule.Period;
+                lastEnded = occurrence.EndedAt;
+                next = lastEnded + schedule.Period;
                 awaited = null;
             }
         }
@@ -306,7 +308,7 @@ internal sealed partial class SqlServerJobStore
             }
         }
         text.Append($"""
-            UPDATE {recurrences} SET next_at = @next, waiting_at = @waiting, updated_at = SYSUTCDATETIME(),
+            UPDATE {recurrences} SET next_at = @next, waiting_at = @waiting, last_ended_at = COALESCE(@last_ended, last_ended_at), updated_at = SYSUTCDATETIME(),
                 awaited_job = CASE WHEN @awaited_occurrence IS NULL THEN @awaited
                     ELSE (SELECT j.id FROM {sql.Table} AS j WHERE j.recurrence_id = @rid AND j.occurrence = @awaited_occurrence) END
             WHERE id = @rid;
@@ -316,6 +318,7 @@ internal sealed partial class SqlServerJobStore
         parameters.Add(Tsql.Time("@waiting", waiting));
         parameters.Add(Tsql.Guid("@awaited", awaited));
         parameters.Add(Tsql.Text("@awaited_occurrence", awaitedOccurrence, 200));
+        parameters.Add(Tsql.Time("@last_ended", lastEnded));
         // XACT_ABORT is off within the savepoint, so a lock timeout ends only its statement and the recurrence rolls back
         // to the savepoint; any other error is raised again and fails the pass.
         await using var command = Tsql.Command(work, $"""

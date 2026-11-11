@@ -39,8 +39,10 @@ internal sealed partial class InMemoryJobStore
     /// <summary>
     /// Creates the identity's recurrence or replaces it. A declared recurrence (<paramref name="revision"/> set) replaces
     /// only a recurrence stored by an older revision or by none. The stored recurrence copies its subject's pause to its
-    /// flag, and its first instant follows the store's clock. The recurrence's key is queued for the monitoring loop.
-    /// Standalone jobs of the identity are left alone.
+    /// flag, and its first instant follows the store's clock. An after-completion schedule that replaces one awaiting an
+    /// occurrence keeps awaiting it, so its end sets the next instant; otherwise its first instant is measured from the
+    /// last end it recorded. The recurrence's key is queued for the monitoring loop. Standalone jobs of the identity are
+    /// left alone.
     /// </summary>
     private RecurrenceOutcome StoreRecurrence(InMemoryTransaction work, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, long? revision, byte[]? digest)
     {
@@ -48,7 +50,10 @@ internal sealed partial class InMemoryJobStore
         var partition = recurrence.Partition ?? "";
         var schedule = recurrence.Schedule;
         var now = Now;
-        var next = calculator.First(schedule, now) ?? throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence));
+        if (calculator.First(schedule, now, null) is null)
+        {
+            throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence));
+        }
         if (schedule.Calendar is { } calendar)
         {
             RequireCalendar(work, calendar, nameof(recurrence));
@@ -81,6 +86,10 @@ internal sealed partial class InMemoryJobStore
                 return RecurrenceOutcome.Existing;
             }
         }
+        var afterCompletion = schedule is { Kind: ScheduleKind.Every, Interval: Interval.AfterCompletion };
+        var awaited = afterCompletion ? existing?.Awaited : null;
+        var lastEnded = afterCompletion ? existing?.LastEndedAt : null;
+        var next = awaited is null ? calculator.First(schedule, now, lastEnded) : null;
         var id = existing?.Id ?? Guid.CreateVersion7();
         work.Put(application.Recurrences, id, new RecurrenceRow(
             id,
@@ -93,10 +102,10 @@ internal sealed partial class InMemoryJobStore
             schedule,
             recurrence.Missed,
             recurrence.Overlap,
-            Awaited: null,
+            awaited,
             revision ?? existing?.DeclaredRevision,
             digest ?? existing?.DeclaredDigest,
-            next.ToUniversalTime(),
+            next?.ToUniversalTime(),
             WaitingAt: null,
             SubjectPaused(work, definition, recurrence.Subject),
             existing?.CreatedAt ?? now,
@@ -104,6 +113,7 @@ internal sealed partial class InMemoryJobStore
         {
             Calendar = schedule.Calendar,
             CalendarClosed = schedule.Calendar is null ? null : schedule.Closed,
+            LastEndedAt = lastEnded,
         });
         QueueExpectationChange(work, source, definition, recurrence.Subject);
         NotifyPlan(work, source);

@@ -46,15 +46,16 @@ internal sealed partial class PostgreSqlJobStore
     /// creates it. A declared recurrence (<paramref name="revision"/> set) replaces only a recurrence stored by an older
     /// revision or by none. The stored recurrence copies its subject's pause to its flag; a copy left stale by a
     /// concurrent pause or resume is repaired by maintenance. The first instant follows the store's clock read after the
-    /// lock. The recurrence's key is queued for the monitoring loop, which is signalled. Standalone jobs of the identity
-    /// are left alone.
+    /// lock. An after-completion schedule that replaces one awaiting an occurrence keeps awaiting it, so its end sets the
+    /// next instant; otherwise its first instant is measured from the last end it recorded. The recurrence's key is
+    /// queued for the monitoring loop, which is signalled. Standalone jobs of the identity are left alone.
     /// </summary>
     private async Task<RecurrenceOutcome> StoreRecurrenceAsync(PostgreSqlTransaction work, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, long? revision, byte[]? digest, CancellationToken cancellationToken)
     {
         var sql = Sql(source);
         var definition = sql.Job!.Definition;
         var partition = recurrence.Partition ?? "";
-        if (calculator.First(recurrence.Schedule, DateTimeOffset.UtcNow) is null)
+        if (calculator.First(recurrence.Schedule, DateTimeOffset.UtcNow, null) is null)
         {
             throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence));
         }
@@ -65,10 +66,12 @@ internal sealed partial class PostgreSqlJobStore
         }
         Guid id;
         bool created;
+        Guid? awaited = null;
+        DateTimeOffset? lastEnded = null;
         while (true)
         {
             await using (var select = new NpgsqlCommand(
-                $"SELECT id, partition_key, declared_revision, declared_digest FROM {recurrences} WHERE definition = $1 AND merge_key = $2 FOR UPDATE",
+                $"SELECT id, partition_key, declared_revision, declared_digest, awaited_job, last_ended_at FROM {recurrences} WHERE definition = $1 AND merge_key = $2 FOR UPDATE",
                 work.Connection,
                 work.Transaction))
             {
@@ -104,6 +107,8 @@ internal sealed partial class PostgreSqlJobStore
                     {
                         return RecurrenceOutcome.Existing;
                     }
+                    awaited = reader.IsDBNull(4) ? null : reader.GetGuid(4);
+                    lastEnded = reader.IsDBNull(5) ? null : reader.GetFieldValue<DateTimeOffset>(5);
                     break;
                 }
             }
@@ -139,10 +144,17 @@ internal sealed partial class PostgreSqlJobStore
             now = reader.GetFieldValue<DateTimeOffset>(0);
         }
         var schedule = recurrence.Schedule;
-        var next = calculator.First(schedule, now) ?? throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence));
+        if (schedule is not { Kind: ScheduleKind.Every, Interval: Interval.AfterCompletion })
+        {
+            awaited = null;
+            lastEnded = null;
+        }
+        var next = awaited is null
+            ? calculator.First(schedule, now, lastEnded) ?? throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence))
+            : (DateTimeOffset?)null;
         await using (var update = new NpgsqlCommand(
             $"WITH updated AS (UPDATE {recurrences} AS c SET args = $2, args_version = $3, schedule_kind = $4, period = $5, interval_kind = $6, anchor = $7, expression = $8, "
-            + "time_zone = $9, missed = $10, overlap = $11, awaited_job = NULL, next_at = $12, waiting_at = NULL, declared_revision = COALESCE($13, declared_revision), "
+            + "time_zone = $9, missed = $10, overlap = $11, awaited_job = $18, next_at = $12, last_ended_at = $19, waiting_at = NULL, declared_revision = COALESCE($13, declared_revision), "
             + $"declared_digest = COALESCE($14, declared_digest), calendar = $15, calendar_closed = $16, "
             + $"paused = {PausedCopy("c.definition", "c.subject_kind", "c.subject_id")}, updated_at = clock_timestamp() WHERE id = $1 "
             + $"RETURNING c.definition, c.subject_kind, c.subject_id), queued AS (INSERT INTO {changes} (definition, subject_kind, subject_id) SELECT * FROM updated RETURNING definition) "
@@ -156,12 +168,14 @@ internal sealed partial class PostgreSqlJobStore
             AddSchedule(update.Parameters, schedule);
             update.Parameters.Add(new NpgsqlParameter<short> { TypedValue = (short)recurrence.Missed });
             update.Parameters.Add(new NpgsqlParameter<short> { TypedValue = (short)recurrence.Overlap });
-            update.Parameters.Add(Nullable(next.ToUniversalTime(), NpgsqlDbType.TimestampTz));
+            update.Parameters.Add(Nullable(next?.ToUniversalTime(), NpgsqlDbType.TimestampTz));
             update.Parameters.Add(Nullable(revision, NpgsqlDbType.Bigint));
             update.Parameters.Add(Nullable(digest, NpgsqlDbType.Bytea));
             update.Parameters.Add(Nullable(schedule.Calendar, NpgsqlDbType.Text));
             update.Parameters.Add(Nullable(schedule.Calendar is null ? null : (short)schedule.Closed, NpgsqlDbType.Smallint));
             update.Parameters.Add(MonitorSignal(source));
+            update.Parameters.Add(Nullable(awaited, NpgsqlDbType.Uuid));
+            update.Parameters.Add(Nullable(lastEnded?.ToUniversalTime(), NpgsqlDbType.TimestampTz));
             await signals.ExecuteAsync(update, cancellationToken);
         }
         await NotifyPlanAsync(work, source, cancellationToken);

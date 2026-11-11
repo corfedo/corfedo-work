@@ -9,7 +9,16 @@ internal sealed class RecurrenceCalculator : IRecurrenceCalculator
 
     private readonly ConcurrentDictionary<Schedule, RecurrenceSchedule> parsed = new();
 
-    public DateTimeOffset? First(Schedule schedule, DateTimeOffset now) => Parsed(schedule).Next(now);
+    public DateTimeOffset? First(Schedule schedule, DateTimeOffset now, DateTimeOffset? lastEnded)
+    {
+        var parsed = Parsed(schedule);
+        if (!parsed.AfterCompletion)
+        {
+            return parsed.Next(now);
+        }
+        // With no occurrence to measure the interval from, the schedule is due at once.
+        return lastEnded is { } ended && parsed.Next(ended) is { } next && next > now ? next : now;
+    }
 
     public RecurrenceInstants Plan(Schedule schedule, Missed missed, DateTimeOffset next, DateTimeOffset now)
     {

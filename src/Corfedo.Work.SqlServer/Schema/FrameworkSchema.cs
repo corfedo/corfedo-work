@@ -417,6 +417,11 @@ internal static class FrameworkSchema
             CREATE INDEX work_incidents_retention ON {schema}.work_incidents (resolved_at) WHERE resolved_at IS NOT NULL;
 
             """),
+        // The end of the last occurrence that advanced an after-completion schedule, which a replaced schedule measures
+        // its first instant from; null when there is none or the schedule is not after-completion.
+        (2, """
+            ALTER TABLE {schema}.job_recurrences ADD last_ended_at datetime2(7);
+            """),
     ];
 
     /// <summary>The framework schema's tables, whose lock escalation every script leaves disabled.</summary>

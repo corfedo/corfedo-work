@@ -61,10 +61,12 @@ public readonly record struct RecurrenceInstants(DateTimeOffset? Planned, DateTi
 public interface IRecurrenceCalculator
 {
     /// <summary>
-    /// The first instant of a new or replaced schedule after <paramref name="now"/>: the next cron or grid instant, or
-    /// the interval after <paramref name="now"/> for an after-completion schedule. Null when there is none.
+    /// The first instant of a new or replaced schedule: the next cron or grid instant after <paramref name="now"/>. An
+    /// after-completion schedule is due the interval after <paramref name="lastEnded"/>, the end of the recurrence's
+    /// last occurrence that advanced an after-completion schedule, and at <paramref name="now"/> when that is earlier or
+    /// there is none. Null when there is no instant.
     /// </summary>
-    DateTimeOffset? First(Schedule schedule, DateTimeOffset now);
+    DateTimeOffset? First(Schedule schedule, DateTimeOffset now, DateTimeOffset? lastEnded);
 
     /// <summary>
     /// Applies the missed rule to the instants from <paramref name="next"/> up to <paramref name="now"/>: the instant to

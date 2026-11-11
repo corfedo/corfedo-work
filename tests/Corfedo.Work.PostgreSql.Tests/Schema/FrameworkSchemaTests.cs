@@ -14,7 +14,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
             await new PostgreSqlWorkStore(database.DataSource, "concurrent", NullLoggerFactory.Instance, TimeProvider.System).PrepareAsync(Cancel))));
 
-        Assert.Equal(new[] { 14 }, await VersionsAsync("concurrent"));
+        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("concurrent"));
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         await PostgreSqlWorkSchema.MigrateAsync(database.DataSource, "ungranted", [role], Cancel);
         await ExecuteAsync("DELETE FROM ungranted.schema_versions");
         var older = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Verifying(runtime, "ungranted").PrepareAsync(Cancel));
-        Assert.Contains("is at version 0; this release needs version 14", older.Message, StringComparison.Ordinal);
+        Assert.Contains("is at version 0; this release needs version 15", older.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -62,7 +62,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         await PostgreSqlWorkSchema.MigrateAsync(database.DataSource, "exact", [role], Cancel);
 
-        Assert.Equal(new[] { 14 }, await VersionsAsync("exact"));
+        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("exact"));
         await using var command = database.DataSource.CreateCommand($"""
             SELECT has_table_privilege('{role}', 'exact.jobs', 'TRUNCATE'), has_table_privilege('{role}', 'exact.jobs', 'TRIGGER'),
                    has_schema_privilege('{role}', 'exact', 'CREATE'), has_table_privilege('{role}', 'exact.job_runs', 'DELETE')
@@ -81,7 +81,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         await new PostgreSqlWorkStore(owner, "owned", NullLoggerFactory.Instance, TimeProvider.System).PrepareAsync(Cancel);
 
-        Assert.Equal(new[] { 14 }, await VersionsAsync("owned"));
+        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("owned"));
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         await ExecuteAsync(PostgreSqlWorkSchema.Script("scripted", [role]));
         await ExecuteAsync(PostgreSqlWorkSchema.Script("scripted", [role]));
 
-        Assert.Equal(new[] { 14 }, await VersionsAsync("scripted"));
+        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("scripted"));
         await using var runtime = NpgsqlDataSource.Create(connectionString);
         await Verifying(runtime, "scripted").PrepareAsync(Cancel);
     }
@@ -106,7 +106,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         var older = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Verifying(runtime, "unmigrated").PrepareAsync(Cancel));
 
-        Assert.Contains("is at version 0; this release needs version 14", older.Message, StringComparison.Ordinal);
+        Assert.Contains("is at version 0; this release needs version 15", older.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -115,9 +115,9 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         var role = "r$corfedo_work$" + Guid.NewGuid().ToString("N")[..8];
         await ExecuteAsync($"CREATE ROLE \"{role}\"");
 
-        await ExecuteAsync(PostgreSqlWorkSchema.Script("s$corfedo_work$x$corfedo_work_14$", [role]));
+        await ExecuteAsync(PostgreSqlWorkSchema.Script("s$corfedo_work$x$corfedo_work_15$", [role]));
 
-        Assert.Equal(new[] { 14 }, await VersionsAsync("\"s$corfedo_work$x$corfedo_work_14$\""));
+        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("\"s$corfedo_work$x$corfedo_work_15$\""));
     }
 
     [Fact]
@@ -139,7 +139,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
             await release.ExecuteNonQueryAsync(Cancel);
         }
         await migration;
-        Assert.Equal(new[] { 14 }, await VersionsAsync("locked"));
+        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("locked"));
     }
 
     private static PostgreSqlWorkStore Verifying(NpgsqlDataSource dataSource, string schema) =>

@@ -41,15 +41,17 @@ internal sealed partial class SqlServerJobStore
     /// creates it; a creation that meets one committed meanwhile locks that one. A declared recurrence
     /// (<paramref name="revision"/> set) replaces only a recurrence stored by an older revision or by none. The stored
     /// recurrence copies its subject's pause to its flag; a copy left stale by a concurrent pause or resume is repaired
-    /// by maintenance. The first instant follows the store's clock read after the lock. The recurrence's key is queued
-    /// for the monitoring loop, which is signalled. Standalone jobs of the identity are left alone.
+    /// by maintenance. The first instant follows the store's clock read after the lock. An after-completion schedule that
+    /// replaces one awaiting an occurrence keeps awaiting it, so its end sets the next instant; otherwise its first
+    /// instant is measured from the last end it recorded. The recurrence's key is queued for the monitoring loop, which
+    /// is signalled. Standalone jobs of the identity are left alone.
     /// </summary>
     private async Task<RecurrenceOutcome> StoreRecurrenceAsync(SqlServerTransaction work, LeaseSource<JobId> source, RecurrenceData recurrence, IRecurrenceCalculator calculator, long? revision, byte[]? digest, CancellationToken cancellationToken)
     {
         var sql = await SqlAsync(source, cancellationToken);
         var definition = sql.Job!.Definition;
         var partition = recurrence.Partition ?? "";
-        if (calculator.First(recurrence.Schedule, DateTimeOffset.UtcNow) is null)
+        if (calculator.First(recurrence.Schedule, DateTimeOffset.UtcNow, null) is null)
         {
             throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence));
         }
@@ -60,6 +62,8 @@ internal sealed partial class SqlServerJobStore
         }
         Guid id;
         bool created;
+        Guid? awaited;
+        DateTimeOffset? lastEnded;
         await using (var select = Tsql.Command(work, $"""
             DECLARE @rid uniqueidentifier, @created bit = 0;
             {LockRecurrenceStatements()}
@@ -84,7 +88,7 @@ internal sealed partial class SqlServerJobStore
                     {LockRecurrenceStatements(declare: false).Replace("\n", "\n        ", StringComparison.Ordinal)}
                 END
             END
-            SELECT id, partition_key, declared_revision, declared_digest, @created FROM {recurrences} WHERE id = @rid;
+            SELECT id, partition_key, declared_revision, declared_digest, @created, awaited_job, last_ended_at FROM {recurrences} WHERE id = @rid;
             """,
             Tsql.Guid("@new_id", Guid.CreateVersion7()),
             Tsql.Text("@definition", definition, 200),
@@ -102,6 +106,8 @@ internal sealed partial class SqlServerJobStore
             }
             id = reader.GetGuid(0);
             created = reader.GetBoolean(4);
+            awaited = reader.IsDBNull(5) ? null : reader.GetGuid(5);
+            lastEnded = Tsql.NullableTime(reader, 6);
             if (!created)
             {
                 if (reader.GetString(1) != partition)
@@ -134,11 +140,18 @@ internal sealed partial class SqlServerJobStore
 
         var now = await ClockAsync(work, cancellationToken);
         var schedule = recurrence.Schedule;
-        var next = calculator.First(schedule, now) ?? throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence));
+        if (schedule is not { Kind: ScheduleKind.Every, Interval: Interval.AfterCompletion })
+        {
+            awaited = null;
+            lastEnded = null;
+        }
+        var next = awaited is null
+            ? calculator.First(schedule, now, lastEnded) ?? throw new ArgumentException("The schedule has no future occurrence.", nameof(recurrence))
+            : (DateTimeOffset?)null;
         await using (var update = Tsql.Command(work, $"""
             UPDATE c SET args = @args, args_version = @args_version, schedule_kind = @schedule_kind, period = @period, interval_kind = @interval_kind,
-                anchor = @anchor, expression = @expression, time_zone = @time_zone, missed = @missed, overlap = @overlap, awaited_job = NULL, next_at = @next,
-                waiting_at = NULL, declared_revision = COALESCE(@revision, c.declared_revision), declared_digest = COALESCE(@digest, c.declared_digest),
+                anchor = @anchor, expression = @expression, time_zone = @time_zone, missed = @missed, overlap = @overlap, awaited_job = @awaited, next_at = @next,
+                last_ended_at = @last_ended, waiting_at = NULL, declared_revision = COALESCE(@revision, c.declared_revision), declared_digest = COALESCE(@digest, c.declared_digest),
                 calendar = @calendar, calendar_closed = @calendar_closed, paused = {PausedCopy("c.[definition]", "c.subject_kind", "c.subject_id")},
                 updated_at = SYSUTCDATETIME()
             OUTPUT inserted.[definition], inserted.subject_kind, inserted.subject_id INTO {changes} ([definition], subject_kind, subject_id)
@@ -154,6 +167,8 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Int16("@missed", (short)recurrence.Missed),
                 Tsql.Int16("@overlap", (short)recurrence.Overlap),
                 Tsql.Time("@next", next),
+                Tsql.Guid("@awaited", awaited),
+                Tsql.Time("@last_ended", lastEnded),
                 Tsql.Int64("@revision", revision),
                 Tsql.Bytes("@digest", digest),
                 Tsql.Text("@calendar", schedule.Calendar, 128),

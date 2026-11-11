@@ -14,7 +14,7 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
         await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
             await new SqlServerWorkStore(database.ConnectionString, "concurrent", NullLoggerFactory.Instance, TimeProvider.System).PrepareAsync(Cancel))));
 
-        Assert.Equal("1", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') WITHIN GROUP (ORDER BY version) FROM concurrent.schema_versions", Cancel));
+        Assert.Equal("1,2", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') WITHIN GROUP (ORDER BY version) FROM concurrent.schema_versions", Cancel));
         Assert.Equal(0, await database.ScalarAsync(
             "SELECT COUNT(*) FROM sys.tables AS t JOIN sys.schemas AS s ON s.schema_id = t.schema_id WHERE s.name = N'concurrent' AND t.lock_escalation_desc <> N'DISABLE'", Cancel));
         Assert.NotNull(await database.ScalarAsync("SELECT OBJECT_ID(N'concurrent.signals', N'U')", Cancel));
@@ -40,7 +40,7 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
         await store.PrepareAsync(Cancel);
 
         Assert.Equal(1, await database.ScalarAsync("SELECT COUNT(*) FROM signals_first.signals", Cancel));
-        Assert.Equal(1, await database.ScalarAsync("SELECT COUNT(*) FROM signals_first.schema_versions", Cancel));
+        Assert.Equal(2, await database.ScalarAsync("SELECT COUNT(*) FROM signals_first.schema_versions", Cancel));
     }
 
     [Fact]
@@ -77,7 +77,7 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
         await SqlServerWorkSchema.MigrateAsync(database.ConnectionString, "ungranted", [user], Cancel);
         await database.ExecuteAsync("DELETE FROM ungranted.schema_versions", Cancel);
         var older = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Verifying(connectionString, "ungranted").PrepareAsync(Cancel));
-        Assert.Contains("is at version 0; this release needs version 1", older.Message, StringComparison.Ordinal);
+        Assert.Contains("is at version 0; this release needs version 2", older.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
 
         await SqlServerWorkSchema.MigrateAsync(database.ConnectionString, "exact", [user], Cancel);
 
-        Assert.Equal("1", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') FROM exact.schema_versions", Cancel));
+        Assert.Equal("1,2", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') FROM exact.schema_versions", Cancel));
         Assert.Equal(
             "GRANT DELETE schema,GRANT INSERT schema,GRANT SELECT schema,GRANT UPDATE schema,GRANT VIEW DEFINITION schema",
             await database.ScalarAsync($"""
@@ -107,7 +107,7 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
         await database.ExecuteAsync(SqlServerWorkSchema.Script("scripted", [user]), Cancel);
         await database.ExecuteAsync(SqlServerWorkSchema.Script("scripted", [user]), Cancel);
 
-        Assert.Equal("1", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') FROM scripted.schema_versions", Cancel));
+        Assert.Equal("1,2", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') FROM scripted.schema_versions", Cancel));
         await Verifying(connectionString, "scripted").PrepareAsync(Cancel);
     }
 
@@ -132,7 +132,7 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
             await release.ExecuteNonQueryAsync(Cancel);
         }
         await migration;
-        Assert.Equal("1", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') FROM locked.schema_versions", Cancel));
+        Assert.Equal("1,2", await database.ScalarAsync("SELECT STRING_AGG(CAST(version AS nvarchar(10)), N',') FROM locked.schema_versions", Cancel));
     }
 
     private static SqlServerWorkStore Verifying(string connectionString, string schema) =>

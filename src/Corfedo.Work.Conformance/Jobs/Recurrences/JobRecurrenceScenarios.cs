@@ -40,6 +40,43 @@ public abstract class JobRecurrenceScenarios(IJobConformanceProvider provider) :
     }
 
     [Fact]
+    public async Task J3_ANewAfterCompletionRecurrenceRunsAtOnceAndARestartDoesNotRunItAgain()
+    {
+        var definition = Definition();
+        var runs = new ConcurrentQueue<ObservedOccurrence>();
+        var schedule = Schedule.Every(TimeSpan.FromHours(1), Interval.AfterCompletion);
+        var declared = Clock.Elapsed;
+        await WorkerAsync(definition, Occurrences(runs), also: work => work.AddRecurring(definition, new TestArgs("x"), schedule), pollingInterval: Polling);
+
+        var first = (await RunsAsync(runs, 1, TimeSpan.FromSeconds(10)))[0];
+        Assert.True(first.Started - declared < TimeSpan.FromSeconds(5), $"the first occurrence started {first.Started - declared} after the declaration");
+
+        await WorkerAsync(definition, Occurrences(runs), also: work => work.AddRecurring(definition, new TestArgs("x"), schedule), pollingInterval: Polling);
+        await Task.Delay(2000, Cancel);
+        Assert.Single(runs);
+    }
+
+    [Fact]
+    public async Task J3_AReplacedAfterCompletionScheduleMeasuresTheNewIntervalFromTheLastEnd()
+    {
+        var definition = Definition(subject: "feed");
+        var subject = Subject.Of("feed", "a");
+        var runs = new ConcurrentQueue<ObservedOccurrence>();
+        var worker = await WorkerAsync(definition, Occurrences(runs), pollingInterval: Polling);
+        Assert.Equal(RecurrenceOutcome.Created, await ScheduleAsync(worker, definition, "x", Schedule.Every(TimeSpan.FromHours(1), Interval.AfterCompletion), Recurring(subject)));
+        var first = (await RunsAsync(runs, 1, TimeSpan.FromSeconds(10)))[0];
+        await EndedAsync(first.Job, TimeSpan.FromSeconds(10));
+        await Task.Delay(1500, Cancel);
+
+        Assert.Equal(RecurrenceOutcome.Replaced, await ScheduleAsync(worker, definition, "x", Schedule.Every(TimeSpan.FromSeconds(2), Interval.AfterCompletion), Recurring(subject)));
+
+        // Measured from the replacement, the next start would be about 3.5 s after the end.
+        var second = (await RunsAsync(runs, 2, TimeSpan.FromSeconds(10)))[1];
+        var gap = second.Started - first.Returned;
+        Assert.True(gap >= TimeSpan.FromSeconds(2) - Jitter && gap < TimeSpan.FromSeconds(3), $"the next occurrence started {gap} after the last end");
+    }
+
+    [Fact]
     public async Task J3_AnAfterCompletionInstantDueWhileATriggeredOccurrenceRunsWaitsForItsEnd()
     {
         var definition = Definition(subject: "feed");
