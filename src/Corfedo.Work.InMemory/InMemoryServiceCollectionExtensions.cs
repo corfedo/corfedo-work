@@ -20,6 +20,7 @@ public static class InMemoryServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(database);
         ArgumentException.ThrowIfNullOrWhiteSpace(application);
+        SignalServiceCollectionExtensions.EnsureNoSignals(services);
         services.AddSingleton<IWorkStore>(provider => new InMemoryWorkStore(
             database,
             application,

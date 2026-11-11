@@ -24,6 +24,7 @@ public static class SqlServerServiceCollectionExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
         var options = signals ?? new SqlServerSignalOptions();
         options.Validate();
+        SignalServiceCollectionExtensions.EnsureNoSignals(services);
         services.AddSingleton<IWorkStore>(provider => new SqlServerWorkStore(
             connectionString,
             schema,
@@ -38,7 +39,7 @@ public static class SqlServerServiceCollectionExtensions
 
     /// <summary>
     /// Registers <see cref="IWorkSignals"/> over SQL Server for an application that uses signals without the other
-    /// layers. <paramref name="application"/> names the schema of the signals table, created when missing, as a
+    /// layers; a process with a store gets its signals from the store, and registering both fails. <paramref name="application"/> names the schema of the signals table, created when missing, as a
     /// framework schema does; an application that later stores work uses its schema name.
     /// </summary>
     public static IServiceCollection AddSqlServerSignals(this IServiceCollection services, string connectionString, string application, SqlServerSignalOptions? options = null)
@@ -48,6 +49,7 @@ public static class SqlServerServiceCollectionExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(application);
         var signalOptions = options ?? new SqlServerSignalOptions();
         signalOptions.Validate();
+        SignalServiceCollectionExtensions.EnsureNoStore(services, nameof(AddSqlServerSignals));
         services.TryAddSingleton<ISignalTransport>(provider => new SqlServerSignalTransport(
             connectionString,
             new SqlServerSignalSql(application),

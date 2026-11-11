@@ -1,8 +1,10 @@
 # Signals
 
 Signals wake processes when committed state they wait for may have changed. The framework uses them to wake its
-workers, and your `BackgroundService`s can use them alone. `AddPostgreSqlSignals` creates no tables and needs no other
-registration. `AddSqlServerSignals` creates one table, `signals`, in a schema named after the application.
+workers, and your `BackgroundService`s can use them alone. A process with a work store already has `IWorkSignals`,
+on the store's schema; `AddPostgreSqlSignals` and `AddSqlServerSignals` are for processes without one, and registering
+them with a store fails. `AddPostgreSqlSignals` creates no tables. `AddSqlServerSignals` creates one table, `signals`,
+in a schema named after the application.
 
 - **Sent at commit.** A signal sent in a transaction is delivered when it commits and never after a rollback. On
   PostgreSQL a signal sent after a savepoint that is rolled back to still arrives if the transaction commits.

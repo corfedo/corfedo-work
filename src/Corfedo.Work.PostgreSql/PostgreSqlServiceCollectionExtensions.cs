@@ -47,6 +47,7 @@ public static class PostgreSqlServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(dataSource);
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
         PostgreSqlSignalSql.For(schema);
+        SignalServiceCollectionExtensions.EnsureNoSignals(services);
         services.AddSingleton<IWorkStore>(provider => new PostgreSqlWorkStore(
             Resolve(dataSource, provider),
             schema,
@@ -61,7 +62,7 @@ public static class PostgreSqlServiceCollectionExtensions
     /// <summary>
     /// Registers <see cref="IWorkSignals"/> over PostgreSQL, through the container's <see cref="NpgsqlDataSource"/> or the
     /// one registered under <paramref name="dataSourceKey"/>, for an application that uses signals without the other
-    /// layers. <paramref name="application"/> names the signal channel as a framework schema does, at most 50 bytes; an
+    /// layers; a process with a store gets its signals from the store, and registering both fails. <paramref name="application"/> names the signal channel as a framework schema does, at most 50 bytes; an
     /// application that later stores work uses its schema name. Listening needs a session-level connection, so a
     /// transaction-mode pooler needs a direct data source.
     /// </summary>
@@ -88,6 +89,7 @@ public static class PostgreSqlServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(dataSource);
         var sql = PostgreSqlSignalSql.For(application);
+        SignalServiceCollectionExtensions.EnsureNoStore(services, nameof(AddPostgreSqlSignals));
         services.TryAddSingleton<ISignalTransport>(provider =>
         {
             var source = Resolve(dataSource, provider);

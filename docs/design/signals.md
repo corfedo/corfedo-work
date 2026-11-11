@@ -106,7 +106,8 @@ public interface ISignalTransport
 
 `IWorkStore.Signals` returns the transport, or null as today. Registration adds the hub with the store
 (`AddPostgreSqlWorkStore`, `AddInMemoryWorkStore`); `AddPostgreSqlSignals(application)` registers it alone,
-for applications that use signals and no other layer. Sends join an ADO.NET transaction, converted to a `WorkTransaction`, or,
+for applications that use signals and no other layer; registering it with a store fails, since the hub would listen
+to a transport the store does not send on. Sends join an ADO.NET transaction, converted to a `WorkTransaction`, or,
 with EF Core, `DatabaseFacade.WorkTransaction()`, the same handle work operations take.
 
 ### Framework topics
