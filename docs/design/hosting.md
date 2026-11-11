@@ -5,7 +5,7 @@ The hosting layer of `Corfedo.Work` runs registered handlers in a `Microsoft.Ext
 ## Registration
 
 ```csharp
-services.AddPostgreSqlWorkStore(dataSource, schema: "orders_work");   // the application's framework schema, R19
+services.AddPostgreSqlWorkStore(schema: "orders_work");   // the application's framework schema, R19, over the container's data source
 services.AddWork(work => work
     .Process(process => process.Type("orders-worker").Release(version))
     .UseJson(AppJson.Default)                                // job arguments and results through a source-generated context
@@ -83,7 +83,7 @@ reach the store. A live instance has a recent heartbeat, which says nothing abou
 endpoints or metadata and does not route, probe health or elect leaders.
 
 ```csharp
-services.AddPostgreSqlWorkStore(dataSource);
+services.AddPostgreSqlWorkStore();
 services.AddWorkProcess(process => process.Type("control-plane").Release(version));   // a service that runs no work
 ```
 

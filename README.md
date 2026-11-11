@@ -60,11 +60,12 @@ public sealed class SendWelcome : IJobHandler<WelcomeArgs>
 Arguments are stored as JSON. A definition with a policy (attempts, backoff, limits) also takes a revision: increase it
 whenever the policy changes, so replicas on different releases agree on one policy.
 
-**Register the store and the job** in `Program.cs`. The store creates its tables in the `work` schema at startup.
+**Register the store and the job** in `Program.cs`. The store uses the `NpgsqlDataSource` in the container and creates
+its tables in the `work` schema at startup.
 
 ```csharp
-var dataSource = NpgsqlDataSource.Create(builder.Configuration.GetConnectionString("app")!);
-builder.Services.AddPostgreSqlWorkStore(dataSource);
+builder.Services.AddNpgsqlDataSource(builder.Configuration.GetConnectionString("app")!);   // Npgsql.DependencyInjection
+builder.Services.AddPostgreSqlWorkStore();
 // or: builder.Services.AddSqlServerWorkStore(builder.Configuration.GetConnectionString("app")!);
 builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welcome));
 ```

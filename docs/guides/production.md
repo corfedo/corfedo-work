@@ -53,7 +53,7 @@ await PostgreSqlWorkSchema.MigrateAsync(ownerDataSource, "work", runtimeRoles: [
 Then register the store to verify the schema instead of applying it:
 
 ```csharp
-services.AddPostgreSqlWorkStore(runtimeDataSource, "work", WorkSchemaMode.Verify);
+services.AddPostgreSqlWorkStore("work", WorkSchemaMode.Verify);   // the container's data source, with a runtime login
 ```
 
 - **Grants.** Each runtime role gets what every process needs on the framework schema and nothing else, and loses

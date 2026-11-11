@@ -29,7 +29,7 @@ public sealed class SendWelcome : IJobHandler<WelcomeArgs>
 }
 
 // Program.cs
-builder.Services.AddPostgreSqlWorkStore(dataSource);   // or AddSqlServerWorkStore(connectionString)
+builder.Services.AddPostgreSqlWorkStore();   // the container's NpgsqlDataSource; or AddSqlServerWorkStore(connectionString)
 builder.Services.AddWork(work => work.AddJob<WelcomeArgs, SendWelcome>(Jobs.Welcome));
 
 // In the transaction that creates the user:

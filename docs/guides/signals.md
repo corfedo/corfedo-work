@@ -15,7 +15,7 @@ registration. `AddSqlServerSignals` creates one table, `signals`, in a schema na
 
 ```csharp
 // Processes registered with the same name hear each other; applications sharing a database use different names.
-services.AddPostgreSqlSignals(dataSource, "orders-app");
+services.AddPostgreSqlSignals("orders-app");   // the container's NpgsqlDataSource
 
 static readonly SignalTopic Pending = new("orders.pending");
 

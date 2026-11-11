@@ -87,7 +87,8 @@ builder.Services.AddWork(work => work
 using var host = builder.Build();
 
 var processBuilder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { DisableDefaults = true });
-processBuilder.Services.AddPostgreSqlWorkStore(dataSource);
+processBuilder.Services.AddSingleton(dataSource);
+processBuilder.Services.AddPostgreSqlWorkStore();
 processBuilder.Services.AddWorkProcess(process => process.Type("control-plane").Release("1.5.0").Heartbeat(TimeSpan.FromSeconds(10)).StaleAfter(TimeSpan.FromSeconds(40)));
 using var processHost = processBuilder.Build();
 processHost.Services.GetRequiredService<ProcessRegistry>();

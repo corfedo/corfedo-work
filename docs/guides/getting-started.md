@@ -11,7 +11,8 @@ dotnet add package Corfedo.Work.EntityFrameworkCore   # optional, with EF Core
 ## Register the store and the work
 
 ```csharp
-builder.Services.AddPostgreSqlWorkStore(dataSource);   // framework tables in the "work" schema
+builder.Services.AddNpgsqlDataSource(connectionString);   // Npgsql.DependencyInjection, or Aspire's AddNpgsqlDataSource
+builder.Services.AddPostgreSqlWorkStore();                 // framework tables in the "work" schema
 // or: builder.Services.AddSqlServerWorkStore(connectionString);
 builder.Services.AddWork(work => work
     .AddJob<SyncFeed, FeedSyncHandler>(Jobs.FeedSync)
@@ -21,6 +22,11 @@ builder.Services.AddWork(work => work
 At startup the host creates or upgrades its framework tables, stores definitions and schedules, and checks that your
 own tables have the columns and indexes their sources need. A SQL Server database must have
 `READ_COMMITTED_SNAPSHOT` on; see [production](production.md).
+
+The PostgreSQL store uses the container's `NpgsqlDataSource`, or the one registered under a key with
+`AddPostgreSqlWorkStore(dataSourceKey: "work")`. It also takes a data source, or a factory
+`provider => ...` called once when the store is created. Work never disposes a data source: the container disposes
+one it created after the store, and one you pass belongs to you.
 
 A process runs only the work it registers. A process that only requests a job, such as a web API, registers its
 definition with `AddJobDefinition(Jobs.FeedSync)`, and the worker processes that register its handler run it.
