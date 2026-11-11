@@ -23,31 +23,16 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
         var work = PostgreSqlTransaction.From(transaction);
         var sql = leases.Sql(source.Leases);
         var k = sql.KeyCount;
-        var debounce = request.Debounce;
-        var first = $"COALESCE({sql.FirstRequestedAt}, clock_timestamp())";
-        var debounced = debounce?.Maximum is null
-            ? $"clock_timestamp() + ${k + 1}"
-            : $"LEAST(clock_timestamp() + ${k + 1}, {first} + ${k + 2})";
-        var candidate = $"CASE WHEN {sql.FirstRequestedAt} IS NOT NULL OR old.held THEN {debounced} ELSE LEAST({sql.Due}, {debounced}) END";
-        // LEAST and GREATEST ignore nulls: an idle record has no due time, a record without a floor no floor.
-        var due = request.ResetBackoff ? candidate : $"GREATEST({candidate}, {sql.NotBefore})";
-        var reset = request.ResetBackoff ? $", {LeaseSql.Bare(sql.NotBefore)} = NULL, {LeaseSql.Bare(sql.Failures)} = 0" : "";
-        var supersede = sql.Supersedes ? $", {LeaseSql.Bare(sql.Expires)} = CASE WHEN old.held THEN NULL ELSE {sql.Expires} END" : "";
         await using var batch = new NpgsqlBatch(work.Connection, work.Transaction);
         batch.BatchCommands.Add(KeyCommand($"SELECT 1 FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} FOR UPDATE OF r", source.Leases, key));
         var schedule = KeyCommand(
             $"WITH old AS (SELECT {sql.Expires} > clock_timestamp() AS held, {sql.Owner} AS owner FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)}) "
-            + $"UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.RequestedRevision)} = {sql.RequestedRevision} + 1, "
-            + $"{LeaseSql.Bare(sql.FirstRequestedAt)} = {first}, {LeaseSql.Bare(sql.Due)} = {due}{reset}{supersede} "
+            + $"UPDATE {sql.Table} AS r SET {Schedule(sql, request, "old")} "
             + $"FROM old WHERE {sql.KeyMatch(1)} "
             + $"RETURNING {(sql.Supersedes ? "coalesce(old.held, false)" : "false")}, old.owner",
             source.Leases,
-            key,
-            PostgreSqlLeaseStore.Interval(debounce?.Delay ?? TimeSpan.Zero));
-        if (debounce?.Maximum is { } maximum)
-        {
-            schedule.Parameters.Add(PostgreSqlLeaseStore.Interval(maximum));
-        }
+            key);
+        AddDebounce(schedule.Parameters, request);
         batch.BatchCommands.Add(schedule);
         batch.BatchCommands.Add(KeyCommand(
             $"{PostgreSqlSignalSql.Rows($"${k + 1}")} FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} AND {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL",
@@ -74,6 +59,85 @@ internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, Post
             await signals.SendAsync(work.Connection, work.Transaction, WorkTopics.Cancel, WorkTopics.CancelKey(owner, source.Name), cancellationToken);
         }
         return found;
+    }
+
+    /// <summary>
+    /// In one batch: locks the records in the order of the keys and returns the keys found, schedules them as
+    /// <see cref="RequestAsync{TKey}"/> does with a clock reading per record taken after the locks are held, signals the
+    /// holders of superseded runs once each, and signals claimers once if any record is due and not held.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<TKey>> RequestManyAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, ReconcileRequest request, CancellationToken cancellationToken)
+        where TKey : notnull
+    {
+        var work = PostgreSqlTransaction.From(transaction);
+        var sql = leases.Sql(source.Leases);
+        var k = sql.KeyCount;
+        await using var batch = new NpgsqlBatch(work.Connection, work.Transaction);
+        var locks = new NpgsqlBatchCommand($"SELECT {sql.KeyList} FROM {sql.Table} AS r JOIN {sql.OrderedUnnest} ON {sql.KeyJoin} ORDER BY u.ord FOR UPDATE OF r");
+        AddKeys(locks.Parameters, source.Leases, keys);
+        batch.BatchCommands.Add(locks);
+        // The CTE is named u so that the key join of the update reads its key columns.
+        var held = $"WITH u AS (SELECT u.*, {sql.Expires} > clock_timestamp() AS held, {sql.Owner} AS owner FROM {sql.Table} AS r JOIN {sql.Unnest} ON {sql.KeyJoin})";
+        var update = $"UPDATE {sql.Table} AS r SET {Schedule(sql, request, "u")} FROM u WHERE {sql.KeyJoin}";
+        var schedule = new NpgsqlBatchCommand();
+        AddKeys(schedule.Parameters, source.Leases, keys);
+        AddDebounce(schedule.Parameters, request);
+        if (sql.Supersedes)
+        {
+            schedule.Parameters.Add(Text(source.Name));
+            var cancel = PostgreSqlSignalSql.CancelExpression("c.owner", $"${schedule.Parameters.Count}");
+            schedule.CommandText = $"{held}, s AS ({update} RETURNING u.held, u.owner) "
+                + $"{PostgreSqlSignalSql.Rows(cancel)} FROM (SELECT DISTINCT owner FROM s WHERE s.held AND s.owner IS NOT NULL) AS c";
+        }
+        else
+        {
+            schedule.CommandText = $"{held} {update}";
+        }
+        batch.BatchCommands.Add(schedule);
+        var due = new NpgsqlBatchCommand(
+            $"{PostgreSqlSignalSql.Rows($"${k + 1}")} WHERE EXISTS "
+            + $"(SELECT 1 FROM {sql.Table} AS r JOIN {sql.Unnest} ON {sql.KeyJoin} WHERE {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL)");
+        AddKeys(due.Parameters, source.Leases, keys);
+        due.Parameters.Add(Signal(WorkTopics.Due, source.Name));
+        batch.BatchCommands.Add(due);
+        var found = new List<TKey>(keys.Count);
+        await using var reader = await batch.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            found.Add(ReadKey(source.Leases, reader));
+        }
+        await reader.NextResultAsync(cancellationToken);
+        await signals.ReadAsync(reader, cancellationToken);
+        return found;
+    }
+
+    /// <summary>
+    /// The assignments of a request to the record <c>r</c>, with whether a run held it in <c>{old}.held</c>; the
+    /// debounce delay and maximum are the parameters after the keys, as <see cref="AddDebounce"/> adds them.
+    /// </summary>
+    private static string Schedule(LeaseSql sql, ReconcileRequest request, string old)
+    {
+        var k = sql.KeyCount;
+        var first = $"COALESCE({sql.FirstRequestedAt}, clock_timestamp())";
+        var debounced = request.Debounce?.Maximum is null
+            ? $"clock_timestamp() + ${k + 1}"
+            : $"LEAST(clock_timestamp() + ${k + 1}, {first} + ${k + 2})";
+        var candidate = $"CASE WHEN {sql.FirstRequestedAt} IS NOT NULL OR {old}.held THEN {debounced} ELSE LEAST({sql.Due}, {debounced}) END";
+        // LEAST and GREATEST ignore nulls: an idle record has no due time, a record without a floor no floor.
+        var due = request.ResetBackoff ? candidate : $"GREATEST({candidate}, {sql.NotBefore})";
+        var reset = request.ResetBackoff ? $", {LeaseSql.Bare(sql.NotBefore)} = NULL, {LeaseSql.Bare(sql.Failures)} = 0" : "";
+        var supersede = sql.Supersedes ? $", {LeaseSql.Bare(sql.Expires)} = CASE WHEN {old}.held THEN NULL ELSE {sql.Expires} END" : "";
+        return $"{LeaseSql.Bare(sql.RequestedRevision)} = {sql.RequestedRevision} + 1, "
+            + $"{LeaseSql.Bare(sql.FirstRequestedAt)} = {first}, {LeaseSql.Bare(sql.Due)} = {due}{reset}{supersede}";
+    }
+
+    private static void AddDebounce(NpgsqlParameterCollection parameters, ReconcileRequest request)
+    {
+        parameters.Add(Interval(request.Debounce?.Delay ?? TimeSpan.Zero));
+        if (request.Debounce?.Maximum is { } maximum)
+        {
+            parameters.Add(Interval(maximum));
+        }
     }
 
     public async ValueTask CompleteAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)

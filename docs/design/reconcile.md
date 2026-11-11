@@ -103,6 +103,13 @@ What happens to a record a run holds depends on the source's request policy:
 | `FollowUp` (default) | The request records its due time; the record is not claimable while held, and the run's result schedules exactly one follow-up from it (C2). |
 | `Supersede` | The request gives the current lease back on the holder's behalf: `LeaseExpiresAt` becomes null, the epoch stays, `Takeovers` and `Failures` are unchanged and the lease stops counting against limits. The record is claimable at its due time, without takeover backoff, and the next claim is not a takeover. The old holder's renewals, guards and results fail validity and change nothing; its process is signalled to renew at once, and its token is cancelled with reason `Superseded` (C9). |
 
+`RequestManyAsync(tx, source, keys, request)` requests many records of one source in one round trip, each by the
+rules above, and returns the keys of the records that exist; missing records are skipped as `RequestAsync` returns
+false for them, and duplicate keys request a record once. It signals claimers once and each superseded holder once. It
+locks the records in ordinal order of their canonical keys, so bulk requests of overlapping records do not deadlock
+each other (C-26). A transaction that requests several records of one source does so in one bulk request: requests
+for single records in another order can deadlock with it.
+
 A superseding request waits for an open guarded transaction of the old holder, because both lock the record: either
 the guarded output commits first and the request then supersedes the next step, or the request commits first and the
 guard fails.

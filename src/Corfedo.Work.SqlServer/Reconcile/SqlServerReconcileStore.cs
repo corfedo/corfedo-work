@@ -25,15 +25,6 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
         {
             return false;
         }
-        var debounce = request.Debounce;
-        var first = $"COALESCE({sql.FirstRequestedAt}, SYSUTCDATETIME())";
-        var delayed = Tsql.AddTicks("SYSUTCDATETIME()", "@delay");
-        var debounced = debounce?.Maximum is null ? delayed : $"LEAST({delayed}, {Tsql.AddTicks(first, "@maximum")})";
-        var candidate = $"CASE WHEN {sql.FirstRequestedAt} IS NOT NULL OR @held = 1 THEN {debounced} ELSE LEAST({sql.Due}, {debounced}) END";
-        // LEAST and GREATEST ignore nulls: an idle record has no due time, a record without a floor no floor.
-        var due = request.ResetBackoff ? candidate : $"GREATEST({candidate}, {sql.NotBefore})";
-        var reset = request.ResetBackoff ? $", {LeaseSql.Bare(sql.NotBefore)} = NULL, {LeaseSql.Bare(sql.Failures)} = 0" : "";
-        var supersede = sql.Supersedes ? $", {LeaseSql.Bare(sql.Expires)} = CASE WHEN @held = 1 THEN NULL ELSE {sql.Expires} END" : "";
         var cancel = sql.Supersedes
             ? signals.InsertIf(WorkTopics.Cancel, SqlServerSignalSql.CancelKey("@owner", "@source"), "@held = 1 AND @owner IS NOT NULL")
             : "";
@@ -41,19 +32,83 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
             DECLARE @found int, @held bit, @owner uniqueidentifier;
             SELECT @found = 1 FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK) WHERE {sql.KeyMatch};
             SELECT @held = CASE WHEN {sql.Expires} > SYSUTCDATETIME() THEN 1 ELSE 0 END, @owner = {sql.Owner} FROM {sql.Table} AS r WHERE {sql.KeyMatch};
-            UPDATE r SET {LeaseSql.Bare(sql.RequestedRevision)} = {sql.RequestedRevision} + 1,
-                {LeaseSql.Bare(sql.FirstRequestedAt)} = {first}, {LeaseSql.Bare(sql.Due)} = {due}{reset}{supersede}
+            UPDATE r SET {Schedule(sql, request, "@held = 1")}
             FROM {sql.Table} AS r WHERE {sql.KeyMatch};
             SET @found = @@ROWCOUNT;
             {signals.InsertFrom(WorkTopics.Due, "@source", $"{sql.Table} AS r WHERE {sql.KeyMatch} AND {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL")}{cancel}SELECT @found;
             """;
-        var parameters = new List<SqlParameter> { Tsql.Ticks("@delay", debounce?.Delay ?? TimeSpan.Zero), Tsql.Text("@source", source.Name, 1024) };
-        if (debounce?.Maximum is { } maximum)
+        await using var command = SqlServerLeaseStore.KeyCommand(work.Connection, work.Transaction, sql, source.Leases, key, text, Parameters(source, request));
+        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+    }
+
+    /// <summary>
+    /// In one command: locks the records in the order of the keys, then schedules them as <see cref="RequestAsync{TKey}"/>
+    /// does with a clock reading taken after the locks are held, signals the holders of superseded runs once each,
+    /// signals claimers once if any record is due and not held, and returns the keys found. Keys longer than their
+    /// columns match no record.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<TKey>> RequestManyAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, ReconcileRequest request, CancellationToken cancellationToken)
+        where TKey : notnull
+    {
+        var work = SqlServerTransaction.From(transaction);
+        var sql = await leases.SqlAsync(source.Leases, cancellationToken);
+        List<TKey> fitting = [.. keys.Where(key => SqlServerLeaseStore.Fits(sql, source.Leases, key))];
+        if (fitting.Count == 0)
+        {
+            return [];
+        }
+        var held = $"{sql.Expires} > SYSUTCDATETIME()";
+        var cancel = sql.Supersedes
+            ? signals.InsertFrom(WorkTopics.Cancel, SqlServerSignalSql.CancelKey("h.owner", "@source"), "(SELECT DISTINCT owner FROM @held WHERE owner IS NOT NULL) AS h")
+            : "";
+        var text = $"""
+            DECLARE @locked int;
+            DECLARE @held TABLE (owner uniqueidentifier);
+            SELECT @locked = COUNT(*) FROM {sql.KeyedRows("UPDLOCK, ROWLOCK")};
+            UPDATE r SET {Schedule(sql, request, held)}
+            OUTPUT CASE WHEN deleted.{LeaseSql.Bare(sql.Expires)} > SYSUTCDATETIME() THEN deleted.{LeaseSql.Bare(sql.Owner)} END INTO @held (owner)
+            FROM {sql.KeyedRows()};
+            {signals.InsertIf(WorkTopics.Due, "@source", $"EXISTS (SELECT 1 FROM {sql.KeyedRows()} WHERE {sql.Expires} IS NULL AND {sql.Due} IS NOT NULL)")}{cancel}SELECT {sql.KeyList} FROM {sql.KeyedRows()};
+            """;
+        await using var command = SqlServerLeaseStore.KeysCommand(work.Connection, work.Transaction, sql, source.Leases, fitting, text, Parameters(source, request));
+        var found = new HashSet<string>(StringComparer.Ordinal);
+        await using (var reader = await command.ReaderAsync(cancellationToken))
+        {
+            while (await reader.NextRowAsync(cancellationToken))
+            {
+                found.Add(source.Key.Format(SqlServerLeaseStore.ReadKey(source.Leases, reader)));
+            }
+        }
+        return [.. fitting.Where(key => found.Contains(source.Key.Format(key)))];
+    }
+
+    /// <summary>
+    /// The assignments of a request to the record <c>r</c>, with whether a run holds it in the condition
+    /// <paramref name="held"/>; the debounce is in <c>@delay</c> and <c>@maximum</c>.
+    /// </summary>
+    private static string Schedule(LeaseSql sql, ReconcileRequest request, string held)
+    {
+        var first = $"COALESCE({sql.FirstRequestedAt}, SYSUTCDATETIME())";
+        var delayed = Tsql.AddTicks("SYSUTCDATETIME()", "@delay");
+        var debounced = request.Debounce?.Maximum is null ? delayed : $"LEAST({delayed}, {Tsql.AddTicks(first, "@maximum")})";
+        var candidate = $"CASE WHEN {sql.FirstRequestedAt} IS NOT NULL OR {held} THEN {debounced} ELSE LEAST({sql.Due}, {debounced}) END";
+        // LEAST and GREATEST ignore nulls: an idle record has no due time, a record without a floor no floor.
+        var due = request.ResetBackoff ? candidate : $"GREATEST({candidate}, {sql.NotBefore})";
+        var reset = request.ResetBackoff ? $", {LeaseSql.Bare(sql.NotBefore)} = NULL, {LeaseSql.Bare(sql.Failures)} = 0" : "";
+        var supersede = sql.Supersedes ? $", {LeaseSql.Bare(sql.Expires)} = CASE WHEN {held} THEN NULL ELSE {sql.Expires} END" : "";
+        return $"{LeaseSql.Bare(sql.RequestedRevision)} = {sql.RequestedRevision} + 1, "
+            + $"{LeaseSql.Bare(sql.FirstRequestedAt)} = {first}, {LeaseSql.Bare(sql.Due)} = {due}{reset}{supersede}";
+    }
+
+    private static SqlParameter[] Parameters<TKey>(ReconcileSource<TKey> source, ReconcileRequest request)
+        where TKey : notnull
+    {
+        var parameters = new List<SqlParameter> { Tsql.Ticks("@delay", request.Debounce?.Delay ?? TimeSpan.Zero), Tsql.Text("@source", source.Name, 1024) };
+        if (request.Debounce?.Maximum is { } maximum)
         {
             parameters.Add(Tsql.Ticks("@maximum", maximum));
         }
-        await using var command = SqlServerLeaseStore.KeyCommand(work.Connection, work.Transaction, sql, source.Leases, key, text, [.. parameters]);
-        return Convert.ToInt32(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) == 1;
+        return [.. parameters];
     }
 
     public async ValueTask CompleteAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)

@@ -23,12 +23,67 @@ internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IRecon
         ArgumentNullException.ThrowIfNull(request);
         var work = leases.Join(transaction);
         var rules = leases.Rules(source.Leases);
+        if (Request(work, rules, key, request) is not { } outcome)
+        {
+            return ValueTask.FromResult(false);
+        }
+        Signal(work, source, outcome.Wakes, outcome.Superseded is { } owner ? [owner] : []);
+        return ValueTask.FromResult(true);
+    }
+
+    /// <summary>Requests each record as <see cref="RequestAsync{TKey}"/> does, in the order of the keys, and signals claimers once.</summary>
+    public ValueTask<IReadOnlyList<TKey>> RequestManyAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, ReconcileRequest request, CancellationToken cancellationToken)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var work = leases.Join(transaction);
+        var rules = leases.Rules(source.Leases);
+        var found = new List<TKey>(keys.Count);
+        var wakes = false;
+        var superseded = new HashSet<OwnerId>();
+        foreach (var key in keys)
+        {
+            if (Request(work, rules, key, request) is { } outcome)
+            {
+                found.Add(key);
+                wakes |= outcome.Wakes;
+                if (outcome.Superseded is { } owner)
+                {
+                    superseded.Add(owner);
+                }
+            }
+        }
+        Signal(work, source, wakes, superseded);
+        return ValueTask.FromResult<IReadOnlyList<TKey>>(found);
+    }
+
+    /// <summary>Signals claimers if a requested record is due and not held, and the holders of superseded runs.</summary>
+    private void Signal<TKey>(InMemoryTransaction work, ReconcileSource<TKey> source, bool wakes, IEnumerable<OwnerId> superseded)
+        where TKey : notnull
+    {
+        if (wakes)
+        {
+            leases.Signal(work, WorkTopics.Due, source.Name);
+        }
+        foreach (var owner in superseded)
+        {
+            leases.Signal(work, WorkTopics.Cancel, WorkTopics.CancelKey(owner, source.Name));
+        }
+    }
+
+    /// <summary>
+    /// Requests the record; null if it does not exist, otherwise whether claimers are to be signalled and the holder
+    /// whose run the request superseded.
+    /// </summary>
+    private (bool Wakes, OwnerId? Superseded)? Request<TKey>(InMemoryTransaction work, LeaseRules<TKey> rules, TKey key, ReconcileRequest request)
+        where TKey : notnull
+    {
         var f = rules.Fields;
         var r = rules.Reconcile!;
         var rowKey = rules.RowKey(key);
         if (rules.Find(work, rowKey) is not { } record)
         {
-            return ValueTask.FromResult(false);
+            return null;
         }
         var now = leases.Now;
         var held = rules.Expires(record) > now;
@@ -63,15 +118,8 @@ internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IRecon
             expires = null;
         }
         leases.Write(work, rules, rowKey, record, changes);
-        if (expires is null && LeaseRules<TKey>.Wakes(dueAt))
-        {
-            leases.Signal(work, WorkTopics.Due, source.Name);
-        }
-        if (rules.Supersedes && held && record.Uuid(f.LeaseOwner) is { } owner)
-        {
-            leases.Signal(work, WorkTopics.Cancel, WorkTopics.CancelKey(new OwnerId(owner), source.Name));
-        }
-        return ValueTask.FromResult(true);
+        var superseded = rules.Supersedes && held && record.Uuid(f.LeaseOwner) is { } owner ? new OwnerId(owner) : (OwnerId?)null;
+        return (expires is null && LeaseRules<TKey>.Wakes(dueAt), superseded);
     }
 
     public ValueTask CompleteAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)

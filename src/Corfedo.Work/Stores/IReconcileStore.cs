@@ -13,6 +13,15 @@ public interface IReconcileStore
     ValueTask<bool> RequestAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, TKey key, ReconcileRequest request, CancellationToken cancellationToken)
         where TKey : notnull;
 
+    /// <summary>
+    /// In the caller's transaction, requests each record of <paramref name="keys"/> as
+    /// <see cref="RequestAsync{TKey}"/> does, locking the records in the order of <paramref name="keys"/>, and signals
+    /// claimers once on commit. The keys are distinct and in ordinal order of their canonical form. Returns the keys of
+    /// the records that exist, in the same order.
+    /// </summary>
+    ValueTask<IReadOnlyList<TKey>> RequestManyAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, ReconcileRequest request, CancellationToken cancellationToken)
+        where TKey : notnull;
+
     /// <summary>In the caller's transaction, applies a run's result to a validly held record and gives it back.</summary>
     /// <exception cref="LeaseLostException">The lease is not valid, or on a superseding source no longer current.</exception>
     ValueTask CompleteAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, ReconcileResult result, CancellationToken cancellationToken)

@@ -54,6 +54,9 @@ requests and results, so the lease operations that release, end or schedule a ro
 ## More
 
 - **Debounce.** `new ReconcileRequest { Debounce = ... }` waits for a quiet period, with a ceiling.
+- **Many rows.** `reconcile.RequestManyAsync(tx, Sites, siteIds, ct)` requests many rows in one round trip and returns
+  the keys of the rows that exist. Request several rows of one source in one transaction this way: it locks them in
+  a fixed order.
 - **Mass invalidation.** After a change of shared configuration, `reconcile.InvalidateAllAsync(tx, Sites)` runs every
   row of the source once, without writing any of them.
 - **Periodic runs.** `ResyncInterval` runs converged rows again after an interval.

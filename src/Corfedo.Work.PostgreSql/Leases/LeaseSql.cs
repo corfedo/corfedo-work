@@ -39,8 +39,10 @@ internal sealed class LeaseSql
         Execution = "r." + Quote(fields.ExecutionId);
         EndedId = "r." + Quote(fields.EndedCompletionId);
         EndedDigest = "r." + Quote(fields.EndedDigest);
-        Unnest = "unnest(" + string.Join(", ", keyFields.Select((f, i) => $"${i + 1}::{KeyTypes.SqlType(f.Type)}[]")) + ") AS u("
-            + string.Join(", ", keyFields.Select((_, i) => "k" + i)) + ")";
+        var arrays = "unnest(" + string.Join(", ", keyFields.Select((f, i) => $"${i + 1}::{KeyTypes.SqlType(f.Type)}[]")) + ")";
+        var columns = string.Join(", ", keyFields.Select((_, i) => "k" + i));
+        Unnest = $"{arrays} AS u({columns})";
+        OrderedUnnest = $"{arrays} WITH ORDINALITY AS u({columns}, ord)";
         // Job sources share the framework's job table: every statement is scoped to the source's definition.
         Scope = job is null ? "true" : $"r.\"definition\" = {Literal(job.Definition)}";
         KeyJoin = string.Join(" AND ", Keys.Select((k, i) => $"{k} = u.k{i}")) + (job is null ? "" : " AND " + Scope);
@@ -270,6 +272,9 @@ internal sealed class LeaseSql
 
     /// <summary>The keys of array parameters $1..$k as rows of <c>u(k0, k1, ...)</c>.</summary>
     public string Unnest { get; }
+
+    /// <summary>As <see cref="Unnest"/>, with each key's position in the arrays as <c>u.ord</c>.</summary>
+    public string OrderedUnnest { get; }
 
     public string KeyJoin { get; }
 

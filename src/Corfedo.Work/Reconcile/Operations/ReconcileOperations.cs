@@ -20,6 +20,38 @@ public sealed class ReconcileOperations(IWorkStore store)
         return Store.RequestAsync(transaction, source, key, request, cancellationToken);
     }
 
+    /// <summary>
+    /// Requests runs of the latest revisions of many records of one source in the caller's transaction, each as
+    /// <see cref="RequestAsync{TKey}(WorkTransaction, ReconcileSource{TKey}, TKey, CancellationToken)"/> would; returns
+    /// the keys of the records that exist.
+    /// </summary>
+    public ValueTask<IReadOnlyList<TKey>> RequestManyAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, IEnumerable<TKey> keys, CancellationToken cancellationToken = default)
+        where TKey : notnull => RequestManyAsync(transaction, source, keys, ReconcileRequest.Default, cancellationToken);
+
+    /// <summary>
+    /// Requests runs of the latest revisions of many records of one source in the caller's transaction, each as
+    /// <see cref="RequestAsync{TKey}(WorkTransaction, ReconcileSource{TKey}, TKey, ReconcileRequest, CancellationToken)"/>
+    /// would, and signals claimers once. Duplicate keys request a record once. Records are locked in ordinal order of
+    /// their canonical keys, so bulk requests of overlapping records do not deadlock each other; a transaction that
+    /// requests several records of one source requests them in one call. Returns the keys of the records that exist,
+    /// in that order.
+    /// </summary>
+    public ValueTask<IReadOnlyList<TKey>> RequestManyAsync<TKey>(WorkTransaction transaction, ReconcileSource<TKey> source, IEnumerable<TKey> keys, ReconcileRequest request, CancellationToken cancellationToken = default)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(keys);
+        ArgumentNullException.ThrowIfNull(request);
+        TKey[] ordered = [.. keys
+            .Select(key => (Key: key, Text: source.Key.Format(key)))
+            .DistinctBy(k => k.Text, StringComparer.Ordinal)
+            .OrderBy(k => k.Text, StringComparer.Ordinal)
+            .Select(k => k.Key)];
+        return ordered.Length == 0
+            ? ValueTask.FromResult<IReadOnlyList<TKey>>([])
+            : Store.RequestManyAsync(transaction, source, ordered, request, cancellationToken);
+    }
+
     /// <inheritdoc cref="IReconcileStore.FenceAsync"/>
     public ValueTask FenceAsync(WorkTransaction transaction, IEnumerable<IReconcileSource> sources, CancellationToken cancellationToken = default)
     {
