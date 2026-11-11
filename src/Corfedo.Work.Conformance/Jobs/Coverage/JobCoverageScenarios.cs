@@ -116,6 +116,34 @@ public abstract class JobCoverageScenarios(IJobConformanceProvider provider) : J
     }
 
     [Fact]
+    public async Task J32_WithAGraceOnlyWorkDueForItAndUnservedByAnyProcessLiveSinceIsReported()
+    {
+        var grace = TimeSpan.FromSeconds(2);
+        var definition = Definition();
+        var started = new TaskCompletionSource();
+        var worker = await WorkerAsync(definition, new JobScript
+        {
+            Run = async (_, _, cancellationToken) =>
+            {
+                started.TrySetResult();
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                return JobResult.Completed;
+            },
+        }, configure: j => j.Capacity(1));
+        await RequestAsync(worker, definition, "running");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10), Cancel);
+        await RequestAsync(worker, definition, "waiting");
+        await Task.Delay(grace + TimeSpan.FromMilliseconds(500), Cancel);
+        Assert.Empty((await UnservedAsync(worker, grace, definition)).Definitions);
+
+        // The waiting job was due for longer than the grace, and the worker stopped within it, so it still counts.
+        await worker.StopAsync(Cancel);
+        Assert.Equal([new UnservedDefinition(definition.Key)], (await UnservedAsync(worker, TimeSpan.Zero, definition)).Definitions);
+        Assert.Empty((await UnservedAsync(worker, grace, definition)).Definitions);
+        await EventuallyAsync(async () => (await UnservedAsync(worker, grace, definition)).Definitions.Count == 1, TimeSpan.FromSeconds(10), "the grace passes since the worker stopped");
+    }
+
+    [Fact]
     public async Task J35_JobsOfAVersionNoLiveProcessAcceptsAreReportedUnservedForTheVersion()
     {
         var oldDefinition = Definition();
@@ -165,10 +193,13 @@ public abstract class JobCoverageScenarios(IJobConformanceProvider provider) : J
         await writing.CommitAsync(Cancel);
     }
 
-    private static async Task<UnservedReport> UnservedAsync(TestProcess process, params JobDefinition[] definitions)
+    private static Task<UnservedReport> UnservedAsync(TestProcess process, params JobDefinition[] definitions) =>
+        UnservedAsync(process, TimeSpan.Zero, definitions);
+
+    private static async Task<UnservedReport> UnservedAsync(TestProcess process, TimeSpan grace, params JobDefinition[] definitions)
     {
         var keys = definitions.Select(d => d.Key).ToHashSet(StringComparer.Ordinal);
-        var report = await Jobs(process).GetUnservedAsync(Cancel);
+        var report = grace == TimeSpan.Zero ? await Jobs(process).GetUnservedAsync(Cancel) : await Jobs(process).GetUnservedAsync(grace, Cancel);
         return new UnservedReport([.. report.Definitions.Where(d => keys.Contains(d.Definition))], [.. report.Versions.Where(v => keys.Contains(v.Definition))]);
     }
 

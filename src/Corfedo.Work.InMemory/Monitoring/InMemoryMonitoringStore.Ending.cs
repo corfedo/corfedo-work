@@ -63,6 +63,7 @@ internal sealed partial class InMemoryMonitoringStore
         }
         var resolved = AllIncidents(work)
             .Where(i => i.Open() && (string?)i[IncidentColumns.Definition] == definition
+                && ExpectationKinds.Of((WorkIncidentKind)i.Int32(IncidentColumns.Kind))
                 && (OfKey(i, definition, subject?.Kind, subject?.Id)
                     || (wholeKey && i[IncidentColumns.SubjectKind] is null && i.Int32(IncidentColumns.Kind) == (int)WorkIncidentKind.CompletesBy)))
             .ToList()

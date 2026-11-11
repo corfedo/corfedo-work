@@ -161,6 +161,55 @@ public abstract class JobTelemetryScenarios(IJobConformanceProvider provider) : 
     }
 
     [Fact]
+    public async Task M4_AttemptsThatFailTimeOutOrRetryAreLoggedWithTheirReasonCodes()
+    {
+        var definition = Definition(new JobPolicy { Attempts = 2, Backoff = Backoff.None }, subject: "feed");
+        var slow = Definition(new JobPolicy { Attempts = 1, Timeout = TimeSpan.FromMilliseconds(300) }, subject: "feed");
+        var script = new JobScript
+        {
+            Run = async (args, run, cancellationToken) =>
+            {
+                switch (args.Value)
+                {
+                    case "retry" when run.Attempt == 1:
+                        return JobResult.Retry(TimeSpan.Zero, "busy");
+                    case "fail":
+                        return JobResult.Fail("broken");
+                    case "own":
+                        await using (var transaction = await Provider.BeginAsync(cancellationToken))
+                        {
+                            await run.CompleteAsync(transaction.Work, JobResult.Fail("bad_input"), cancellationToken);
+                            await transaction.CommitAsync(cancellationToken);
+                        }
+                        return run.Completed;
+                    case "throw" when run.Attempt == 1:
+                        throw new InvalidOperationException("broken");
+                    case "slow":
+                        await Task.Delay(Timeout.Infinite, cancellationToken);
+                        return JobResult.Completed;
+                    default:
+                        return JobResult.Completed;
+                }
+            },
+        };
+        var worker = await WorkerAsync(definition, script, also: work => work.AddJob<TestArgs, ScriptedJobHandler>(slow));
+        foreach (var args in new[] { "retry", "fail", "own", "throw", "ok" })
+        {
+            await EndedAsync((await RequestAsync(worker, definition, args, options: For(Subject.Of("feed", args)))).Id, TimeSpan.FromSeconds(10));
+        }
+        await EndedAsync((await RequestAsync(worker, slow, "slow", options: For(Subject.Of("feed", "slow")))).Id, TimeSpan.FromSeconds(10));
+
+        var failed = worker.Logs.Entries.Where(e => e.Event == "job.failed").Select(e => e.Message).ToList();
+        Assert.Equal(4, failed.Count);
+        foreach (var (outcome, code) in new[] { ("retried", "busy"), ("failed", "broken"), ("failed", "bad_input"), ("timed_out", "timeout") })
+        {
+            Assert.Single(failed, m => m.EndsWith($"ended {outcome} with {code}", StringComparison.Ordinal));
+        }
+        Assert.Equal(3, failed.Count(m => m.Contains(definition.Key, StringComparison.Ordinal)));
+        Assert.Single(worker.Logs.Entries, e => e.Event == "job.handler_failed");
+    }
+
+    [Fact]
     public async Task H3_SpansAndFrameworkLogsDescribeExceptionsWithoutMessagesKeysOrArguments()
     {
         using var telemetry = new TelemetryCapture();

@@ -109,5 +109,22 @@ public sealed record JobRetention
     public TimeSpan Incidents { get; }
 }
 
+/// <summary>
+/// The host's defaults for the parts of a definition's policy it may leave unset: retention durations and whether
+/// attempts are recorded in the run history. They are resolved when a revision is stored and stored with it.
+/// </summary>
+internal sealed record JobPolicyDefaults(JobRetention Retention, bool RunHistory)
+{
+    public static JobPolicyDefaults Default { get; } = new(JobRetention.Default, false);
+
+    /// <summary>The policy with every unset part taken from these defaults.</summary>
+    public JobPolicy Resolve(JobPolicy policy) => policy with
+    {
+        RunHistory = policy.RunHistory ?? RunHistory,
+        Retention = policy.Retention ?? Retention.Jobs,
+        RunHistoryRetention = policy.RunHistoryRetention ?? Retention.RunHistory,
+    };
+}
+
 /// <summary>What one retention pass deleted: terminal jobs, run history entries and chains, and whether a batch was full so more may remain.</summary>
 public readonly record struct RetentionPass(int Jobs, int Runs, int Chains, bool More);

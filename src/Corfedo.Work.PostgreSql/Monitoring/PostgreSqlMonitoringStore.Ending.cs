@@ -74,7 +74,7 @@ internal sealed partial class PostgreSqlMonitoringStore
                     + $"AND EXISTS (SELECT 1 FROM {states} AS s WHERE s.definition = $1 AND s.subject_kind IS NULL AND s.whole))";
             batch.BatchCommands.Add(Command(
                 $"UPDATE {incidents} AS i SET resolved_at = greatest($2, i.opened_at), due_at = coalesce(i.due_at, clock_timestamp()) "
-                + $"WHERE i.resolved_at IS NULL AND i.definition = $1 AND (({KeyMatch("i", subject, 3)}){wholeIncident}) "
+                + $"WHERE i.resolved_at IS NULL AND i.definition = $1 AND i.kind IN ({ExpectationKinds.Sql}) AND (({KeyMatch("i", subject, 3)}){wholeIncident}) "
                 + $"RETURNING {IncidentColumns}",
                 [Text(definition), Time(endedAt), .. SubjectParameters(subject)]));
             // The state update returns no rows, so the reader starts at the resolved incidents.

@@ -132,9 +132,10 @@ their own record. The framework's tables are not a query surface; their layout c
 
 ### Run history
 
-A definition whose stored policy sets `RunHistory` (off by default) records every attempt once, when it ends, keyed
-by job and the lease epoch of the claim that used the attempt, with the subject, occurrence, execution id, attempt,
-holder, start, end, outcome and reason code (D7). The policy is stored, since whichever process ends, settles or takes
+A definition whose stored policy sets `RunHistory` records every attempt once, when it ends, keyed by job and the
+lease epoch of the claim that used the attempt, with the subject, occurrence, execution id, attempt, holder, start,
+end, outcome and reason code (D7). A policy that leaves it unset stores the default of the host that stores the
+revision, `work.RunHistory(record)`, off unless set. The policy is stored, since whichever process ends, settles or takes
 over an attempt writes its entry:
 
 | Attempt ends by | Entry |

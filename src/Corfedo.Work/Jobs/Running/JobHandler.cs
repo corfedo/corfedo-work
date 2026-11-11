@@ -12,7 +12,9 @@ namespace Corfedo.Work;
 /// <c>uncompleted</c>. A transition whose outcome hook fails is retried while the lease is held. During shutdown an
 /// exception is left to the dispatcher, which gives the job back and returns its attempt. Each attempt records its
 /// duration and outcome, on its run span too, and a claim that runs a job when due, not by takeover, its lateness. An
-/// attempt is tracked by its definition's running-limit timers until its outcome is applied.
+/// attempt is tracked by its definition's running-limit timers until its outcome is applied. An attempt that ends
+/// failed, timed out or retried, applied by the dispatcher or by the handler in its own transaction, is logged as
+/// <c>job.failed</c> with its reason code, unless a thrown exception or a missing completion was logged already.
 /// </summary>
 internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkStore store, ILoggerFactory? logging) : ILeaseHandler<JobId>
 {
@@ -34,27 +36,37 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
             WorkTelemetry.JobLateness.Record(Math.Max(lateness.TotalSeconds, 0), Tags(run));
         }
         using var limit = claim.Kind == JobClaimKind.Run ? registration.RunningLimits.Track(run, store, registry.Time, logger, telemetry) : null;
-        var transition = claim.Kind switch
+        var (transition, own) = claim.Kind switch
         {
-            JobClaimKind.Late => JobTransition.Late,
-            JobClaimKind.Exhausted => JobTransition.Exhausted,
-            JobClaimKind.Cancelled => JobTransition.Cancel,
+            JobClaimKind.Late => (JobTransition.Late, null),
+            JobClaimKind.Exhausted => (JobTransition.Exhausted, null),
+            JobClaimKind.Cancelled => (JobTransition.Cancel, null),
             _ => await RunHandlerAsync(run, registration, ended, cancellationToken),
         };
-        if (transition is not null)
+        var applied = await ApplyAsync(run, transition, ended);
+        // Uncompleted changes nothing once the handler's own completion committed and ended the lease.
+        var outcome = applied ? transition : ReferenceEquals(transition, Uncompleted) && !run.Hold.Lost ? own : null;
+        if (outcome is { Kind: JobTransitionKind.Fail or JobTransitionKind.TimeOut or JobTransitionKind.Retry } && !Logged(outcome) && logger is not null)
         {
-            await ApplyAsync(run, transition, ended);
+            LogFailedResult(logger, DefinitionKey(run), run.Key.ToString(), WorkTelemetry.Value(outcome.Kind), outcome.Code!);
         }
         run.TryFinish();
     }
 
-    /// <summary>The attempt's transition; an exception during shutdown is left to the dispatcher.</summary>
-    private async Task<JobTransition?> RunHandlerAsync(LeaseRun<JobId> run, JobDefinitionRegistration<TArgs> registration, JobEndedCallback ended, CancellationToken cancellationToken)
+    /// <summary>Whether the transition has a log event of its own: a handler that threw, or a missing completion.</summary>
+    private static bool Logged(JobTransition transition) =>
+        ReferenceEquals(transition, HandlerFailed) || ReferenceEquals(transition, ResultVersion) || ReferenceEquals(transition, Uncompleted);
+
+    /// <summary>
+    /// The attempt's transition for the dispatcher to apply, and the one the handler applied in its own transaction, if
+    /// any; an exception during shutdown is left to the dispatcher.
+    /// </summary>
+    private async Task<(JobTransition Transition, JobTransition? Own)> RunHandlerAsync(LeaseRun<JobId> run, JobDefinitionRegistration<TArgs> registration, JobEndedCallback ended, CancellationToken cancellationToken)
     {
         using var timeoutReport = run.Hold.Token.Register(() => ReportIgnoredTimeout(run));
         var started = registry.Time.GetTimestamp();
         var job = CreateRun(run, registration, ended);
-        JobTransition? transition;
+        JobTransition transition;
         string? errorType = null;
         try
         {
@@ -88,7 +100,7 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
         var outcome = ReferenceEquals(transition, Uncompleted) && job.Applied is { } applied ? applied : transition;
         WorkTelemetry.JobDuration.Record(registry.Time.GetElapsedTime(started).TotalSeconds, Tags(run, outcome));
         Record(run.Span, outcome, errorType);
-        return transition;
+        return (transition, job.Applied);
     }
 
     /// <summary>The attempt as its handler sees it.</summary>
@@ -104,9 +116,9 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
     /// <summary>
     /// Applies the transition in the store's own fenced transaction, as a <c>corfedo.work.complete</c> span. A failure,
     /// such as an outcome hook that throws, rolls it back; it is retried with a growing delay while the lease is held and
-    /// the process is not stopping.
+    /// the process is not stopping. Returns whether it changed the job, which it does not once the lease ended.
     /// </summary>
-    private async Task ApplyAsync(LeaseRun<JobId> run, JobTransition transition, JobEndedCallback ended)
+    private async Task<bool> ApplyAsync(LeaseRun<JobId> run, JobTransition transition, JobEndedCallback ended)
     {
         var delay = TimeSpan.FromMilliseconds(100);
         while (true)
@@ -114,11 +126,12 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
             using var span = JobSpans.StartComplete(run, transition);
             try
             {
-                if (await store.Jobs.CompleteAsync(run.Lease, transition, ended, CancellationToken.None) && ReferenceEquals(transition, Uncompleted) && logger is not null)
+                var applied = await store.Jobs.CompleteAsync(run.Lease, transition, ended, CancellationToken.None);
+                if (applied && ReferenceEquals(transition, Uncompleted) && logger is not null)
                 {
                     LogUncompleted(logger, DefinitionKey(run), run.Key.ToString());
                 }
-                return;
+                return applied;
             }
             catch (Exception exception) when (!run.Hold.Lost && run.Hold.StopReason != LeaseStopReason.Shutdown)
             {
@@ -206,6 +219,9 @@ internal abstract partial class JobHandler<TArgs>(JobRegistry registry, IWorkSto
 
     [LoggerMessage(EventId = 32, EventName = "job.transition_failed", Level = LogLevel.Warning, Message = "Applying the outcome of job {Definition} {Job} failed; retried while its lease is held: {Error}")]
     private static partial void LogTransitionFailed(ILogger logger, Exception? exception, string definition, string job, string error);
+
+    [LoggerMessage(EventId = 35, EventName = "job.failed", Level = LogLevel.Warning, Message = "Attempt of job {Definition} {Job} ended {Outcome} with {Code}")]
+    private static partial void LogFailedResult(ILogger logger, string definition, string job, string outcome, string code);
 
     [LoggerMessage(EventId = 33, EventName = "job.timeout_ignored", Level = LogLevel.Warning, Message = "Handler of job {Definition} {Job} has not returned since its attempt timed out; the job keeps its lease until it returns")]
     private static partial void LogTimeoutIgnored(ILogger logger, string definition, string job);

@@ -31,6 +31,12 @@ public enum WorkIncidentKind
 
     /// <summary>Work waits for dates a date set does not cover.</summary>
     DateSetWorkWaiting = 4,
+
+    /// <summary>
+    /// The definition has due work that no process able to run it has served for longer than the host's grace: no live
+    /// process runs it, or none accepts the argument version of its due jobs.
+    /// </summary>
+    Unserved = 5,
 }
 
 /// <summary>Where a page of incidents ended: the opening time and id of its last incident.</summary>

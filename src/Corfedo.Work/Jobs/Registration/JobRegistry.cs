@@ -6,8 +6,8 @@ namespace Corfedo.Work;
 /// <summary>
 /// The job definitions and calendars this process registers, with their outcome hooks and accepted argument versions.
 /// At startup it stores each calendar by revision, after checking that the newest calendars compose without unknown
-/// names or cycles, then each definition by revision, with the host's <see cref="JobRetention"/> for durations its
-/// policy leaves unset, and builds its source from the newest stored one, then stores the code-defined recurrences by
+/// names or cycles, then each definition by revision, with the host's defaults for the parts of its policy it leaves
+/// unset, and builds its source from the newest stored one, then stores the code-defined recurrences by
 /// revision. A transactional operation on a definition the process has not registered is refused, so no process ends a
 /// job without its hook. Building the registry resolves the JSON codec of every definition without one of its own from
 /// the host's options, so a type they cannot serialize stops the host at startup.
@@ -31,12 +31,12 @@ public sealed class JobRegistry : IWorkInitializer
         }
         Telemetry = services.GetService<WorkTelemetryOptions>() ?? WorkTelemetryOptions.Default;
         Time = services.GetService<TimeProvider>() ?? TimeProvider.System;
-        var retention = services.GetService<JobRetention>() ?? JobRetention.Default;
+        var defaults = services.GetService<JobPolicyDefaults>() ?? JobPolicyDefaults.Default;
         json = services.GetService<JobJson>() ?? JobJson.Default;
         definitions = new Dictionary<string, JobDefinitionRegistration>(StringComparer.Ordinal);
         foreach (var registration in registrations)
         {
-            registration.Retention = retention;
+            registration.Defaults = defaults;
             if (!definitions.TryAdd(registration.Definition.Key, registration))
             {
                 throw new InvalidOperationException($"Job definition {registration.Definition.Key} is registered more than once.");
@@ -171,8 +171,8 @@ public abstract class JobDefinitionRegistration
     /// <summary>Resolves the definition's codecs, its own or from the host's JSON options.</summary>
     internal abstract void UseJson(JobJson json);
 
-    /// <summary>The host's retention durations, stored for a revision whose policy leaves them unset.</summary>
-    internal JobRetention Retention { get; set; } = JobRetention.Default;
+    /// <summary>The host's defaults, stored for a revision whose policy leaves them unset.</summary>
+    internal JobPolicyDefaults Defaults { get; set; } = JobPolicyDefaults.Default;
 
     /// <summary>The lease registration of a definition this process runs; null when it only requests and cancels.</summary>
     internal LeaseSourceRegistration<JobId>? Leases { get; set; }
@@ -195,7 +195,7 @@ public abstract class JobDefinitionRegistration
         {
             if (source is null)
             {
-                Use(Build(store, await store.Jobs.StoreDefinitionAsync(Definition, Retention, cancellationToken)));
+                Use(Build(store, await store.Jobs.StoreDefinitionAsync(Definition, Defaults.Resolve(Definition.Policy), cancellationToken)));
             }
             return source!;
         }

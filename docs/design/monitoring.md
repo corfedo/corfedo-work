@@ -59,8 +59,8 @@ next day needs another completion between 08:12 and 08:00.
 
 Failures, resets and resolutions are recorded by the transaction that ends the job, so they hold with any number of
 processes. An attempt held by a lease is checked against `RunsAtMost` by the process that holds it, which is the only
-process running it. Deadlines, recurring-chain occurrences and date-set coverage are checked by the monitoring loop of
-every process that opts in with `work.AddMonitoring()`. It checks the stored expectations of all definitions, also of definitions no live
+process running it. Deadlines, recurring-chain occurrences, date-set coverage and [unserved work](#unserved-work) are checked by the
+monitoring loop of every process that opts in with `work.AddMonitoring()`. It checks the stored expectations of all definitions, also of definitions no live
 process runs, so a total outage of a definition's workers is reported. Several processes may run it: every decision
 and the incident it opens are one statement over locked rows, so each deadline is processed once. At least one
 deployment per store adds it. `JobOperations.GetUnmonitoredAsync()` lists the definitions with expectations while no
@@ -183,6 +183,24 @@ Work waits for a set only when its coverage ends before an instant planning need
 out, and work starting to wait opens a second incident while the first stays open: the handler sees the escalation. The loop resolves them when their condition no longer holds.
 Processes that register calendars keep logging the report's state changes.
 
+### Unserved work
+
+Due work that no process can run is reported without any expectation (R12, R21), checked by the monitoring loop at the
+polling interval from the [unserved report](hosting.md#processes) with the host's grace, `work.UnservedGrace(grace)`,
+5 minutes by default:
+
+| Incident | Open while |
+|---|---|
+| `Unserved` | The definition has work that was due `grace` ago, and no process that runs the definition and accepts the work's argument version was live at any instant since then. |
+
+One incident per definition, whatever the argument versions; the report names them. A process counts while it was
+live at some instant within the grace, so a restart or a rolling deployment that replaces its workers within the grace,
+or a new release whose requests wait for its workers that long, opens nothing. A definition that is paused, or whose
+waiting work is paused, is not unserved, and pausing it resolves the incident at the next pass. The condition clears
+when processes serve the work or the work ends, and the incident resolves at the next pass. Like the date-set
+incidents, several monitoring processes may open and resolve it; one open incident per definition is kept by the
+unique index.
+
 ## Incidents
 
 An incident records its kind, the definition and subject or the date set, the job that broke the expectation when
@@ -194,8 +212,11 @@ public sealed record WorkIncident(
     Guid Id, WorkIncidentKind Kind, string? Definition, Subject? Subject, string? DateSet, JobId? Job,
     DateTimeOffset OpenedAt, DateTimeOffset? ResolvedAt);
 
-public enum WorkIncidentKind { CompletesBy, RunsAtMost, FailsAtMostInARow, DateSetRunningOut, DateSetWorkWaiting }
+public enum WorkIncidentKind { CompletesBy, RunsAtMost, FailsAtMostInARow, DateSetRunningOut, DateSetWorkWaiting, Unserved }
 ```
+
+A key's success resolves only the incidents of its expectations (`CompletesBy`, `RunsAtMost`, `FailsAtMostInARow`);
+date-set and unserved incidents resolve when the monitoring loop finds their condition cleared.
 
 `IncidentOperations.GetIncidentsAsync(openOnly, definition, limit, after)` returns incidents newest first by opening
 time, with a keyset cursor on opening time and id; default limit 50, at most 1 000, optionally of one definition.
@@ -227,7 +248,9 @@ notification, since notifications serialize committing transactions.
 
 `work_incidents` has one row per incident with the lease fields and the delivery times of both events. A partial
 unique index over `(definition, subject, kind, date_set)` with `NULLS NOT DISTINCT` on open incidents keeps one open
-incident per key and kind, and serves the probe of a success by its leading columns.
+incident per key and kind, and serves the probe of a success by its leading columns. An `Unserved` incident is keyed
+by its definition alone, so it needs no column of its own and the index stays as earlier releases infer it in their
+`ON CONFLICT` clauses, which a rolling deployment runs against the migrated schema.
 
 Resolved incidents are deleted 90 days after they resolved by the [retention job](jobs.md#retention), set with
 `work.Retention(jobs, runHistory, incidents)`. It also deletes expectation rows of keys no longer expected

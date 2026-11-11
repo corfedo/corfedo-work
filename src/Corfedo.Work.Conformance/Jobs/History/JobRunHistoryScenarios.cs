@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Corfedo.Work.Conformance;
 
@@ -45,6 +46,29 @@ public abstract class JobRunHistoryScenarios(IJobConformanceProvider provider) :
             var shifted = first.Next! with { StartedAt = first.Next!.StartedAt.ToOffset(offset) };
             Assert.Equal(rest.Runs, (await Jobs(worker).GetRunsAsync(definition, subject, limit: 2, after: shifted, cancellationToken: Cancel)).Runs);
         }
+    }
+
+    [Fact]
+    public async Task D8_AHostDefaultRecordsDefinitionsThatLeaveRunHistoryUnset()
+    {
+        var unset = Definition(new JobPolicy { Backoff = Backoff.None }, subject: "feed");
+        var off = Definition(new JobPolicy { Backoff = Backoff.None, RunHistory = false }, subject: "feed");
+        var subject = Subject.Of("feed", "npm");
+        var worker = await WorkerAsync(unset, new JobScript(), also: work => work.RunHistory().AddJob<TestArgs, ScriptedJobHandler>(off));
+        var store = worker.Services.GetRequiredService<IWorkStore>();
+        foreach (var definition in new[] { unset, off })
+        {
+            var job = await RequestAsync(worker, definition, "x", options: For(subject));
+            await EndedAsync(job.Id, TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Equal(true, (await store.Jobs.GetDefinitionAsync(unset.Key, Cancel))!.Policy.RunHistory);
+        Assert.Equal(false, (await store.Jobs.GetDefinitionAsync(off.Key, Cancel))!.Policy.RunHistory);
+        Assert.Equal([JobRunOutcome.Completed], (await Jobs(worker).GetRunsAsync(unset, subject, cancellationToken: Cancel)).Runs.Select(r => r.Outcome));
+        Assert.Empty((await Jobs(worker).GetRunsAsync(off, subject, cancellationToken: Cancel)).Runs);
+        // Unset and false keep the digest of definitions stored before the host default, so upgrading keeps revisions.
+        Assert.Equal(Definition(new JobPolicy(), key: "same").Digest, Definition(new JobPolicy { RunHistory = false }, key: "same").Digest);
+        Assert.NotEqual(Definition(new JobPolicy(), key: "same").Digest, Definition(new JobPolicy { RunHistory = true }, key: "same").Digest);
     }
 
     [Fact]

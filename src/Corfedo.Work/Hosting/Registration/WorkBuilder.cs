@@ -22,7 +22,11 @@ public sealed class WorkBuilder
 
     internal JobRetention RetentionValue { get; private set; } = JobRetention.Default;
 
+    internal bool RunHistoryValue { get; private set; }
+
     internal CalendarCoverageOptions CalendarCoverageValue { get; private set; } = CalendarCoverageOptions.Default;
+
+    internal UnservedOptions UnservedValue { get; private set; } = UnservedOptions.Default;
 
     internal Action<ProcessBuilder>? ProcessValue { get; private set; }
 
@@ -117,6 +121,17 @@ public sealed class WorkBuilder
     }
 
     /// <summary>
+    /// Whether attempts of definitions whose policy leaves <see cref="JobPolicy.RunHistory"/> unset are recorded in the
+    /// run history (D7); by default they are not. A definition stores the choice with its revision, so a changed default
+    /// applies to a definition from its next stored revision.
+    /// </summary>
+    public WorkBuilder RunHistory(bool record = true)
+    {
+        RunHistoryValue = record;
+        return this;
+    }
+
+    /// <summary>
     /// How far ahead of need date sets should be covered (J16): a set whose coverage ends within
     /// <paramref name="runningOutMargin"/> of now or of the instants planning needs is reported, and logged once, as
     /// running out. By default 30 days.
@@ -125,6 +140,19 @@ public sealed class WorkBuilder
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(runningOutMargin, TimeSpan.Zero);
         CalendarCoverageValue = new CalendarCoverageOptions(runningOutMargin);
+        return this;
+    }
+
+    /// <summary>
+    /// How long due work may go without a process able to run it before a monitoring process of this host opens a
+    /// <see cref="WorkIncidentKind.Unserved"/> incident (R12, R21): the work was due <paramref name="grace"/> ago and no
+    /// live process that runs its definition and accepts its argument version was live at any instant since then. By
+    /// default 5 minutes, which a restart or a rolling deployment that replaces its workers in time does not reach.
+    /// </summary>
+    public WorkBuilder UnservedGrace(TimeSpan grace)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(grace, TimeSpan.Zero);
+        UnservedValue = new UnservedOptions(grace);
         return this;
     }
 
@@ -300,7 +328,9 @@ public static class WorkServiceCollectionExtensions
         }
         ProcessServiceCollectionExtensions.AddProcessOptions(services, ProcessBuilder.Build(builder.ProcessValue));
         services.AddSingleton(builder.RetentionValue);
+        services.AddSingleton(new JobPolicyDefaults(builder.RetentionValue, builder.RunHistoryValue));
         services.AddSingleton(builder.CalendarCoverageValue);
+        services.AddSingleton(builder.UnservedValue);
         services.AddSingleton(builder.TelemetryValue);
         services.AddSingleton(new JobJson(builder.JsonValue));
         services.TryAddSingleton<LeaseRegistry>();

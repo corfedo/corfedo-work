@@ -12,11 +12,12 @@ public interface IJobStore
 
     /// <summary>
     /// Stores <paramref name="definition"/> if its revision is newer than the stored one, taking the definition fence
-    /// exclusively, and returns the newest stored definition. Retention durations the policy leaves unset are stored
-    /// from <paramref name="retention"/>.
+    /// exclusively, and returns the newest stored definition. <paramref name="policy"/> is the definition's policy with
+    /// the host's defaults for every part it leaves unset, which is stored with the revision; the digest stays the
+    /// definition's.
     /// </summary>
     /// <exception cref="JobDefinitionConflictException">The stored revision is equal and its content differs.</exception>
-    ValueTask<StoredJobDefinition> StoreDefinitionAsync(JobDefinition definition, JobRetention retention, CancellationToken cancellationToken);
+    ValueTask<StoredJobDefinition> StoreDefinitionAsync(JobDefinition definition, JobPolicy policy, CancellationToken cancellationToken);
 
     /// <summary>The newest stored definition, or null when none is stored.</summary>
     ValueTask<StoredJobDefinition?> GetDefinitionAsync(string key, CancellationToken cancellationToken);
@@ -213,12 +214,14 @@ public interface IJobStore
     ValueTask RegisterProcessAsync(OwnerId owner, IReadOnlyList<ProcessDefinition> definitions, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Definitions and argument versions with due work no live process can run, in one snapshot. Due work is an unheld
-    /// job due now, an expired lease, or a recurrence its planner would act on now. Paused definitions and subjects are
-    /// left out, by the stored pauses, and versions below the stored minimum are not reported as versions. A copied pause
-    /// flag that no stored pause backs does not hide the work of a definition no live process runs.
+    /// Definitions and argument versions with due work no live process can run, in one snapshot, as of
+    /// <paramref name="grace"/> before the store's clock: due work is an unheld job due by then, a lease expired by then,
+    /// or a recurrence its planner would have acted on by then, and a process counts as live when it was live at any
+    /// instant since then. Paused definitions and subjects are left out, by the stored pauses, and versions below the
+    /// stored minimum are not reported as versions. A copied pause flag that no stored pause backs does not hide the work
+    /// of a definition no live process runs.
     /// </summary>
-    ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken);
+    ValueTask<UnservedReport> GetUnservedAsync(TimeSpan grace, CancellationToken cancellationToken);
 
     /// <summary>Code-defined recurrences that no live process declares, whatever revision it registers.</summary>
     ValueTask<IReadOnlyList<UndeclaredRecurrence>> GetUndeclaredRecurrencesAsync(CancellationToken cancellationToken);

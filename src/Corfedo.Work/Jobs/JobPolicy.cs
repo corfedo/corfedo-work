@@ -35,8 +35,11 @@ public sealed record JobPolicy
     /// <summary>The lowest argument version still accepted; jobs with an older version end failed with <c>args_version</c>.</summary>
     public int MinimumArgsVersion { get; init; } = 1;
 
-    /// <summary>Whether every attempt is recorded in the run history (D7); disabled by default.</summary>
-    public bool RunHistory { get; init; }
+    /// <summary>
+    /// Whether every attempt is recorded in the run history (D7); null for the host's default, which is disabled unless
+    /// the host sets it with <c>WorkBuilder.RunHistory</c>.
+    /// </summary>
+    public bool? RunHistory { get; init; }
 
     /// <summary>
     /// How long a terminal job is kept after it ended before retention deletes it (J12); null for the host's default.

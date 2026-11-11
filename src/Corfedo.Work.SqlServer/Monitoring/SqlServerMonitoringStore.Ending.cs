@@ -78,7 +78,7 @@ internal sealed partial class SqlServerMonitoringStore
             ? ""
             : $" OR (i.subject_kind IS NULL AND i.kind = {(int)WorkIncidentKind.CompletesBy} "
                 + $"AND EXISTS (SELECT 1 FROM {states} AS s WHERE s.[definition] = @definition AND s.subject_kind IS NULL AND s.whole = 1))";
-        var resolve = $"i.[definition] = @definition AND (({KeyMatch("i", subject)}){wholeIncident})";
+        var resolve = $"i.[definition] = @definition AND i.kind IN ({ExpectationKinds.Sql}) AND (({KeyMatch("i", subject)}){wholeIncident})";
         List<WorkIncident> resolved;
         await using (var command = Tsql.Command(work, $"""
             {whole}UPDATE s SET {Update} FROM {states} AS s WHERE s.[definition] = @definition AND {KeyMatch("s", subject)} AND {Applies};

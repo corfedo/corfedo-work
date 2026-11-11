@@ -14,7 +14,19 @@ public sealed partial class JobOperations
     /// job or recurrence whose copied pause flag a request racing a resume left set counts as due work of a definition no
     /// live process runs; a live runner repairs such flags in its maintenance.
     /// </summary>
-    public ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken = default) => Store.GetUnservedAsync(cancellationToken);
+    public ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken = default) => Store.GetUnservedAsync(TimeSpan.Zero, cancellationToken);
+
+    /// <summary>
+    /// As <see cref="GetUnservedAsync(CancellationToken)"/>, only for work that has waited at least
+    /// <paramref name="grace"/>: due work that was already due <paramref name="grace"/> ago, and that no process able
+    /// to run it served at any instant since then. A process that stopped or whose heartbeat went stale within the grace
+    /// still counts, so a restart or a rolling deployment that replaces it in time reports nothing.
+    /// </summary>
+    public ValueTask<UnservedReport> GetUnservedAsync(TimeSpan grace, CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(grace, TimeSpan.Zero);
+        return Store.GetUnservedAsync(grace, cancellationToken);
+    }
 
     /// <summary>
     /// Code-defined recurrences that no live process declares any longer (J10), whatever revision it registers. They are

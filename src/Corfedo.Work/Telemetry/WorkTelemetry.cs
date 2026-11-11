@@ -119,6 +119,7 @@ internal static class WorkTelemetry
         WorkIncidentKind.FailsAtMostInARow => "fails_at_most_in_a_row",
         WorkIncidentKind.DateSetRunningOut => "date_set_running_out",
         WorkIncidentKind.DateSetWorkWaiting => "date_set_work_waiting",
+        WorkIncidentKind.Unserved => "unserved",
         _ => "unknown",
     };
 }

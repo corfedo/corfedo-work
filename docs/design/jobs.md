@@ -28,7 +28,7 @@ public static readonly JobDefinition<SyncFeed> FeedSync = JobDefinition.Create<S
         Priority = Priority.Normal,                   // J17, see priority below
         Timeout = TimeSpan.FromMinutes(20),           // per attempt (J18)
         Late = Late.Run,                              // or Late.SkipAfter(grace) (J2)
-        RunHistory = true,                            // record every attempt (D7); off by default
+        RunHistory = true,                            // record every attempt (D7); unset: the host's default, off
         Retention = TimeSpan.FromDays(3),             // terminal jobs (J12); unset: the host's default
         RunHistoryRetention = TimeSpan.FromDays(90),  // run history entries (D7); unset: the host's default
     });
@@ -348,6 +348,10 @@ attempt's holder crashed ends cancelled, not failed. The handler's result decide
 | `JobResult.Fail(code)` | Terminal failure immediately. |
 | exception | `Retry(0, "handler_failed")`. |
 
+An attempt that ends failed, timed out or retried is logged as `job.failed` (warning) with its reason code, whether the
+dispatcher applied the outcome or the handler applied it in its own transaction; an exception is logged as
+`job.handler_failed` with its type instead. The log carries the definition and job, never arguments or messages (R14).
+
 A retry gives the record back due at the later of the backoff for the attempts so far and `after`; a job with a
 calendar is planned at the next allowed instant from then, without using an attempt. A retry of a job with a
 cancellation request ends it cancelled instead. Requests during the
@@ -511,8 +515,11 @@ rows of keys no longer expected. Process records are kept 7 days after the proce
 stale and are deleted by the next starting process, not by the retention job (see [processes](hosting.md#processes)). For jobs and run history the windows are the definition's `Retention` and `RunHistoryRetention`, measured from
 the job's or the attempt's end. They are stored with the definition's revision like the rest of its policy; a policy
 that leaves one unset takes the default of the host that stores the revision, 7 days for jobs and 30 days for run
-history unless `work.Retention(jobs, runHistory, incidents)` sets others. The declared values are part of the digest, the host's
-defaults are not, so a changed default applies to a definition from its next stored revision.
+history unless `work.Retention(jobs, runHistory, incidents)` sets others. Whether attempts are recorded at all follows
+the same rule: `RunHistory` left unset takes the host's `work.RunHistory(record)`, off by default. The declared values
+are part of the digest, the host's defaults are not, so a changed default applies to a definition from its next stored
+revision. An unset `RunHistory` and `false` share one digest, the one definitions had before the host default existed,
+so upgrading keeps stored revisions.
 
 - Only terminal jobs are deleted, selected by state: a restarted follow-up or a rerun keeps the end time of its
   previous execution while it is outstanding. Jobs with and without a subject are retained alike.

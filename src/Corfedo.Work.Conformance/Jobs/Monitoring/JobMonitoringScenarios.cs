@@ -477,6 +477,32 @@ public abstract class JobMonitoringScenarios(IJobConformanceProvider provider) :
         Assert.Contains(expecting.Key, await jobs.GetUnmonitoredAsync(Cancel));
     }
 
+    [Fact]
+    public async Task M6_WorkUnservedForLongerThanTheGraceOpensAnIncidentThatOnlyServingItResolves()
+    {
+        var policy = new JobPolicy { Expect = Expect.FailsAtMostInARow(1) };
+        var oldDefinition = Definition(policy);
+        var newDefinition = Definition(policy, argsVersion: 2, key: oldDefinition.Key);
+        var oldWorker = await WorkerAsync(oldDefinition, new JobScript(), pollingInterval: Polling);
+        var client = await ClientAsync(null, newDefinition);
+        var monitor = await ProcessAsync(w => w.AddMonitoring().UnservedGrace(TimeSpan.FromSeconds(1)), pollingInterval: Polling);
+        var waiting = await RequestAsync(client, newDefinition, "v2");
+
+        await EventuallyAsync(async () => (await IncidentsAsync(monitor, newDefinition, openOnly: true)).Count > 0, TimeSpan.FromSeconds(10), "the incident opens");
+        var incident = Assert.Single(await IncidentsAsync(monitor, newDefinition));
+        Assert.Equal((WorkIncidentKind.Unserved, newDefinition.Key, (Subject?)null, (JobId?)null, (DateTimeOffset?)null), (incident.Kind, incident.Definition, incident.Subject, incident.Job, incident.ResolvedAt));
+
+        // A success of the version the old worker runs resolves the key's expectation incidents, not this one.
+        await EndedAsync((await RequestAsync(oldWorker, oldDefinition, "v1")).Id, TimeSpan.FromSeconds(10));
+        await Task.Delay(Polling * 2, Cancel);
+        Assert.Equal(incident.Id, Assert.Single(await IncidentsAsync(monitor, newDefinition, openOnly: true)).Id);
+
+        await WorkerAsync(newDefinition, new JobScript(), configure: j => j.AcceptsArgs(1, 2), pollingInterval: Polling);
+        await EndedAsync(waiting.Id, TimeSpan.FromSeconds(10));
+        await EventuallyAsync(async () => (await IncidentsAsync(monitor, newDefinition, openOnly: true)).Count == 0, TimeSpan.FromSeconds(10), "the incident resolves");
+        Assert.Equal(incident.Id, Assert.Single(await IncidentsAsync(monitor, newDefinition)).Id);
+    }
+
     /// <summary>Requests a job of <paramref name="subject"/> and waits until it ends as <paramref name="expected"/>.</summary>
     protected async Task<JobId> EndAsync(TestProcess process, JobDefinition<TestArgs> definition, Subject subject, string args, JobOutcome expected)
     {

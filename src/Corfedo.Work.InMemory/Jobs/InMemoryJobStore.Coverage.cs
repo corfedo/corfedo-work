@@ -29,20 +29,23 @@ internal sealed partial class InMemoryJobStore
         [.. application.Processes.Committed.Values.Where(p => p.LiveAt(now)).SelectMany(p => p.Definitions)];
 
     /// <summary>
-    /// For every stored definition that is not paused: an argument version has due work when an unheld job of it with
-    /// no copied pause is due now or one of its leases expired, and its subject has no stored pause. A definition no live
+    /// As of the clock less the grace, for every stored definition that is not paused, with the processes live at some
+    /// instant since then: an argument version has due work when an unheld job of it with no copied pause is due or one
+    /// of its leases expired, and its subject has no stored pause. A definition no live
     /// process runs is unserved when a version has due work, a job's calendar instant needs planning, a job whose copied
     /// pause no stored pause backs is due, or a recurrence whose subject has no stored pause needs its planner (a due
     /// next instant, of an after-completion schedule only without an outstanding occurrence, or a waiting occurrence
     /// without one). For a definition live processes run, a version with due work that no live runner accepts and that
     /// is not below the stored minimum is unserved.
     /// </summary>
-    public ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken)
+    public ValueTask<UnservedReport> GetUnservedAsync(TimeSpan grace, CancellationToken cancellationToken)
     {
-        var now = Now;
+        ArgumentOutOfRangeException.ThrowIfLessThan(grace, TimeSpan.Zero);
+        // Every instant the report compares with is the clock less the grace.
+        var now = Now - grace;
         var report = database.ReadCommitted(() =>
         {
-            var live = LiveDefinitions(now).Where(d => d.Runs).ToList();
+            var live = application.Processes.Committed.Values.Where(p => p.LiveSince(now)).SelectMany(p => p.Definitions).Where(d => d.Runs).ToList();
             var pauses = application.Pauses.Committed;
             bool StoredPause(Record r) => r.PauseKey() is { } key && pauses.ContainsKey(key);
             var jobs = JobRows.Committed.Values.ToLookup(r => r.Text(JobColumns.Definition), StringComparer.Ordinal);

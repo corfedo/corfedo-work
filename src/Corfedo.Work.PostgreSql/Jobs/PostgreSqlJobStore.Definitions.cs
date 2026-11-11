@@ -14,13 +14,16 @@ internal sealed partial class PostgreSqlJobStore
 
     /// <summary>
     /// Takes the definition fence exclusively, so claims in flight finish first and claims that start meanwhile queue
-    /// behind it, then stores the definition if its revision is newer than the stored one, with the host's retention
-    /// durations where its policy leaves them unset. The pause state is kept.
+    /// behind it, then stores the definition if its revision is newer than the stored one, with the policy
+    /// resolved with the host's defaults. The pause state is kept.
     /// </summary>
-    public async ValueTask<StoredJobDefinition> StoreDefinitionAsync(JobDefinition definition, JobRetention retention, CancellationToken cancellationToken)
+    public async ValueTask<StoredJobDefinition> StoreDefinitionAsync(JobDefinition definition, JobPolicy policy, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        ArgumentNullException.ThrowIfNull(retention);
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(policy.RunHistory, nameof(policy));
+        ArgumentNullException.ThrowIfNull(policy.Retention, nameof(policy));
+        ArgumentNullException.ThrowIfNull(policy.RunHistoryRetention, nameof(policy));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, cancellationToken);
         StoredJobDefinition? stored;
@@ -45,11 +48,6 @@ internal sealed partial class PostgreSqlJobStore
             }
             return stored;
         }
-        var policy = definition.Policy with
-        {
-            Retention = definition.Policy.Retention ?? retention.Jobs,
-            RunHistoryRetention = definition.Policy.RunHistoryRetention ?? retention.RunHistory,
-        };
         var write = stored is null
             ? $"INSERT INTO {definitions} ({DefinitionColumns}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false, $16, $17, $18, $19, $20, $21, $22, $23)"
             : $"UPDATE {definitions} SET revision = $2, digest = $3, subject_kind = $4, attempts = $5, backoff_kind = $6, backoff_initial = $7, "
@@ -73,7 +71,7 @@ internal sealed partial class PostgreSqlJobStore
             command.Parameters.Add(Bool(policy.RetryTimeouts));
             command.Parameters.Add(Nullable(policy.Late.Grace, NpgsqlDbType.Interval));
             command.Parameters.Add(Int32(policy.MinimumArgsVersion));
-            command.Parameters.Add(Bool(policy.RunHistory));
+            command.Parameters.Add(Bool(policy.RunHistory.Value));
             command.Parameters.Add(Interval(policy.Retention.Value));
             command.Parameters.Add(Interval(policy.RunHistoryRetention.Value));
             var deadline = policy.Expect?.Deadline;

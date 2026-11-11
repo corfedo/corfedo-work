@@ -14,12 +14,15 @@ internal sealed partial class SqlServerJobStore
     /// <summary>
     /// Takes the definition fence exclusively, so claims in flight finish first and claims that start meanwhile queue
     /// behind it, locks the stored row, then stores the definition if its revision is newer than the stored one, with
-    /// the host's retention durations where its policy leaves them unset. The pause state is kept.
+    /// the policy resolved with the host's defaults. The pause state is kept.
     /// </summary>
-    public async ValueTask<StoredJobDefinition> StoreDefinitionAsync(JobDefinition definition, JobRetention retention, CancellationToken cancellationToken)
+    public async ValueTask<StoredJobDefinition> StoreDefinitionAsync(JobDefinition definition, JobPolicy policy, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(definition);
-        ArgumentNullException.ThrowIfNull(retention);
+        ArgumentNullException.ThrowIfNull(policy);
+        ArgumentNullException.ThrowIfNull(policy.RunHistory, nameof(policy));
+        ArgumentNullException.ThrowIfNull(policy.Retention, nameof(policy));
+        ArgumentNullException.ThrowIfNull(policy.RunHistoryRetention, nameof(policy));
         return await InTransactionAsync(async work =>
         {
             StoredJobDefinition? stored;
@@ -45,11 +48,6 @@ internal sealed partial class SqlServerJobStore
                 }
                 return stored;
             }
-            var policy = definition.Policy with
-            {
-                Retention = definition.Policy.Retention ?? retention.Jobs,
-                RunHistoryRetention = definition.Policy.RunHistoryRetention ?? retention.RunHistory,
-            };
             var write = stored is null
                 ? $"INSERT INTO {definitions} ({DefinitionColumns}) VALUES (@key, @revision, @digest, @subject, @attempts, @backoff_kind, @backoff_initial, @backoff_maximum, "
                     + "@partition_limit, @definition_limit, @priority, @timeout, @retry_timeouts, @late_grace, @minimum_args, 0, @run_history, @job_retention, @run_history_retention, "
@@ -77,7 +75,7 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Bool("@retry_timeouts", policy.RetryTimeouts),
                 Tsql.Ticks("@late_grace", policy.Late.Grace),
                 Tsql.Int32("@minimum_args", policy.MinimumArgsVersion),
-                Tsql.Bool("@run_history", policy.RunHistory),
+                Tsql.Bool("@run_history", policy.RunHistory.Value),
                 Tsql.Ticks("@job_retention", policy.Retention.Value),
                 Tsql.Ticks("@run_history_retention", policy.RunHistoryRetention.Value),
                 new SqlParameter("@expect_time", SqlDbType.Time) { Scale = 7, Value = deadline is { } d ? d.Time.ToTimeSpan() : DBNull.Value },

@@ -24,6 +24,9 @@ internal sealed partial class SqlServerJobStore
     /// <summary>Live processes <c>p</c> at <paramref name="now"/>.</summary>
     private static string Live(string now) => $"p.stopped_at IS NULL AND {Tsql.AddTicks("p.heartbeat_at", "p.stale_after")} > {now}";
 
+    /// <summary>Processes <c>p</c> live at some instant from <paramref name="at"/> on: not stopped before it, with a heartbeat not stale at it.</summary>
+    private static string LiveSince(string at) => $"(p.stopped_at IS NULL OR p.stopped_at > {at}) AND {Tsql.AddTicks("p.heartbeat_at", "p.stale_after")} > {at}";
+
     /// <summary>
     /// Records the process's definitions with their accepted argument versions in one transaction; definitions already
     /// recorded for the owner are left as they are.
@@ -84,18 +87,21 @@ internal sealed partial class SqlServerJobStore
     private string Unpaused(string alias) =>
         $"NOT EXISTS (SELECT 1 FROM {pauses} AS s WHERE s.[definition] = {alias}.[definition] AND s.subject_kind = {alias}.subject_kind AND s.subject_id = {alias}.subject_id)";
 
-    /// <summary>A live process runs definition <paramref name="definition"/>, accepting <paramref name="version"/> when given.</summary>
+    /// <summary>
+    /// A process live at some instant since <c>@now</c> runs definition <paramref name="definition"/>, accepting
+    /// <paramref name="version"/> when given.
+    /// </summary>
     private string LiveRunner(string definition, string? version = null) =>
         $"EXISTS (SELECT 1 FROM {ProcessDefinitions} AS pd JOIN {Processes} AS p ON p.owner = pd.owner "
         + (version is null ? "" : $"JOIN {ProcessDefinitionArgs} AS a ON a.owner = pd.owner AND a.[definition] = pd.[definition] AND a.args_version = {version} ")
-        + $"WHERE pd.[definition] = {definition} AND pd.runs = 1 AND {Live("@now")})";
+        + $"WHERE pd.[definition] = {definition} AND pd.runs = 1 AND {LiveSince("@now")})";
 
     /// <summary>
-    /// One batch with one clock reading. The argument versions of unheld jobs of every unpaused definition are found by a
+    /// One batch with one clock reading, less the grace, as <c>@now</c>. The argument versions of unheld jobs of every unpaused definition are found by a
     /// loose scan of <c>jobs_due</c>, one <c>TOP (1)</c> index probe per version and definition (a correlated
     /// <c>MIN</c> aggregates the whole index instead, looking up every row to recheck its filter), and joined with the
     /// versions of expired leases from <c>jobs_expiry</c>; a version has due work when a probe of that version finds an unheld job
-    /// due now or an expired lease whose subject is not paused. A definition no live process runs is unserved when one
+    /// due by <c>@now</c> or a lease expired by then whose subject is not paused. A definition no live process runs is unserved when one
     /// of its versions has due work, a job's calendar instant needs planning, or a recurrence needs its planner (a due
     /// next instant, of an after-completion schedule only without an outstanding occurrence, or a waiting occurrence
     /// without one). Only when none holds does it look at its flagged due jobs and recurrences: their subjects, read in
@@ -104,8 +110,9 @@ internal sealed partial class SqlServerJobStore
     /// definition live processes run, a version with due work that no live runner accepts and that is not below the
     /// stored minimum is unserved; a flag left stale on its jobs is repaired by the runners' maintenance.
     /// </summary>
-    public async ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken)
+    public async ValueTask<UnservedReport> GetUnservedAsync(TimeSpan grace, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(grace, TimeSpan.Zero);
         const string unheld = "j.lease_expires_at IS NULL AND j.due_at IS NOT NULL AND j.paused = 0";
         var outstanding = $"EXISTS (SELECT 1 FROM {Jobs} AS o WHERE o.recurrence_id IS NOT NULL AND o.recurrence_id = c.id AND o.state = 0 AND o.skip_pending = 0)";
         var recurrenceDue = $"((c.next_at <= @now AND (c.interval_kind IS NULL OR c.interval_kind <> {(short)Interval.AfterCompletion} OR NOT {outstanding})) "
@@ -114,7 +121,7 @@ internal sealed partial class SqlServerJobStore
         const string DueVersions = $"OPENJSON(@due) WITH ([definition] nvarchar(200) COLLATE {Tsql.Binary} '$.definition', version int '$.version')";
         await using var connection = await Tsql.OpenAsync(connectionString, cancellationToken);
         await using var command = Tsql.Command(connection, null, $"""
-            DECLARE @now datetime2(7) = SYSUTCDATETIME(), @versions nvarchar(max) = N'', @level nvarchar(max);
+            DECLARE @now datetime2(7) = {Tsql.AddTicks("SYSUTCDATETIME()", "-@grace")}, @versions nvarchar(max) = N'', @level nvarchar(max);
             SET @level = (SELECT d.[key] AS [definition], m.version FROM {definitions} AS d
                 CROSS APPLY (SELECT TOP (1) j.args_version AS version FROM {Jobs} AS j WITH (INDEX(jobs_due)) WHERE j.[definition] = d.[key] AND {unheld} ORDER BY j.args_version) AS m
                 WHERE d.paused = 0 AND m.version IS NOT NULL FOR JSON PATH);
@@ -149,7 +156,8 @@ internal sealed partial class SqlServerJobStore
             SELECT due.[definition], due.version FROM {DueVersions} AS due JOIN {definitions} AS d ON d.[key] = due.[definition]
             WHERE due.version >= d.minimum_args_version AND {LiveRunner("due.[definition]")} AND NOT {LiveRunner("due.[definition]", "due.version")}
             ORDER BY 1, 2;
-            """);
+            """,
+            Tsql.Ticks("@grace", grace));
         var unrun = new List<UnservedDefinition>();
         var versions = new List<UnservedVersion>();
         await using var reader = await command.ReaderAsync(cancellationToken);

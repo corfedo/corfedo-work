@@ -16,8 +16,10 @@ services.AddWork(work => work
     .AddRecurringChain(DailyInvoices, new DailyArgs(), Schedule.Cron("0 7 * * *", "UTC"), chain => chain
         .StartWith(FetchOrders, new FetchOrdersArgs()).Then(GenerateInvoices, new InvoiceArgs()))   // K5
     .Retention(jobs: TimeSpan.FromDays(7), runHistory: TimeSpan.FromDays(30), incidents: TimeSpan.FromDays(90))   // J12 defaults
+    .RunHistory()                                            // D7 default for definitions that leave it unset
     .AddRetention()                                          // runs the retention job here
     .AddMonitoring()                                         // checks expectations of all definitions (M1)
+    .UnservedGrace(TimeSpan.FromMinutes(5))                  // R12 incidents for work unserved that long
     .OnIncident<InvoiceIncidents>()                          // delivers incidents here (M2)
     .Telemetry(telemetry => telemetry.Partition())           // R14 opt-ins
     .AddPool("convergence", capacity: 8)
@@ -32,12 +34,15 @@ schedules name with `Within`; `CalendarCoverage(margin)` sets how far ahead of n
 `AddRecurringChain(definition, args, schedule, chain)` declares a [recurring chain](chains.md#recurring-chains) and runs
 its occurrences; the definitions of its steps are registered with `AddJob` or `AddJobDefinition`.
 `AddMonitoring()` runs the [monitoring loop](monitoring.md#monitoring-loop), which checks deadlines, recurring-chain
-occurrences and date-set coverage for every definition in the store (attempts held by a lease are checked by their
-holders); `OnIncident<T>()` delivers [incidents](monitoring.md#delivery) in this process; `Telemetry(...)` sets what [telemetry](monitoring.md#data-in-telemetry-r14) may carry beyond the
+occurrences, date-set coverage and [unserved work](monitoring.md#unserved-work) for every definition in the store
+(attempts held by a lease are checked by their holders), and `UnservedGrace(grace)` sets how long work may wait
+unserved before it opens an incident; `OnIncident<T>()` delivers [incidents](monitoring.md#delivery) in this process; `Telemetry(...)` sets what [telemetry](monitoring.md#data-in-telemetry-r14) may carry beyond the
 defaults. `AddRetention()` registers the framework's retention job (`WorkRetention.Definition`), a code-defined
 recurrence every hour with its handler; `Retention(jobs, runHistory, incidents)` sets the job and run-history durations
 stored for definitions whose policy leaves them unset, with or without `AddRetention()`, and with its optional third
-argument how long the retention job keeps resolved incidents, 90 days by default; see [retention](jobs.md#retention). At least one worker deployment per shared store and application adds `AddRetention()`,
+argument how long the retention job keeps resolved incidents, 90 days by default; see [retention](jobs.md#retention).
+`RunHistory(record)` sets whether definitions whose policy leaves `RunHistory` unset record their attempts, off by
+default, stored with the revision like the retention durations. At least one worker deployment per shared store and application adds `AddRetention()`,
 otherwise nothing is deleted; several replicas may, coordinating through the job's lease. Adding it twice is a startup
 error, as for any definition registered twice. A process that only requests work registers definitions without
 handlers and leaves retention out; it has no dispatcher, and unless it describes itself with `Process(...)`, declares a
@@ -103,7 +108,10 @@ with the same owner id.
   recurrence its planner would act on now; paused definitions and subjects, by the stored pauses, and versions below
   `MinimumArgsVersion` are left out. A copied pause flag that a request racing a resume left set does not hide the work
   of a definition no live process runs; for a definition a live process runs, that process's maintenance repairs the
-  flag within a polling interval.
+  flag within a polling interval. `GetUnservedAsync(grace)` reports only work that has waited at least `grace`: due
+  work, expired leases and planner instants as of `grace` before the store's clock, against the processes that were
+  live at any instant since then, so a process that stopped or went stale within the grace still counts. Monitoring
+  processes open an [incident](monitoring.md#unserved-work) from it.
 - `GetUndeclaredRecurrencesAsync`: code-defined recurrences that no live process declares, whatever revision it
   registers (J10).
 - `GetOutdatedProcessesAsync`: live processes whose revision of a definition is older than the stored one (R18).

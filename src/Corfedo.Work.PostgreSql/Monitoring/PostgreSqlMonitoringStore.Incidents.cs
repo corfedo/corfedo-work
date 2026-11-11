@@ -184,6 +184,41 @@ internal sealed partial class PostgreSqlMonitoringStore
         return changes;
     }
 
+    public async ValueTask<IncidentChanges> SyncUnservedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        const int Unserved = (int)WorkIncidentKind.Unserved;
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, cancellationToken);
+        var opened = new List<WorkIncident>();
+        var resolved = new List<WorkIncident>();
+        await using (var command = new NpgsqlCommand(
+            $"WITH resolved AS (UPDATE {incidents} AS i SET resolved_at = clock_timestamp(), due_at = coalesce(i.due_at, clock_timestamp()) "
+            + $"WHERE i.kind = {Unserved} AND i.resolved_at IS NULL AND i.definition <> ALL ($1) RETURNING {IncidentColumns}), "
+            + $"opened AS (INSERT INTO {incidents} AS i (id, kind, definition, opened_at, due_at) "
+            + $"SELECT gen_random_uuid(), {Unserved}, d, clock_timestamp(), clock_timestamp() FROM unnest($1::text[]) AS d "
+            + $"ON CONFLICT (definition, subject_kind, subject_id, kind, date_set) WHERE resolved_at IS NULL DO NOTHING RETURNING {IncidentColumns}) "
+            + "SELECT true, * FROM opened UNION ALL SELECT false, * FROM resolved",
+            connection,
+            transaction))
+        {
+            command.Parameters.Add(Texts(definitions));
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                (reader.GetBoolean(0) ? opened : resolved).Add(ReadIncident(reader, 1));
+            }
+        }
+        var changes = new IncidentChanges(opened, resolved);
+        if (changes.Any)
+        {
+            await NotifyAsync(connection, transaction, cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        WorkTelemetry.Count(changes);
+        return changes;
+    }
+
     /// <summary>
     /// Deletes resolved incidents by their resolution time, expectation rows without a deadline or failures whose key
     /// has no open incident, and queued key changes of definitions that expect no completions, which only the

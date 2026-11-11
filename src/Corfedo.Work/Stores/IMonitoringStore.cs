@@ -2,8 +2,8 @@ namespace Corfedo.Work;
 
 /// <summary>
 /// Expectation state and incidents of one store. The transaction that ends a job of a definition with expectations
-/// records its failures, resets and resolutions (see <see cref="IJobStore"/>); the monitoring loop uses these
-/// operations for deadlines, running attempts and date sets. Each runs in the store's own short transactions, locks
+/// records its failures, resets and resolutions of the key's expectation incidents (see <see cref="IJobStore"/>); the
+/// monitoring loop uses these operations for deadlines, running attempts, date sets and unserved work. Each runs in the store's own short transactions, locks
 /// rows without waiting and leaves locked ones to a later call.
 /// </summary>
 public interface IMonitoringStore
@@ -97,6 +97,12 @@ public interface IMonitoringStore
     /// <see cref="WorkIncidentKind.DateSetWorkWaiting"/> for <paramref name="waiting"/>.
     /// </summary>
     ValueTask<IncidentChanges> SyncDateSetsAsync(IReadOnlyCollection<string> runningOut, IReadOnlyCollection<string> waiting, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Opens a <see cref="WorkIncidentKind.Unserved"/> incident for each of <paramref name="definitions"/> without an open
+    /// one and resolves the open ones of every other definition.
+    /// </summary>
+    ValueTask<IncidentChanges> SyncUnservedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken);
 
     /// <summary>
     /// Incidents newest first by opening time, at most <paramref name="limit"/>, continuing after <paramref name="after"/>;

@@ -132,6 +132,28 @@ internal sealed partial class InMemoryMonitoringStore
         return changes;
     }
 
+    public async ValueTask<IncidentChanges> SyncUnservedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        using var work = await database.BeginAsync(cancellationToken);
+        var now = Now;
+        var want = definitions.ToHashSet(StringComparer.Ordinal);
+        var resolved = AllIncidents(work)
+            .Where(i => i.Open() && i.Int32(IncidentColumns.Kind) == (int)WorkIncidentKind.Unserved && !want.Contains((string)i[IncidentColumns.Definition]!))
+            .ToList()
+            .Select(i => Resolve(work, i, now))
+            .ToList();
+        var opened = want.Select(d => Insert(work, WorkIncidentKind.Unserved, d, null, null, null, now)).OfType<WorkIncident>().ToList();
+        var changes = new IncidentChanges(opened, resolved);
+        if (changes.Any)
+        {
+            Notify(work);
+        }
+        work.Commit();
+        WorkTelemetry.Count(changes);
+        return changes;
+    }
+
     /// <summary>
     /// Deletes resolved incidents by their resolution time, expectation rows without a deadline or failures whose key
     /// has no open incident, and queued key changes of stored definitions that expect no completions, which only the

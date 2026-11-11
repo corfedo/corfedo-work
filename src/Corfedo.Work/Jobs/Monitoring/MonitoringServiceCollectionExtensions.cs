@@ -6,7 +6,8 @@ public static class MonitoringServiceCollectionExtensions
 {
     /// <summary>
     /// Runs the monitoring loop in this process (M1, M2): it checks the deadlines, running attempts and date-set
-    /// coverage of every definition in the store, and the process registry records that the process monitors. At least
+    /// coverage of every definition in the store and reports unserved work as incidents, and the process registry
+    /// records that the process monitors. At least
     /// one deployment per store adds it; several replicas may. Adding it twice adds one loop.
     /// </summary>
     public static IServiceCollection AddMonitoring(this IServiceCollection services)
@@ -25,3 +26,9 @@ public static class MonitoringServiceCollectionExtensions
 
 /// <summary>Marks a process that runs the monitoring loop.</summary>
 internal sealed class MonitoringRegistration;
+
+/// <summary>How long due work may go without a process able to run it before monitoring reports it as an incident.</summary>
+internal sealed record UnservedOptions(TimeSpan Grace)
+{
+    public static UnservedOptions Default { get; } = new(TimeSpan.FromMinutes(5));
+}

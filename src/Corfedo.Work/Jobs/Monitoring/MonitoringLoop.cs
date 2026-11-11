@@ -1,4 +1,5 @@
 using System.Diagnostics.Metrics;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Corfedo.Work;
@@ -10,7 +11,8 @@ namespace Corfedo.Work;
 /// the definition's revision or pause differs from the ones it was last reconciled with, moves deadlines a date set
 /// held, processes passed deadlines and checks recurring-chain occurrences against the running limit, since their
 /// chains hold their attempts without a lease holder to time them; then it opens and resolves the date-set incidents
-/// from the coverage report. A reconciliation resolves the incidents of removed expectations, clears or starts windows
+/// from the coverage report, and the <see cref="WorkIncidentKind.Unserved"/> incidents from the unserved report with
+/// the host's grace, one per definition with due work no process able to run it served within the grace. A reconciliation resolves the incidents of removed expectations, clears or starts windows
 /// and moves deadlines an older revision computed, and is recorded only once nothing is left, so rows it skipped are
 /// taken up by a later pass of any process. It wakes at the next deadline, when the next occurrence reaches its limit,
 /// on a signal that expected keys changed, so a removed or paused key's incident resolves and a new key is seen at once,
@@ -26,6 +28,7 @@ internal sealed partial class MonitoringLoop(CalendarOperations calendars) : IWo
     private readonly SemaphoreSlim wake = new(0, 1);
     private Task loop = Task.CompletedTask;
     private WorkTelemetryOptions telemetry = WorkTelemetryOptions.Default;
+    private TimeSpan unservedGrace = UnservedOptions.Default.Grace;
     private MonitoringGauges? gauges;
     private IDisposable? openIncidents;
     private IDisposable? dueAge;
@@ -34,6 +37,7 @@ internal sealed partial class MonitoringLoop(CalendarOperations calendars) : IWo
     public void Start(LeaseDispatchContext context)
     {
         telemetry = WorkTelemetryOptions.From(context.Services);
+        unservedGrace = (context.Services.GetService<UnservedOptions>() ?? UnservedOptions.Default).Grace;
         openIncidents = WorkTelemetry.OpenIncidentReadings.Register(ReadOpenIncidents);
         dueAge = WorkTelemetry.DueAgeReadings.Register(ReadDueAge);
         subscription = context.Signals?.Subscribe(WorkTopics.Monitor, this);
@@ -144,6 +148,10 @@ internal sealed partial class MonitoringLoop(CalendarOperations calendars) : IWo
         await monitoring.SyncDateSetsAsync(
             [.. coverage.Where(c => c.State is DateSetCoverageState.RunningOut or DateSetCoverageState.WorkWaiting).Select(c => c.Name)],
             [.. coverage.Where(c => c.State == DateSetCoverageState.WorkWaiting).Select(c => c.Name)],
+            cancellationToken);
+        var unserved = await store.Jobs.GetUnservedAsync(unservedGrace, cancellationToken);
+        await monitoring.SyncUnservedAsync(
+            [.. unserved.Definitions.Select(d => d.Definition).Concat(unserved.Versions.Select(v => v.Definition)).Distinct(StringComparer.Ordinal)],
             cancellationToken);
         return wake - stored.Now;
     }

@@ -102,6 +102,8 @@ how: merge, create only if absent, or always create a new job.
 - **Chains.** Steps, parallel groups and fan-out with fan-in: see [chains](../design/chains.md).
 - **Operator actions.** Pause, resume, cancel, run now and rerun, per definition or per subject.
 - **Expectations.** "Completes by 06:00 on business days" opens an incident when it is missed: see
-  [monitoring](../design/monitoring.md).
+  [monitoring](../design/monitoring.md). Due work that no process can run opens an incident without any expectation.
+- **Run history.** `RunHistory = true` in a definition's policy, or `work.RunHistory()` for every definition that leaves
+  it unset, records each attempt with its outcome and reason code; `jobs.GetRunsAsync` reads it.
 
 The full semantics are in the [jobs design](../design/jobs.md).

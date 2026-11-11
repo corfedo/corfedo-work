@@ -78,6 +78,12 @@ public sealed record CompletionDeadline(TimeOnly Time, string TimeZone, string? 
 /// <summary>The kinds of key incidents an expectation covers.</summary>
 internal static class ExpectationKinds
 {
+    /// <summary>The incident kinds of a key's expectations, as a SQL list; a key's success resolves only these.</summary>
+    public static readonly string Sql = string.Join(", ", (int)WorkIncidentKind.CompletesBy, (int)WorkIncidentKind.RunsAtMost, (int)WorkIncidentKind.FailsAtMostInARow);
+
+    /// <summary>Whether <paramref name="kind"/> is the kind of a key's expectation; a key's success resolves only these.</summary>
+    public static bool Of(WorkIncidentKind kind) => kind is WorkIncidentKind.CompletesBy or WorkIncidentKind.RunsAtMost or WorkIncidentKind.FailsAtMostInARow;
+
     /// <summary>The kinds of key incidents <paramref name="expectation"/> does not expect.</summary>
     public static WorkIncidentKind[] Unexpected(JobExpectation? expectation) =>
     [

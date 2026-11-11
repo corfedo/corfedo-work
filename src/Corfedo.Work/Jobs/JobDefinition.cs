@@ -184,7 +184,9 @@ public abstract class JobDefinition
             policy.RetryTimeouts ? "1" : "0",
             policy.Late.Grace?.Ticks.ToString(CultureInfo.InvariantCulture) ?? "",
             policy.MinimumArgsVersion.ToString(CultureInfo.InvariantCulture),
-            policy.RunHistory ? "1" : "0",
+            // Unset and false share the digest that every definition had before run history took a host default, so
+            // upgrading keeps stored revisions; a declared choice between them applies from the next revision.
+            policy.RunHistory == true ? "1" : "0",
             policy.Retention?.Ticks.ToString(CultureInfo.InvariantCulture) ?? "",
             policy.RunHistoryRetention?.Ticks.ToString(CultureInfo.InvariantCulture) ?? "",
         ];

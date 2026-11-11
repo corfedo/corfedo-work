@@ -24,6 +24,14 @@ internal sealed partial class PostgreSqlJobStore
         $"SELECT pd.definition, pd.accepted_args, pd.runs, pd.declares_recurrence, pd.revision, pd.owner FROM {ProcessDefinitions} AS pd "
         + $"JOIN {Processes} AS p ON p.owner = pd.owner WHERE p.stopped_at IS NULL AND p.heartbeat_at + p.stale_after > now()";
 
+    /// <summary>
+    /// The definitions, as in <see cref="LiveDefinitions"/>, of processes live at some instant from <paramref name="at"/>
+    /// on: not stopped before it, and with a heartbeat that was not stale at it.
+    /// </summary>
+    private string LiveSince(string at) =>
+        $"SELECT pd.definition, pd.accepted_args, pd.runs, pd.declares_recurrence, pd.revision, pd.owner FROM {ProcessDefinitions} AS pd "
+        + $"JOIN {Processes} AS p ON p.owner = pd.owner WHERE (p.stopped_at IS NULL OR p.stopped_at > {at}) AND p.heartbeat_at + p.stale_after > {at}";
+
     /// <summary>Whether no stored pause holds the subject of row <paramref name="alias"/>; the copied flags may be stale while no process repairs them.</summary>
     private string Unpaused(string alias) =>
         $"NOT EXISTS (SELECT 1 FROM {pauses} AS s WHERE s.definition = {alias}.definition AND s.subject_kind = {alias}.subject_kind AND s.subject_id = {alias}.subject_id)";
@@ -53,10 +61,10 @@ internal sealed partial class PostgreSqlJobStore
     }
 
     /// <summary>
-    /// One statement. The argument versions of unheld jobs of every unpaused definition are found by a loose scan of
+    /// One statement, as of its now() less the grace. The argument versions of unheld jobs of every unpaused definition are found by a loose scan of
     /// <c>jobs_due</c>, one index probe per version, and joined with the versions of expired leases from
-    /// <c>jobs_expiry</c>; a version has due work when a probe of that version finds an unheld job due now or an expired
-    /// lease whose subject is not paused. A definition no live process runs is unserved when one of its versions has due
+    /// <c>jobs_expiry</c>; a version has due work when a probe of that version finds an unheld job due by then or a lease
+    /// expired by then whose subject is not paused, and a live process is one live at some instant since then. A definition no live process runs is unserved when one of its versions has due
     /// work, a job's calendar instant needs planning, or a recurrence needs its planner (a due next instant, of an
     /// after-completion schedule only without an outstanding occurrence, or a waiting occurrence without one). Only when
     /// none holds does it look at its flagged due jobs and recurrences: their subjects, read in subject order from
@@ -65,8 +73,11 @@ internal sealed partial class PostgreSqlJobStore
     /// runner accepts and that is not below the stored minimum is unserved; a flag left stale on its jobs is repaired by
     /// the runners' maintenance.
     /// </summary>
-    public async ValueTask<UnservedReport> GetUnservedAsync(CancellationToken cancellationToken)
+    public async ValueTask<UnservedReport> GetUnservedAsync(TimeSpan grace, CancellationToken cancellationToken)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(grace, TimeSpan.Zero);
+        // Every instant the report compares with is the statement's now() less the grace, $1.
+        const string At = "(now() - $1)";
         var unheld = "j.lease_expires_at IS NULL AND j.due_at IS NOT NULL AND NOT j.paused";
         var outstanding = $"EXISTS (SELECT 1 FROM {Jobs} AS o WHERE o.recurrence_id = c.id AND o.state = 0 AND NOT o.skip_pending)";
         await using var batch = dataSource.CreateBatch();
@@ -75,7 +86,7 @@ internal sealed partial class PostgreSqlJobStore
         // The batch is one implicit transaction, so the setting ends with it.
         batch.BatchCommands.Add(Command("SELECT set_config('jit', 'off', true)"));
         batch.BatchCommands.Add(Command(
-            $"WITH RECURSIVE live AS MATERIALIZED (SELECT l.definition, l.accepted_args FROM ({LiveDefinitions}) AS l WHERE l.runs), "
+            $"WITH RECURSIVE live AS MATERIALIZED (SELECT l.definition, l.accepted_args FROM ({LiveSince(At)}) AS l WHERE l.runs), "
             + "versions (definition, version) AS ("
             + $"SELECT d.key, (SELECT min(j.args_version) FROM {Jobs} AS j WHERE j.definition = d.key AND {unheld}) FROM {definitions} AS d WHERE NOT d.paused "
             + "UNION ALL "
@@ -86,27 +97,28 @@ internal sealed partial class PostgreSqlJobStore
             + "due (definition, version) AS MATERIALIZED (SELECT c.definition, c.version FROM ("
             + "SELECT v.definition, v.version FROM versions AS v WHERE v.version IS NOT NULL "
             + "UNION "
-            + $"SELECT j.definition, j.args_version FROM {definitions} AS d JOIN {Jobs} AS j ON j.definition = d.key AND j.lease_expires_at < now() WHERE NOT d.paused) AS c "
-            + $"WHERE EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.definition = c.definition AND j.args_version = c.version AND {unheld} AND j.due_at <= now() AND {Unpaused("j")}) "
-            + $"OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.definition = c.definition AND j.args_version = c.version AND j.lease_expires_at < now() AND {Unpaused("j")})) "
+            + $"SELECT j.definition, j.args_version FROM {definitions} AS d JOIN {Jobs} AS j ON j.definition = d.key AND j.lease_expires_at < {At} WHERE NOT d.paused) AS c "
+            + $"WHERE EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.definition = c.definition AND j.args_version = c.version AND {unheld} AND j.due_at <= {At} AND {Unpaused("j")}) "
+            + $"OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.definition = c.definition AND j.args_version = c.version AND j.lease_expires_at < {At} AND {Unpaused("j")})) "
             + "SELECT d.key, NULL::integer FROM unrun AS d WHERE ("
             + "EXISTS (SELECT 1 FROM due WHERE due.definition = d.key) "
-            + $"OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.definition = d.key AND j.calendar_at <= now() AND j.state = 0 AND NOT j.calendar_unavailable AND j.lease_expires_at IS NULL) "
+            + $"OR EXISTS (SELECT 1 FROM {Jobs} AS j WHERE j.definition = d.key AND j.calendar_at <= {At} AND j.state = 0 AND NOT j.calendar_unavailable AND j.lease_expires_at IS NULL) "
             + $"OR EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.definition = d.key AND NOT c.paused AND {Unpaused("c")} AND ("
-            + $"(c.next_at <= now() AND (c.interval_kind IS DISTINCT FROM {(short)Interval.AfterCompletion} OR NOT {outstanding})) "
+            + $"(c.next_at <= {At} AND (c.interval_kind IS DISTINCT FROM {(short)Interval.AfterCompletion} OR NOT {outstanding})) "
             + $"OR (c.waiting_at IS NOT NULL AND NOT {outstanding}))) "
             + $"OR EXISTS (SELECT j.subject_kind, j.subject_id FROM {Jobs} AS j WHERE j.definition = d.key AND j.paused AND j.state = 0 "
-            + $"AND j.lease_expires_at IS NULL AND j.due_at <= now() EXCEPT {PausedSubjects}) "
+            + $"AND j.lease_expires_at IS NULL AND j.due_at <= {At} EXCEPT {PausedSubjects}) "
             + $"OR EXISTS (SELECT 1 FROM (SELECT r.subject_kind, r.subject_id FROM {recurrences} AS r WHERE r.definition = d.key AND r.paused "
-            + $"AND (r.next_at <= now() OR r.waiting_at IS NOT NULL) EXCEPT {PausedSubjects}) AS x "
+            + $"AND (r.next_at <= {At} OR r.waiting_at IS NOT NULL) EXCEPT {PausedSubjects}) AS x "
             + $"JOIN {recurrences} AS c ON c.definition = d.key AND c.subject_kind = x.subject_kind AND c.subject_id = x.subject_id AND c.paused WHERE "
-            + $"(c.next_at <= now() AND (c.interval_kind IS DISTINCT FROM {(short)Interval.AfterCompletion} OR NOT {outstanding})) "
+            + $"(c.next_at <= {At} AND (c.interval_kind IS DISTINCT FROM {(short)Interval.AfterCompletion} OR NOT {outstanding})) "
             + $"OR (c.waiting_at IS NOT NULL AND NOT {outstanding}))) "
             + "UNION ALL "
             + $"SELECT due.definition, due.version FROM due JOIN {definitions} AS d ON d.key = due.definition "
             + "WHERE due.version >= d.minimum_args_version AND EXISTS (SELECT 1 FROM live WHERE live.definition = due.definition) "
             + "AND NOT EXISTS (SELECT 1 FROM live WHERE live.definition = due.definition AND due.version = ANY (live.accepted_args)) "
-            + "ORDER BY 1, 2"));
+            + "ORDER BY 1, 2",
+            Interval(grace)));
         var unrun = new List<UnservedDefinition>();
         var versions = new List<UnservedVersion>();
         await using var reader = await batch.ExecuteReaderAsync(cancellationToken);

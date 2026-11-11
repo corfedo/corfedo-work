@@ -186,6 +186,42 @@ internal sealed partial class SqlServerMonitoringStore
         return changes;
     }
 
+    public async ValueTask<IncidentChanges> SyncUnservedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        const int Unserved = (int)WorkIncidentKind.Unserved;
+        const string Want = $"OPENJSON(@definitions) WITH (value nvarchar(200) COLLATE {Tsql.Binary} '$')";
+        var changes = await InTransactionAsync(async work =>
+        {
+            await using var command = Tsql.Command(work, $"""
+                {ResolveIncidents($"i.kind = {Unserved} AND NOT EXISTS (SELECT 1 FROM {Want} AS w WHERE w.value = i.[definition])")}
+                DECLARE @want nvarchar(max) = (SELECT w.value AS [definition] FROM {Want} AS w FOR JSON PATH), @definition nvarchar(200);
+                {Tsql.EachRow("want", "@want", [("@definition", "nvarchar(200)", "definition")], $"""
+                    IF NOT EXISTS (SELECT 1 FROM {incidents} AS i WHERE i.[definition] = @definition AND i.subject_kind IS NULL AND i.subject_id IS NULL AND i.kind = {Unserved} AND i.date_set IS NULL AND i.resolved_at IS NULL)
+                    BEGIN
+                        {OpenIncident("id, kind, [definition], opened_at, due_at", $"VALUES (NEWID(), {Unserved}, @definition, SYSUTCDATETIME(), SYSUTCDATETIME())")}
+                    END
+                    """)}
+                """,
+                Tsql.Strings("@definitions", definitions));
+            List<WorkIncident> opened;
+            List<WorkIncident> resolved;
+            await using (var reader = await command.ReaderAsync(cancellationToken))
+            {
+                resolved = await ReadIncidentsAsync(reader, cancellationToken);
+                opened = await reader.NextSetAsync(cancellationToken) ? await ReadIncidentSetsAsync(reader, cancellationToken) : [];
+            }
+            var changes = new IncidentChanges(opened, resolved);
+            if (changes.Any)
+            {
+                await NotifyAsync(work.Connection, work.Transaction, cancellationToken);
+            }
+            return changes;
+        }, cancellationToken);
+        WorkTelemetry.Count(changes);
+        return changes;
+    }
+
     /// <summary>
     /// Deletes resolved incidents by their resolution time, expectation rows without a deadline or failures whose key
     /// has no open incident, and queued key changes of definitions that expect no completions, which only the

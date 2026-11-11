@@ -111,6 +111,9 @@ internal sealed record ProcessRow(
 
     /// <summary>Not stopped, with a heartbeat within its stale window.</summary>
     public bool LiveAt(DateTimeOffset now) => StateAt(now) == ProcessState.Live;
+
+    /// <summary>Live at some instant from <paramref name="at"/> on: not stopped before it, with a heartbeat not stale at it.</summary>
+    public bool LiveSince(DateTimeOffset at) => (StoppedAt is null || StoppedAt > at) && HeartbeatAt + StaleAfter > at;
 }
 
 /// <summary>
