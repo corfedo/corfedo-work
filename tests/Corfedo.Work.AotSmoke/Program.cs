@@ -229,7 +229,7 @@ if (restored != lease || hosted.Length != 1 || !ReferenceEquals(hosted[0], workH
     || jobs.Definitions.Count() != 6 || chain.Steps[0].Outcome != JobOutcome.Completed || jobs.Find(WorkRetention.Definition.Key) is null || report.Runs != 3 || !returned.HasValue || retried.HasValue || outcome.Result.Feed != "npm"
     || status.Progress?.Percent != 40 || runs.Runs[0].Outcome != JobRunOutcome.Retried || Sources.Report.Policy.RunHistory != true || host.Services.GetServices<DeclaredRecurrence>().Count() != 3 || feed.Feed != "npm" || jobs.Ended(jobs.Find(Sources.FeedSync)) is null
     || execution == ReconcileExecution.Id(Sources.Placements.Name, "tenant/7", 3, 1) || (execution.ToByteArray(bigEndian: true)[6] >> 4) != 8
-    || !parsed.Digest.AsSpan().SequenceEqual(Sources.BusinessDays.Digest) || jobs.Calendars.Count != 1 || host.Services.GetServices<IWorkBackground>().Count() != 7
+    || !parsed.Digest.AsSpan().SequenceEqual(Sources.BusinessDays.Digest) || jobs.Calendars.Count != 1 || host.Services.GetServices<IWorkBackground>().Count() != 3
     || Sources.Report.Policy.Expect?.Deadline?.Calendar != Sources.BusinessDays.Name || !partitions.SequenceEqual(["tenant"]) || !sources.Contains("Corfedo.Work") || incidentHandlers.Single() is not IncidentNotifier
     || memoryClaim?.Lease.Epoch != 1 || completed?.Outcome != JobOutcome.Completed || ranChain?.Outcome != JobOutcome.Completed || ranChain.Steps.Count != 2
     || summary?.Result.Feed != "npm" || summary.Result.Runs != 1 || archive?.Outcome != JobOutcome.Completed || unlisted?.Contains("[JsonSerializable(typeof(Unlisted))]", StringComparison.Ordinal) != true || !renewed.Valid || expired || fired != 1 || signalsHost.Services.GetServices<IHostedService>().Any()

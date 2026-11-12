@@ -8,8 +8,10 @@ namespace Corfedo.Work;
 /// Starts the process's work: prepares the framework schema, runs the layers' initializers (job definitions are
 /// stored by revision), verifies every registered source, registers the process with its job definitions when it
 /// describes itself, runs a handler, declares a recurrence, registers a calendar or monitors, recording whether it
-/// monitors, then subscribes to due and cancellation signals and starts dispatchers, expiry processors and the layers' background loops. A source with a handler runs in its pool, or in a dispatcher of its own
-/// with its capacity. With <see cref="StartMode.Manual"/> the host's start ends after verifying sources, and
+/// monitors, then subscribes to due and cancellation signals and starts the dispatch loop, the expiry loop and the layers' background
+/// loops. A source with a handler runs in its pool, or in a pool of its own with its capacity; every pool claims on the
+/// one dispatch loop and every settling source settles on the one expiry loop, so the number of loops does not grow
+/// with the number of sources. With <see cref="StartMode.Manual"/> the host's start ends after verifying sources, and
 /// <see cref="IWorkHost.StartAsync"/> does the rest. On stop, dispatchers release what they still hold; the process
 /// heartbeats until then and is marked stopped last.
 /// </summary>
@@ -23,7 +25,7 @@ internal sealed class WorkHost : IHostedService, IWorkHost
     private readonly Dictionary<string, DispatchPoolDefinition> pools;
     private readonly List<ILeaseDispatcher> started = [];
     private readonly Dictionary<string, ILeaseDispatcher> dispatchers = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, IExpiryProcessor> processors = new(StringComparer.Ordinal);
+    private readonly List<IExpiryProcessor> processors = [];
     private readonly IWorkInitializer[] initializers;
     private readonly IWorkBackground[] backgrounds;
     private readonly JobRegistry jobs;
@@ -36,6 +38,8 @@ internal sealed class WorkHost : IHostedService, IWorkHost
     private readonly List<IDisposable> subscriptions = [];
     private HostState state;
     private ProcessHeartbeat? heartbeat;
+    private PassLoop? dispatchLoop;
+    private PassLoop? expiryLoop;
 
     public WorkHost(
         IServiceProvider services,
@@ -144,17 +148,19 @@ internal sealed class WorkHost : IHostedService, IWorkHost
     }
 
     /// <summary>
-    /// Creates dispatchers and expiry processors, registers the process when it is recorded, then starts the signal
-    /// listener, dispatchers, processors and background loops.
+    /// Creates the pools on the dispatch loop and the expiry processors on the expiry loop, registers the process when it
+    /// is recorded, then starts the signal listener, both loops and the background loops.
     /// </summary>
     private async Task RunAsync(CancellationToken cancellationToken)
     {
+        dispatchLoop = new PassLoop("dispatch", context);
+        expiryLoop = new PassLoop("expiry", context);
         var pooled = new Dictionary<string, List<LeaseSourceRegistration>>(StringComparer.Ordinal);
         foreach (var registration in registry.Sources.Where(r => r.HasHandler))
         {
             if (registration.Pool is not { } pool)
             {
-                started.Add(registration.CreateDispatcher(context));
+                started.Add(new DispatchPool(registration.Name, registration.Capacity, [registration], context, dispatchLoop));
             }
             else if (!pools.ContainsKey(pool))
             {
@@ -167,7 +173,7 @@ internal sealed class WorkHost : IHostedService, IWorkHost
         }
         foreach (var (pool, members) in pooled)
         {
-            started.Add(new DispatchPool(pool, pools[pool].Capacity, members, context));
+            started.Add(new DispatchPool(pool, pools[pool].Capacity, members, context, dispatchLoop));
         }
         foreach (var dispatcher in started)
         {
@@ -180,7 +186,9 @@ internal sealed class WorkHost : IHostedService, IWorkHost
         {
             if (registration.Settles)
             {
-                processors[registration.Name] = registration.CreateExpiryProcessor(context);
+                var processor = registration.CreateExpiryProcessor(context);
+                processors.Add(processor);
+                expiryLoop.Add(processor.Source, processor.SettleAsync);
             }
         }
         var monitors = services.GetService(typeof(MonitoringRegistration)) is not null;
@@ -211,14 +219,8 @@ internal sealed class WorkHost : IHostedService, IWorkHost
             subscriptions.Add(signals.Subscribe(WorkTopics.Due, new Subscriber(Due, WakeAll)));
             subscriptions.Add(signals.Subscribe(WorkTopics.Cancel, new Subscriber(Cancel, static () => { })));
         }
-        foreach (var dispatcher in started)
-        {
-            dispatcher.Start();
-        }
-        foreach (var processor in processors.Values)
-        {
-            processor.Start();
-        }
+        dispatchLoop.Start();
+        expiryLoop.Start();
         foreach (var background in backgrounds)
         {
             background.Start(context);
@@ -269,8 +271,15 @@ internal sealed class WorkHost : IHostedService, IWorkHost
             return;
         }
         await Task.WhenAll(backgrounds.Select(b => b.StopAsync()));
+        if (dispatchLoop is not null)
+        {
+            await dispatchLoop.StopAsync();
+        }
         await Task.WhenAll(started.Select(d => d.StopAsync(cancellationToken)));
-        await Task.WhenAll(processors.Values.Select(p => p.StopAsync()));
+        if (expiryLoop is not null)
+        {
+            await expiryLoop.StopAsync();
+        }
         foreach (var subscription in subscriptions)
         {
             subscription.Dispose();

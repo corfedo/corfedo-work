@@ -40,16 +40,13 @@ public interface ILeaseDispatcher
     Task StopAsync(CancellationToken cancellationToken);
 }
 
-/// <summary>Settles expired leases of one source.</summary>
+/// <summary>Settles expired leases of one source, as a pass of the process's expiry loop.</summary>
 public interface IExpiryProcessor
 {
     string Source { get; }
 
-    void Start();
-
-    void Wake();
-
-    Task StopAsync();
+    /// <summary>Settles what has expired; returns how long the source waits before its next pass.</summary>
+    Task<TimeSpan> SettleAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>The runs of one source in a dispatcher: claims on request, runs the claims, and stops them on shutdown.</summary>

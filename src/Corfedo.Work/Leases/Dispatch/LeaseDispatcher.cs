@@ -309,10 +309,10 @@ internal sealed partial class LeaseDispatcher<TKey> : IDispatchLane
 }
 
 /// <summary>
-/// Settles expired leases of one source at the earliest known expiry and at least every <see cref="MaximumWait"/>. A
-/// lease can become settleable without a signal or a known deadline: its claim may commit after the lease expired, or
-/// its record may stay locked past expiry. The short wait bounds how long such a lease waits once it is committed,
-/// expired and unlocked.
+/// Settles expired leases of one source at the earliest known expiry and at least every <see cref="MaximumWait"/>, as
+/// a pass of the process's expiry loop. A lease can become settleable without a signal or a known deadline: its claim
+/// may commit after the lease expired, or its record may stay locked past expiry. The short wait bounds how long such a
+/// lease waits once it is committed, expired and unlocked.
 /// </summary>
 internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
     where TKey : notnull
@@ -324,10 +324,7 @@ internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
     private readonly LeaseCallbacks<TKey> callbacks;
     private readonly LeaseDispatchContext context;
     private readonly ILogger logger;
-    private readonly WakeSignal wake = new();
-    private readonly CancellationTokenSource stopping = new();
     private readonly WorkTelemetryOptions telemetry;
-    private Task loop = Task.CompletedTask;
 
     public ExpiryProcessor(LeaseSourceRegistration<TKey> registration, LeaseCallbacks<TKey> callbacks, LeaseDispatchContext context)
     {
@@ -340,53 +337,25 @@ internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
 
     public string Source => registration.Name;
 
-    public void Start() => loop = Task.Run(LoopAsync);
-
-    public void Wake() => wake.Set();
-
-    private async Task LoopAsync()
+    public async Task<TimeSpan> SettleAsync(CancellationToken cancellationToken)
     {
-        var token = stopping.Token;
         var store = context.Store.Leases;
-        while (!token.IsCancellationRequested)
+        try
         {
-            TimeSpan delay;
-            try
+            var settled = await store.SettleExpiredAsync(registration.Source, callbacks, BatchSize, cancellationToken);
+            if (settled == BatchSize)
             {
-                var settled = await store.SettleExpiredAsync(registration.Source, callbacks, BatchSize, token);
-                if (settled == BatchSize)
-                {
-                    continue;
-                }
-                var next = await store.NextExpiryAsync(registration.Source, token);
-                // A result at or before now is an expired lease left unsettled, for example because its record is locked.
-                delay = next is { } due && due > TimeSpan.Zero && due < MaximumWait ? due : MaximumWait;
+                return TimeSpan.Zero;
             }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception exception)
-            {
-                LogSettlementFailed(logger, telemetry.Logged(exception), Source, telemetry.Describe(exception));
-                delay = context.PollingInterval;
-            }
-            try
-            {
-                await wake.WaitAsync(delay, context.Time, token);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
+            var next = await store.NextExpiryAsync(registration.Source, cancellationToken);
+            // A result at or before now is an expired lease left unsettled, for example because its record is locked.
+            return next is { } due && due > TimeSpan.Zero && due < MaximumWait ? due : MaximumWait;
         }
-    }
-
-    public async Task StopAsync()
-    {
-        stopping.Cancel();
-        await loop.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-        stopping.Dispose();
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            LogSettlementFailed(logger, telemetry.Logged(exception), Source, telemetry.Describe(exception));
+            return context.PollingInterval;
+        }
     }
 
     [LoggerMessage(EventId = 14, EventName = "lease.settlement_pass_failed", Level = LogLevel.Error, Message = "Settling expired leases of {Source} failed: {Error}")]

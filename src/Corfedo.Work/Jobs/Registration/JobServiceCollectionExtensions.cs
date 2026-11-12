@@ -199,7 +199,8 @@ public static class JobServiceCollectionExtensions
         };
         registration.Leases = leases;
         services.AddSingleton<LeaseSourceRegistration>(leases);
-        services.AddSingleton<IWorkBackground>(services => new JobMaintenance(registration, services.GetRequiredService<JobRegistry>()));
+        services.AddSingleton(services => new JobMaintenance(registration, services.GetRequiredService<JobRegistry>()));
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IWorkBackground, JobMaintenanceLoop>(static services => new JobMaintenanceLoop(services.GetServices<JobMaintenance>())));
         return services.AddJobRegistration(registration);
     }
 

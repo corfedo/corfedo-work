@@ -15,18 +15,26 @@ public sealed class DispatchPool : ILeaseDispatcher
     private readonly int capacity;
     private readonly LeaseDispatchContext context;
     private readonly IDispatchLane[] lanes;
-    private readonly WakeSignal wake = new();
+    private readonly PassLoop loop;
+    private readonly bool ownsLoop;
+    private readonly PassLoop.Entry entry;
     private readonly CancellationTokenSource stopping = new();
     private readonly Dictionary<int, int> turns = [];
-    private Task loop = Task.CompletedTask;
 
-    public DispatchPool(string name, int capacity, IEnumerable<LeaseSourceRegistration> registrations, LeaseDispatchContext context)
+    /// <summary>
+    /// A pool whose passes run on <paramref name="loop"/>, the process's dispatch loop, which the host starts and stops;
+    /// without one the pool runs on a loop of its own.
+    /// </summary>
+    internal DispatchPool(string name, int capacity, IEnumerable<LeaseSourceRegistration> registrations, LeaseDispatchContext context, PassLoop? loop = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
         Name = name;
         this.capacity = capacity;
         this.context = context;
-        lanes = registrations.Select(r => r.CreateLane(context, wake.Set, stopping.Token)).ToArray();
+        ownsLoop = loop is null;
+        this.loop = loop ?? new PassLoop("dispatch", context);
+        entry = this.loop.Add(name, PassAsync);
+        lanes = registrations.Select(r => r.CreateLane(context, entry.Wake, stopping.Token)).ToArray();
         if (lanes.Length == 0)
         {
             throw new ArgumentException($"Dispatch pool {name} has no sources.", nameof(registrations));
@@ -38,9 +46,16 @@ public sealed class DispatchPool : ILeaseDispatcher
 
     public IReadOnlyList<string> Sources { get; }
 
-    public void Start() => loop = Task.Run(LoopAsync);
+    /// <summary>Starts the pool's own loop; a pool on the process's dispatch loop runs when the host starts that loop.</summary>
+    public void Start()
+    {
+        if (ownsLoop)
+        {
+            loop.Start();
+        }
+    }
 
-    public void Wake() => wake.Set();
+    public void Wake() => entry.Wake();
 
     public void CheckCancellation(string source)
     {
@@ -53,62 +68,37 @@ public sealed class DispatchPool : ILeaseDispatcher
         }
     }
 
-    private async Task LoopAsync()
+    /// <summary>One claim pass; returns how long the pool waits before the next one unless it is woken.</summary>
+    private async Task<TimeSpan> PassAsync(CancellationToken token)
     {
-        var token = stopping.Token;
-        while (!token.IsCancellationRequested)
+        var free = capacity - lanes.Sum(l => l.Running);
+        if (free <= 0)
         {
-            TimeSpan delay;
+            // Nothing can be claimed until a run finishes, which wakes the pool.
+            return context.PollingInterval;
+        }
+        (var claimed, var failed) = await ClaimAsync(free, token);
+        if (claimed > 0)
+        {
+            return TimeSpan.Zero;
+        }
+        var delay = context.PollingInterval;
+        foreach (var lane in lanes)
+        {
             try
             {
-                var free = capacity - lanes.Sum(l => l.Running);
-                if (free <= 0)
+                if (await lane.NextDueAsync(token) is { } due && due < delay)
                 {
-                    // Nothing can be claimed until a run finishes, which wakes the pool.
-                    delay = context.PollingInterval;
-                }
-                else
-                {
-                    (var claimed, var failed) = await ClaimAsync(free, token);
-                    if (claimed > 0)
-                    {
-                        continue;
-                    }
-                    delay = context.PollingInterval;
-                    foreach (var lane in lanes)
-                    {
-                        try
-                        {
-                            if (await lane.NextDueAsync(token) is { } due && due < delay)
-                            {
-                                delay = due;
-                            }
-                        }
-                        catch (Exception exception) when (!token.IsCancellationRequested)
-                        {
-                            lane.LogClaimFailed(exception);
-                            failed = true;
-                        }
-                    }
-                    if (failed && ErrorDelay < delay)
-                    {
-                        delay = ErrorDelay;
-                    }
+                    delay = due;
                 }
             }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            catch (Exception exception) when (!token.IsCancellationRequested)
             {
-                return;
-            }
-            try
-            {
-                await wake.WaitAsync(delay, context.Time, token);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
+                lane.LogClaimFailed(exception);
+                failed = true;
             }
         }
+        return failed && ErrorDelay < delay ? ErrorDelay : delay;
     }
 
     /// <summary>
@@ -196,10 +186,14 @@ public sealed class DispatchPool : ILeaseDispatcher
         }
     }
 
+    /// <summary>Stops the runs; the process's dispatch loop has stopped before, so the pool no longer claims.</summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
+        if (ownsLoop)
+        {
+            await loop.StopAsync();
+        }
         stopping.Cancel();
-        await loop.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
         await Task.WhenAll(lanes.Select(l => l.StopAsync(cancellationToken)));
         stopping.Dispose();
     }
