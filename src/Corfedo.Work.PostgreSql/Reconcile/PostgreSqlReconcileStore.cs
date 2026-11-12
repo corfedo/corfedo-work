@@ -9,7 +9,7 @@ namespace Corfedo.Work.PostgreSql.Reconcile;
 /// <summary>Requests, results and invalidation of reconciliation sources, on the statements of their lease sources.</summary>
 internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, PostgreSqlLeaseStore leases, PostgreSqlSignalSender signals) : IReconcileStore
 {
-    public async ValueTask<IReadOnlyList<KeyValuePair<TKey, ReconcileRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+    public async ValueTask<IReadOnlyList<ReconcileRecord?>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var sql = leases.Sql(source.Leases);

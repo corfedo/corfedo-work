@@ -79,11 +79,12 @@ public interface ILeaseStore
 
     /// <summary>
     /// Reads the lease fields of the records of <paramref name="keys"/>, which are distinct, with one reading of the
-    /// store's clock: in <paramref name="transaction"/>, or from committed records without one. Takes no locks. Returns
-    /// the requested keys of the records that exist, each with its fields; keys of no record are left out.
+    /// store's clock taken after the records were read: in <paramref name="transaction"/>, or from committed records
+    /// without one. Takes no locks. Returns one entry per key, in the order of <paramref name="keys"/>: null for a key
+    /// of no record.
     /// </summary>
     /// <exception cref="ArgumentException">The source holds jobs, which are read through their status.</exception>
-    ValueTask<IReadOnlyList<KeyValuePair<TKey, LeaseRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+    ValueTask<IReadOnlyList<LeaseRecord?>> ReadAsync<TKey>(WorkTransaction? transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
         where TKey : notnull;
 
     /// <summary>

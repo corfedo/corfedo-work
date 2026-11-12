@@ -65,8 +65,9 @@ await ageing.AgeAsync(Sources.Mirrors, key, TimeSpan.FromHours(-1), ct);        
 ```
 
   An expired lease can be taken over once the source's takeover backoff has also passed, so age it by the lease
-  duration plus that backoff. Ageing wakes the source's dispatchers when the record has a due time. It is for tests
-  only: it writes the framework's fields outside the rules that keep them consistent.
+  duration plus that backoff. Ageing wakes the source's dispatchers when the record has a due time. Each call commits
+  on its own, so call it outside the test's open transactions. It is for tests only: it writes the framework's fields
+  outside the rules that keep them consistent.
 - **Due times of lease sources.** `LeaseOperations.ScheduleAsync(transaction, source, key, Due.Now)` makes a record
   due without ageing it.
 

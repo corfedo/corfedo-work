@@ -8,7 +8,7 @@ namespace Corfedo.Work.SqlServer.Reconcile;
 /// <summary>Requests, results and invalidation of reconciliation sources, on the statements of their lease sources.</summary>
 internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlServerSignalSql signals) : IReconcileStore
 {
-    public async ValueTask<IReadOnlyList<KeyValuePair<TKey, ReconcileRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+    public async ValueTask<IReadOnlyList<ReconcileRecord?>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
         where TKey : notnull =>
         await leases.ReadAsync(
             transaction,
@@ -26,6 +26,7 @@ internal sealed class SqlServerReconcileStore(SqlServerLeaseStore leases, SqlSer
                 reader.GetInt64(i + 5),
                 reader.GetInt64(i + 6),
                 reader.GetInt64(i + 7)),
+            static (record, at) => record with { Lease = record.Lease with { ReadAt = at } },
             cancellationToken);
 
     /// <summary>

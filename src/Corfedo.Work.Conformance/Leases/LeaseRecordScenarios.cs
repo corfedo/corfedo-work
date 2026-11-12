@@ -39,6 +39,7 @@ public abstract class LeaseRecordScenarios(ILeaseConformanceProvider provider) :
         // Many keys in one read: duplicates once, missing keys left out.
         var many = await operations.ReadManyAsync(source, [due, later, missing, due], Cancel);
         Assert.Equal([due, later], many.Keys.OrderBy(k => k.Id));
+        Assert.All(many.Keys, k => Assert.True(ReferenceEquals(k, due) || ReferenceEquals(k, later), "keyed by the caller's keys"));
         Assert.Equal(many[due].ReadAt, many[later].ReadAt);
         Assert.Equal(held with { ReadAt = many[due].ReadAt }, many[due]);
         await Assert.ThrowsAsync<ArgumentException>(async () =>

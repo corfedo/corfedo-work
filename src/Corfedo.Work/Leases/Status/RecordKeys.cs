@@ -18,6 +18,19 @@ internal static class RecordKeys
             : distinct;
     }
 
-    public static IReadOnlyDictionary<TKey, TRecord> Dictionary<TKey, TRecord>(IReadOnlyList<KeyValuePair<TKey, TRecord>> records)
-        where TKey : notnull => records.ToDictionary(r => r.Key, r => r.Value);
+    /// <summary>The records that exist, keyed by the caller's keys, from a store's read aligned with them.</summary>
+    public static IReadOnlyDictionary<TKey, TRecord> Dictionary<TKey, TRecord>(IReadOnlyList<TKey> keys, IReadOnlyList<TRecord?> records)
+        where TKey : notnull
+        where TRecord : class
+    {
+        var found = new Dictionary<TKey, TRecord>();
+        for (var i = 0; i < keys.Count; i++)
+        {
+            if (records[i] is { } record)
+            {
+                found[keys[i]] = record;
+            }
+        }
+        return found;
+    }
 }

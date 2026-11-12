@@ -5,20 +5,21 @@ namespace Corfedo.Work.InMemory.Leases;
 
 internal sealed partial class InMemoryLeaseStore : ILeaseAgeing
 {
-    public ValueTask<IReadOnlyList<KeyValuePair<TKey, LeaseRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+    public ValueTask<IReadOnlyList<LeaseRecord?>> ReadAsync<TKey>(WorkTransaction? transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
         where TKey : notnull => ValueTask.FromResult(Read(transaction, source, keys, static (lease, _, _, _) => lease));
 
     /// <summary>
     /// Reads the records of <paramref name="keys"/> as the transaction sees them, or the committed records under the
     /// database's lock without one, with one clock reading; <paramref name="map"/> adds what a caller reads beyond the
-    /// lease fields, given the source's generation.
+    /// lease fields, given the source's generation. Returns one entry per key in their order, null for a key of no record.
     /// </summary>
-    internal IReadOnlyList<KeyValuePair<TKey, TRecord>> Read<TKey, TRecord>(
+    internal IReadOnlyList<TRecord?> Read<TKey, TRecord>(
         WorkTransaction? transaction,
         LeaseSource<TKey> source,
         IReadOnlyList<TKey> keys,
         Func<LeaseRecord, LeaseRules<TKey>, Record, long, TRecord> map)
         where TKey : notnull
+        where TRecord : class
     {
         if (source.Job is not null)
         {
@@ -39,7 +40,7 @@ internal sealed partial class InMemoryLeaseStore : ILeaseAgeing
             map));
     }
 
-    private static List<KeyValuePair<TKey, TRecord>> Collect<TKey, TRecord>(
+    private static TRecord?[] Collect<TKey, TRecord>(
         LeaseRules<TKey> rules,
         IReadOnlyList<TKey> keys,
         Func<RowKey, Record?> find,
@@ -47,11 +48,12 @@ internal sealed partial class InMemoryLeaseStore : ILeaseAgeing
         long generation,
         Func<LeaseRecord, LeaseRules<TKey>, Record, long, TRecord> map)
         where TKey : notnull
+        where TRecord : class
     {
-        var records = new List<KeyValuePair<TKey, TRecord>>();
-        foreach (var key in keys)
+        var records = new TRecord?[keys.Count];
+        for (var i = 0; i < keys.Count; i++)
         {
-            if (find(rules.RowKey(key)) is not { } r)
+            if (find(rules.RowKey(keys[i])) is not { } r)
             {
                 continue;
             }
@@ -66,7 +68,7 @@ internal sealed partial class InMemoryLeaseStore : ILeaseAgeing
                 r.Int32(f.Failures),
                 r.Time(f.CancelRequestedAt),
                 rules.Reconcile is null ? r.Uuid(f.ExecutionId) : null);
-            records.Add(new(key, map(lease, rules, r, generation)));
+            records[i] = map(lease, rules, r, generation);
         }
         return records;
     }

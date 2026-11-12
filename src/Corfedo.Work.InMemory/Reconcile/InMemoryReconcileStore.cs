@@ -10,7 +10,7 @@ namespace Corfedo.Work.InMemory.Reconcile;
 /// </summary>
 internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IReconcileStore
 {
-    public ValueTask<IReadOnlyList<KeyValuePair<TKey, ReconcileRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+    public ValueTask<IReadOnlyList<ReconcileRecord?>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
         where TKey : notnull =>
         ValueTask.FromResult(leases.Read(transaction, source.Leases, keys, static (lease, rules, r, generation) =>
         {

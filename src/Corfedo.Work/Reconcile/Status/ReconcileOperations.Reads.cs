@@ -15,7 +15,7 @@ public sealed partial class ReconcileOperations
         where TKey : notnull
     {
         ArgumentNullException.ThrowIfNull(source);
-        return Single(await Store.ReadAsync(null, source, [key], cancellationToken));
+        return (await Store.ReadAsync(null, source, [key], cancellationToken))[0];
     }
 
     /// <summary>The record's fields as the caller's transaction sees them, or null when the source has no record with the key.</summary>
@@ -24,7 +24,7 @@ public sealed partial class ReconcileOperations
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(source);
-        return Single(await Store.ReadAsync(transaction, source, [key], cancellationToken));
+        return (await Store.ReadAsync(transaction, source, [key], cancellationToken))[0];
     }
 
     /// <summary>
@@ -35,7 +35,8 @@ public sealed partial class ReconcileOperations
         where TKey : notnull
     {
         ArgumentNullException.ThrowIfNull(source);
-        return RecordKeys.Dictionary(await Store.ReadAsync(null, source, RecordKeys.Distinct(source.Leases, keys), cancellationToken));
+        var distinct = RecordKeys.Distinct(source.Leases, keys);
+        return RecordKeys.Dictionary(distinct, await Store.ReadAsync(null, source, distinct, cancellationToken));
     }
 
     /// <summary>
@@ -47,9 +48,6 @@ public sealed partial class ReconcileOperations
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(source);
-        return RecordKeys.Dictionary(await Store.ReadAsync(transaction, source, RecordKeys.Distinct(source.Leases, keys), cancellationToken));
-    }
-
-    private static ReconcileRecord? Single<TKey>(IReadOnlyList<KeyValuePair<TKey, ReconcileRecord>> records)
-        where TKey : notnull => records.Count == 0 ? null : records[0].Value;
-}
+        var distinct = RecordKeys.Distinct(source.Leases, keys);
+        return RecordKeys.Dictionary(distinct, await Store.ReadAsync(transaction, source, distinct, cancellationToken));
+    }}

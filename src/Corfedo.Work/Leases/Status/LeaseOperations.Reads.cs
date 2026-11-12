@@ -12,14 +12,14 @@ public sealed partial class LeaseOperations
 
     /// <summary>The record's lease fields as committed, or null when the source has no record with the key.</summary>
     public async ValueTask<LeaseRecord?> ReadAsync<TKey>(LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken = default)
-        where TKey : notnull => Single(await Store.ReadAsync(null, Readable(source), [key], cancellationToken));
+        where TKey : notnull => (await Store.ReadAsync(null, Readable(source), [key], cancellationToken))[0];
 
     /// <summary>The record's lease fields as the caller's transaction sees them, or null when the source has no record with the key.</summary>
     public async ValueTask<LeaseRecord?> ReadAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, TKey key, CancellationToken cancellationToken = default)
         where TKey : notnull
     {
         ArgumentNullException.ThrowIfNull(transaction);
-        return Single(await Store.ReadAsync(transaction, Readable(source), [key], cancellationToken));
+        return (await Store.ReadAsync(transaction, Readable(source), [key], cancellationToken))[0];
     }
 
     /// <summary>
@@ -27,7 +27,11 @@ public sealed partial class LeaseOperations
     /// keys of no record are left out.
     /// </summary>
     public async ValueTask<IReadOnlyDictionary<TKey, LeaseRecord>> ReadManyAsync<TKey>(LeaseSource<TKey> source, IEnumerable<TKey> keys, CancellationToken cancellationToken = default)
-        where TKey : notnull => RecordKeys.Dictionary(await Store.ReadAsync(null, Readable(source), RecordKeys.Distinct(source, keys), cancellationToken));
+        where TKey : notnull
+    {
+        var distinct = RecordKeys.Distinct(Readable(source), keys);
+        return RecordKeys.Dictionary(distinct, await Store.ReadAsync(null, source, distinct, cancellationToken));
+    }
 
     /// <summary>
     /// The lease fields of up to <see cref="MaximumKeys"/> records as the caller's transaction sees them, in one read
@@ -37,7 +41,8 @@ public sealed partial class LeaseOperations
         where TKey : notnull
     {
         ArgumentNullException.ThrowIfNull(transaction);
-        return RecordKeys.Dictionary(await Store.ReadAsync(transaction, Readable(source), RecordKeys.Distinct(source, keys), cancellationToken));
+        var distinct = RecordKeys.Distinct(Readable(source), keys);
+        return RecordKeys.Dictionary(distinct, await Store.ReadAsync(transaction, source, distinct, cancellationToken));
     }
 
     private static LeaseSource<TKey> Readable<TKey>(LeaseSource<TKey> source)
@@ -47,8 +52,4 @@ public sealed partial class LeaseOperations
         return source.Job is { } job
             ? throw new ArgumentException($"Lease source {source.Name} holds jobs of definition {job.Definition}; jobs are read through JobOperations.", nameof(source))
             : source;
-    }
-
-    private static LeaseRecord? Single<TKey>(IReadOnlyList<KeyValuePair<TKey, LeaseRecord>> records)
-        where TKey : notnull => records.Count == 0 ? null : records[0].Value;
-}
+    }}
