@@ -31,15 +31,16 @@ public sealed class DispatchPool : ILeaseDispatcher
         Name = name;
         this.capacity = capacity;
         this.context = context;
-        ownsLoop = loop is null;
-        this.loop = loop ?? new PassLoop("dispatch", context);
-        entry = this.loop.Add(name, PassAsync);
-        lanes = registrations.Select(r => r.CreateLane(context, entry.Wake, stopping.Token)).ToArray();
+        // A finished run wakes the pool through Wake, so the pool joins the loop only once its lanes exist.
+        lanes = registrations.Select(r => r.CreateLane(context, Wake, stopping.Token)).ToArray();
         if (lanes.Length == 0)
         {
             throw new ArgumentException($"Dispatch pool {name} has no sources.", nameof(registrations));
         }
         Sources = lanes.Select(l => l.Source).ToArray();
+        ownsLoop = loop is null;
+        this.loop = loop ?? new PassLoop("dispatch", context);
+        entry = this.loop.Add(name, PassAsync);
     }
 
     public string Name { get; }

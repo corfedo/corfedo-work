@@ -425,6 +425,9 @@ public sealed class InMemoryJobTelemetryScenarios(InMemoryConformanceProvider pr
 public sealed class InMemoryHostStartScenarios(InMemoryConformanceProvider provider)
     : HostStartScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
 
+public sealed class InMemoryManySourcesScenarios(InMemoryConformanceProvider provider)
+    : ManySourcesScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
+
 public sealed class InMemoryProcessRoleScenarios(InMemoryConformanceProvider provider)
     : ProcessRoleScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
 

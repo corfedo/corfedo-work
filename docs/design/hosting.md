@@ -71,15 +71,19 @@ At startup the host:
 
 ### Loops
 
-A process runs one loop per kind of background work, however many sources and definitions it registers: the dispatch
+A process runs one loop per kind of background pass, however many sources and definitions it registers: the dispatch
 loop runs the claim passes of every [pool](#pools), the expiry loop the [settlement](leases.md#expiry-settlement)
 passes of every settling source, and the maintenance loop the [planner](#job-planners) passes of every job definition
-whose handler it runs. Each pass keeps its own wake-ups and its own next run, as described for its kind; the loop runs
-the passes that are due one at a time, each at most once per round, so a pass that has more to do at once cannot keep
-the others of its kind waiting for more than one round. These loops therefore hold at most one connection each, and a
-process's connections grow with the work it runs (holds, renewals and handlers), not with the number of sources. The
-cost is that the passes of one kind share the loop's time: a slow claim callback, expiry handler or planning pass
-delays the passes after it in that round.
+whose handler it runs. Each pass keeps its own wake-ups and its own next run, as described for its kind; a pass that
+is due runs when one of the loop's two workers is free. A pass never runs on two workers at once, and a wake that
+arrives while it runs makes it due again when it ends. Due passes take turns, so a pass that has more to do at once
+cannot keep the others of its kind waiting for more than one turn of each. Due times are measured on the time
+provider's monotonic timestamp, so a change of the wall clock does not move them.
+
+These loops hold at most two connections each, so a process's connections grow with the work it runs (holds,
+renewals, releases and handlers), not with the number of sources. The passes of one kind share the workers: a slow
+claim callback, expiry handler or planning pass occupies one, and the others of its kind run on the rest; as many
+waiting passes as workers stop that kind in the process until one returns.
 
 `work.StartMode(StartMode.Manual)` defers step 4 until the application calls `IWorkHost.StartAsync`, for hosts that
 must finish their own initialization first; the host's start still does steps 1–3, so the application can request

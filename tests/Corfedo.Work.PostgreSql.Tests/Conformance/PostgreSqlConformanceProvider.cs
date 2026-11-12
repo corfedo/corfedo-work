@@ -546,6 +546,9 @@ public sealed class PostgreSqlJobTelemetryScenarios(PostgreSqlConformanceProvide
 public sealed class PostgreSqlHostStartScenarios(PostgreSqlConformanceProvider provider)
     : HostStartScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
 
+public sealed class PostgreSqlManySourcesScenarios(PostgreSqlConformanceProvider provider)
+    : ManySourcesScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
+
 public sealed class PostgreSqlProcessRoleScenarios(PostgreSqlConformanceProvider provider)
     : ProcessRoleScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
 

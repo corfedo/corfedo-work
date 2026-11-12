@@ -629,6 +629,9 @@ public sealed class SqlServerJobTelemetryScenarios(SqlServerConformanceProvider 
 public sealed class SqlServerHostStartScenarios(SqlServerConformanceProvider provider)
     : HostStartScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
 
+public sealed class SqlServerManySourcesScenarios(SqlServerConformanceProvider provider)
+    : ManySourcesScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
 public sealed class SqlServerProcessRoleScenarios(SqlServerConformanceProvider provider)
     : ProcessRoleScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
 

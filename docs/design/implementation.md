@@ -178,6 +178,7 @@ The cron scenarios J-5 and J-34 involve no store: they run as tests of the occur
 | H-5 | R16 | [In-memory](providers.md#in-memory) | 6c |
 | H-6 | R20 | [Testing](hosting.md#testing) | 6c.4 |
 | H-7 | R10 | [Startup](hosting.md#startup) | 6a |
+| H-8 | R10 | [Loops](hosting.md#loops) | — |
 
 ## Stage 7 steps
 

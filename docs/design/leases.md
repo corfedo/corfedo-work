@@ -147,7 +147,8 @@ claim leaves the record as it was, counting nothing, and the rest of the call pa
 the expiry processor leaves the epoch unsettled for a later pass; a busy outcome hook fails the transition, which
 rolls back and is retried. A callback that waits for such a row instead can deadlock with an application
 transaction, and the database may choose the application's transaction as the victim; that transaction then fails
-and must be retried as any deadlock victim is. On SQL Server, a callback's statement that tries a lock runs with
+and must be retried as any deadlock victim is. A callback that waits also holds a worker of the process's [loop](hosting.md#loops)
+for its kind, which the other sources' claims or settlements of that process share. On SQL Server, a callback's statement that tries a lock runs with
 `XACT_ABORT` off, as SqlClient leaves it: with it on, the error rolls back Work's whole transaction, and the claim or
 settlement fails as a whole.
 
@@ -212,9 +213,10 @@ treats its expired leases alike, and the processes that can release the resource
   handler failed in the same pass, so neither keeps later records from being settled; a handler that is busy (see
   [operations](#operations)) rolls the settlement back without counting in `SettleFailures`, and the record is
   passed in that pass and settled by a later one;
-- the expiry processor runs at the earliest known expiry and at least every 750 ms, also when it knows of no expiry:
-  a claim can commit after its lease expired and a record can stay locked past expiry, and neither is signalled. The
-  wait bounds how long such a lease waits once it is committed, expired and unlocked;
+- the expiry processor's pass for a source is due at the earliest known expiry and at most 750 ms after its last pass,
+  also when it knows of no expiry: a claim can commit after its lease expired and a record can stay locked past expiry,
+  and neither is signalled. The wait bounds how long such a lease waits once it is committed, expired and unlocked. The
+  pass runs on the process's [expiry loop](hosting.md#loops) when one of its workers is free;
 - a settlement wakes claimers, since it frees a slot of the source's limits and makes the record claimable for
   claimers without the handler.
 
