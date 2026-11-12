@@ -9,6 +9,29 @@ namespace Corfedo.Work.PostgreSql.Reconcile;
 /// <summary>Requests, results and invalidation of reconciliation sources, on the statements of their lease sources.</summary>
 internal sealed class PostgreSqlReconcileStore(NpgsqlDataSource dataSource, PostgreSqlLeaseStore leases, PostgreSqlSignalSender signals) : IReconcileStore
 {
+    public async ValueTask<IReadOnlyList<KeyValuePair<TKey, ReconcileRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+        where TKey : notnull
+    {
+        var sql = leases.Sql(source.Leases);
+        return await leases.ReadAsync(
+            transaction,
+            source.Leases,
+            keys,
+            $", {sql.RequestedRevision}, {sql.ClaimedRevision}, {sql.ConvergedRevision}, {sql.FirstRequestedAt}, {sql.NotBefore}, "
+            + $"{sql.AttemptedGeneration}, {sql.ConvergedGeneration}, ({sql.Generation})",
+            static (lease, reader, i) => new ReconcileRecord(
+                lease,
+                reader.GetInt64(i),
+                reader.IsDBNull(i + 1) ? null : reader.GetInt64(i + 1),
+                reader.GetInt64(i + 2),
+                PostgreSqlLeaseStore.Time(reader, i + 3),
+                PostgreSqlLeaseStore.Time(reader, i + 4),
+                reader.GetInt64(i + 5),
+                reader.GetInt64(i + 6),
+                reader.GetInt64(i + 7)),
+            cancellationToken);
+    }
+
     /// <summary>
     /// Locks the record, then increments the requested revision and schedules it, with a clock reading taken after the
     /// lock is held. The due time is the trailing debounce from now, capped at the first request not yet claimed plus

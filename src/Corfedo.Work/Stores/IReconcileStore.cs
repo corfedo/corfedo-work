@@ -40,6 +40,13 @@ public interface IReconcileStore
     ValueTask FenceAsync(WorkTransaction transaction, IReadOnlyCollection<IReconcileSource> sources, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Reads the lease and reconciliation fields of the records of <paramref name="keys"/>, which are distinct, and the
+    /// source's generation, as <see cref="ILeaseStore.ReadAsync{TKey}"/> reads lease fields.
+    /// </summary>
+    ValueTask<IReadOnlyList<KeyValuePair<TKey, ReconcileRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+        where TKey : notnull;
+
+    /// <summary>
     /// In the caller's transaction, increments the source's generation without writing any record, and returns it.
     /// Every eligible record becomes due once; on superseding sources running attempts become obsolete.
     /// </summary>

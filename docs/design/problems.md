@@ -65,7 +65,8 @@ them.
 - **R19 Application isolation.** Several applications can share one database without seeing, claiming or reporting
   each other's work.
 - **R20 Testability.** Applications can test their handlers and flows in one process without a database, with
-  controllable time, using the same semantics as the real providers wherever one process can observe them.
+  controllable time, using the same semantics as the real providers wherever one process can observe them. Tests
+  against a real database read work state through typed reads and move time for one record at a time.
 - **R21 Executable compatibility.** Stored policy cannot change code. A process claims only work whose argument
   version its own handlers and codecs accept; work requested by newer code is never claimed, or failed, by older code.
   Results read by newer code than their reader's are detected and refused before they are decoded.

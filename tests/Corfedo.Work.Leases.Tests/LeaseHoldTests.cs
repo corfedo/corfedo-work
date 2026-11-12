@@ -211,5 +211,8 @@ public sealed class LeaseHoldTests
 
         public ValueTask VerifyAsync<TKey>(LeaseSource<TKey> source, CancellationToken cancellationToken)
             where TKey : notnull => throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<KeyValuePair<TKey, LeaseRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+            where TKey : notnull => throw new NotSupportedException();
     }
 }

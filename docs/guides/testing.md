@@ -33,6 +33,43 @@ clock.Advance(TimeSpan.FromHours(1));   // the job becomes due and runs
 - **Waiting.** Background loops arm their timers when they get to them, so advance the clock in steps of the polling
   interval until the state you expect appears.
 
+## Testing against a real database
+
+The PostgreSQL and SQL Server stores take every time from the database's clock, which a test cannot move. Read the
+work state of your records, and move time for one record at a time.
+
+```csharp
+var leases = host.Services.GetRequiredService<LeaseOperations>();
+var lease = await leases.ReadAsync(Sources.Mirrors, key, ct);   // null when there is no such record
+Assert.Equal(1, lease!.Epoch);
+Assert.True(lease.ExpiresAt > lease.ReadAt);                     // ReadAt is the database's clock
+
+var reconcile = host.Services.GetRequiredService<ReconcileOperations>();
+var record = await reconcile.ReadAsync(Sources.Placements, key, ct);
+Assert.Equal(record!.RequestedRevision, record.ConvergedRevision);
+```
+
+- **Reads.** `ReadAsync` returns the record's lease fields, and on reconciliation sources its revisions, backoff floor
+  and generations. `ReadManyAsync` reads up to 1,000 records with one clock reading. With a transaction, both see
+  what it wrote before it commits. Compare times with `ReadAt`, not with the test's clock.
+- **Ageing.** `RecordAgeing` moves every time of one record back by a span, as if the span had passed for it. Other
+  records and your own columns keep their times.
+
+```csharp
+using Corfedo.Work.Testing;
+
+var ageing = new RecordAgeing(host.Services.GetRequiredService<IWorkStore>());
+await ageing.AgeAsync(Sources.Mirrors, key, lease.DueAt!.Value - lease.ReadAt, ct);  // due now
+await ageing.AgeAsync(Sources.Mirrors, key, TimeSpan.FromMinutes(5), ct);            // a 5-minute lease expired
+await ageing.AgeAsync(Sources.Mirrors, key, TimeSpan.FromHours(-1), ct);             // postponed by an hour
+```
+
+  An expired lease can be taken over once the source's takeover backoff has also passed, so age it by the lease
+  duration plus that backoff. Ageing wakes the source's dispatchers when the record has a due time. It is for tests
+  only: it writes the framework's fields outside the rules that keep them consistent.
+- **Due times of lease sources.** `LeaseOperations.ScheduleAsync(transaction, source, key, Due.Now)` makes a record
+  due without ageing it.
+
 Tests against a real SQL Server need a database created with `READ_COMMITTED_SNAPSHOT ON`; the store refuses
 others.
 

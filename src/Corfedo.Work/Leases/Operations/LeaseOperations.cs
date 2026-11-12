@@ -9,7 +9,7 @@ namespace Corfedo.Work;
 /// sources releases, ends and schedules are refused, and a holder gives the record back with a result through
 /// <see cref="ReconcileOperations.CompleteAsync{TKey}(Lease{TKey}, ReconcileResult, CancellationToken)"/>.
 /// </summary>
-public sealed class LeaseOperations(IWorkStore store, WorkProcess process, LeaseRegistry registry)
+public sealed partial class LeaseOperations(IWorkStore store, WorkProcess process, LeaseRegistry registry)
 {
     private ILeaseStore Store => store.Leases;
 

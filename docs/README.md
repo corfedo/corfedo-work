@@ -12,7 +12,7 @@ How to use Corfedo Work.
 | [Leases](guides/leases.md) | Long work on rows you own: columns, key codecs, guarded writes, ending, waiting and cancellation. |
 | [Reconciliation](guides/reconciliation.md) | Rows that describe what should exist, and runs that make it so. |
 | [Signals](guides/signals.md) | Commit-time wake-ups for your own background services. |
-| [Testing](guides/testing.md) | The in-memory store with a controllable clock. |
+| [Testing](guides/testing.md) | The in-memory store with a controllable clock; reading and ageing records on a real database. |
 | [Production](guides/production.md) | Schema, replicas, deployments, poolers, shutdown and telemetry. |
 | Migrating from [Hangfire](guides/migrating/hangfire.md), [Quartz.NET](guides/migrating/quartz.md), [TickerQ](guides/migrating/tickerq.md) | Concept maps, one rewritten job and how to switch over. |
 | [Trimming and Native AOT](guides/native-aot.md) | Which packages support it, and source-generated JSON for job arguments and results. |

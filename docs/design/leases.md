@@ -114,6 +114,7 @@ remain, and a holder gives a record back with a result through `ReconcileOperati
 | `ScheduleAsync(tx, source, key, due, execution)` | Sets `DueAt` in the caller's transaction and wakes claimers after commit (R1, R7). A new `execution` id marks a deliberate new execution; omitted, the current one continues. Refused on reconciliation sources. |
 | `RequestCancelAsync(tx, source, key)` | Sets `CancelRequestedAt` in the caller's transaction and wakes the holder's process (R8). |
 | `ClearCancelAsync(tx, source, key)` | Withdraws a cancellation request. |
+| `ReadAsync(source, key)`, `ReadManyAsync(source, keys)` | Reads the lease fields of records with the store's clock at the read (`LeaseRecord.ReadAt`), committed or, with a transaction, as it sees them. Takes no locks; refused on job sources, which are read through their status. |
 
 `GuardAsync` modifies the record on purpose: it is a fenced renewal inside the caller's transaction, and it holds
 the record's write lock until that transaction ends. While it is held:

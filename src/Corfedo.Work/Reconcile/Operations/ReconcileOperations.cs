@@ -4,7 +4,7 @@ namespace Corfedo.Work;
 /// Reconciliation operations for application code. Claims, renewals and guards of reconciliation records are the
 /// lease operations on <see cref="ReconcileSource{TKey}.Leases"/>.
 /// </summary>
-public sealed class ReconcileOperations(IWorkStore store)
+public sealed partial class ReconcileOperations(IWorkStore store)
 {
     private IReconcileStore Store => store.Reconcile;
 

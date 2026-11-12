@@ -6,8 +6,8 @@ means; the provider decides how to make it atomic (R16).
 ## The contract is operations, not queries
 
 Providers implement operation interfaces: lease operations (claim due, claim by key, claim candidates in a caller's
-transaction, renew, guard, release, end, schedule, cancel, settle expiry), reconciliation operations (request,
-complete, invalidate), job operations (request in each mode, complete, cancel, pause, trigger, rerun, read status,
+transaction, renew, guard, release, end, schedule, cancel, settle expiry, read records), reconciliation operations
+(request, complete, invalidate, read records), job operations (request in each mode, complete, cancel, pause, trigger, rerun, read status,
 chain settlement, retention), calendars and definitions by revision, incidents and the process registry. Each
 operation is one atomic step in the store; the core never composes a provider operation out of generic reads and
 writes.
@@ -124,7 +124,8 @@ isolation of the transaction; the lock order callbacks follow is in [leases](lea
 
 `Corfedo.Work.Conformance` contains the [scenarios](scenarios.md) as executable tests against the provider
 contract, including concurrent claimers, holders paused past their lease, store clock checks, lock waits, and process
-crashes between steps. A provider is supported only while it passes the whole suite. Provider-specific tests cover
+crashes between steps. A provider is supported only while it passes the whole suite, which also ages records
+through the provider's `Corfedo.Work.Testing.ILeaseAgeing`. Provider-specific tests cover
 only what the suite cannot see, such as wake signals and index use.
 
 ## PostgreSQL

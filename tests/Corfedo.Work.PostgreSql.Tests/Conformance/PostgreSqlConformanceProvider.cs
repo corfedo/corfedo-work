@@ -462,6 +462,9 @@ public sealed class PostgreSqlLeaseClaimScenarios(PostgreSqlConformanceProvider 
 public sealed class PostgreSqlLeaseHolderScenarios(PostgreSqlConformanceProvider provider)
     : LeaseHolderScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
 
+public sealed class PostgreSqlLeaseRecordScenarios(PostgreSqlConformanceProvider provider)
+    : LeaseRecordScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
+
 public sealed class PostgreSqlLeaseTakeoverScenarios(PostgreSqlConformanceProvider provider)
     : LeaseTakeoverScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
 
@@ -473,6 +476,9 @@ public sealed class PostgreSqlRemoteHolderScenarios(PostgreSqlConformanceProvide
 
 public sealed class PostgreSqlReconcileRequestScenarios(PostgreSqlConformanceProvider provider)
     : ReconcileRequestScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
+
+public sealed class PostgreSqlReconcileRecordScenarios(PostgreSqlConformanceProvider provider)
+    : ReconcileRecordScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
 
 public sealed class PostgreSqlReconcileResultScenarios(PostgreSqlConformanceProvider provider)
     : ReconcileResultScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;

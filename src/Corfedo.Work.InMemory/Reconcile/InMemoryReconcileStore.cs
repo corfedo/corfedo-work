@@ -10,6 +10,23 @@ namespace Corfedo.Work.InMemory.Reconcile;
 /// </summary>
 internal sealed class InMemoryReconcileStore(InMemoryLeaseStore leases) : IReconcileStore
 {
+    public ValueTask<IReadOnlyList<KeyValuePair<TKey, ReconcileRecord>>> ReadAsync<TKey>(WorkTransaction? transaction, ReconcileSource<TKey> source, IReadOnlyList<TKey> keys, CancellationToken cancellationToken)
+        where TKey : notnull =>
+        ValueTask.FromResult(leases.Read(transaction, source.Leases, keys, static (lease, rules, r, generation) =>
+        {
+            var f = rules.Reconcile!;
+            return new ReconcileRecord(
+                lease,
+                r.Int64(f.RequestedRevision),
+                r[f.ClaimedRevision] is null ? null : r.Int64(f.ClaimedRevision),
+                r.Int64(f.ConvergedRevision),
+                r.Time(f.FirstRequestedAt),
+                r.Time(f.NotBefore),
+                r.Int64(f.AttemptedGeneration),
+                r.Int64(f.ConvergedGeneration),
+                generation);
+        }));
+
     /// <summary>
     /// Increments the requested revision and schedules the record. The due time is the trailing debounce from now,
     /// capped at the first request not yet claimed plus the maximum; a waiting record keeps an earlier due time; a

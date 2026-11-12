@@ -51,6 +51,9 @@ it back (`ReconcileOperations.CompleteAsync` for a holder that claimed through t
 The domain keeps its own outcome fields (for example a status, a waiting reason and an error code) and writes them in
 the same transaction as the result.
 
+`ReconcileOperations.ReadAsync` and `ReadManyAsync` read these fields with the lease fields and the source's current
+generation (`ReconcileRecord`), as lease reads do.
+
 ## Claimability
 
 A reconciliation record is claimable when the [lease rule](leases.md#validity-and-claimability) holds with its first

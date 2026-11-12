@@ -341,6 +341,9 @@ public sealed class InMemoryLeaseClaimScenarios(InMemoryConformanceProvider prov
 public sealed class InMemoryLeaseHolderScenarios(InMemoryConformanceProvider provider)
     : LeaseHolderScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
 
+public sealed class InMemoryLeaseRecordScenarios(InMemoryConformanceProvider provider)
+    : LeaseRecordScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
+
 public sealed class InMemoryLeaseTakeoverScenarios(InMemoryConformanceProvider provider)
     : LeaseTakeoverScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
 
@@ -352,6 +355,9 @@ public sealed class InMemoryRemoteHolderScenarios(InMemoryConformanceProvider pr
 
 public sealed class InMemoryReconcileRequestScenarios(InMemoryConformanceProvider provider)
     : ReconcileRequestScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
+
+public sealed class InMemoryReconcileRecordScenarios(InMemoryConformanceProvider provider)
+    : ReconcileRecordScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
 
 public sealed class InMemoryReconcileResultScenarios(InMemoryConformanceProvider provider)
     : ReconcileResultScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
