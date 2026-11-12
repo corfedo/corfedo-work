@@ -16,7 +16,7 @@ namespace Corfedo.Work;
 internal sealed partial class PassLoop
 {
     /// <summary>The workers of a loop: the connections a kind of pass holds at most, and the passes that may wait at once without stopping the others.</summary>
-    public const int DefaultWorkers = 2;
+    public const int DefaultWorkers = 4;
 
     private readonly string kind;
     private readonly LeaseDispatchContext context;

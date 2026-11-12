@@ -10,6 +10,10 @@
   opens an incident when such work waits longer than `UnservedGrace` (5 minutes by default).
 - **Rolling deployments.** Definitions carry revisions: shared policy comes from the newest stored revision, and older
   processes never claim work requested with argument versions they cannot read.
+- **Connections.** Work uses your data source. Besides your own needs, size its pool for: up to 12 connections for
+  Work's background passes (dispatch, expiry settlement and job maintenance, each on four workers however many
+  sources and definitions you register), one for the signal listener and one for the process heartbeat, and up to the
+  sum of your sources' capacities for running work, whose renewals, ends and handlers use connections.
 - **Connection poolers.** Work runs through any data source. Listening for signals needs a session-level connection,
   so behind PgBouncer in transaction mode, give the store or `AddPostgreSqlSignals` a direct data source.
 - **Shutdown.** Running work gets a grace period. Work still held after it is released for another process.
