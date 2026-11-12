@@ -69,6 +69,18 @@ At startup the host:
 3. verifies the fields and indexes of every registered domain source;
 4. registers the process in the [process registry](#processes) when it is recorded, and starts dispatchers.
 
+### Loops
+
+A process runs one loop per kind of background work, however many sources and definitions it registers: the dispatch
+loop runs the claim passes of every [pool](#pools), the expiry loop the [settlement](leases.md#expiry-settlement)
+passes of every settling source, and the maintenance loop the [planner](#job-planners) passes of every job definition
+whose handler it runs. Each pass keeps its own wake-ups and its own next run, as described for its kind; the loop runs
+the passes that are due one at a time, each at most once per round, so a pass that has more to do at once cannot keep
+the others of its kind waiting for more than one round. These loops therefore hold at most one connection each, and a
+process's connections grow with the work it runs (holds, renewals and handlers), not with the number of sources. The
+cost is that the passes of one kind share the loop's time: a slow claim callback, expiry handler or planning pass
+delays the passes after it in that round.
+
 `work.StartMode(StartMode.Manual)` defers step 4 until the application calls `IWorkHost.StartAsync`, for hosts that
 must finish their own initialization first; the host's start still does steps 1–3, so the application can request
 work before it. Until then the process claims nothing, is not in the registry and runs no maintenance, planning or

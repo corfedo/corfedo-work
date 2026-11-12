@@ -25,7 +25,6 @@ internal sealed class WorkHost : IHostedService, IWorkHost
     private readonly Dictionary<string, DispatchPoolDefinition> pools;
     private readonly List<ILeaseDispatcher> started = [];
     private readonly Dictionary<string, ILeaseDispatcher> dispatchers = new(StringComparer.Ordinal);
-    private readonly List<IExpiryProcessor> processors = [];
     private readonly IWorkInitializer[] initializers;
     private readonly IWorkBackground[] backgrounds;
     private readonly JobRegistry jobs;
@@ -187,7 +186,6 @@ internal sealed class WorkHost : IHostedService, IWorkHost
             if (registration.Settles)
             {
                 var processor = registration.CreateExpiryProcessor(context);
-                processors.Add(processor);
                 expiryLoop.Add(processor.Source, processor.SettleAsync);
             }
         }
