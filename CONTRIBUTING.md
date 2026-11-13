@@ -14,6 +14,9 @@ Signed-off-by: Your Name <you@example.com>
 `git commit -s` adds it. Contributors retain their copyright. Contributions are licensed under Apache-2.0; no
 copyright assignment or additional rights through a contributor license agreement are requested.
 
+The sign-off covers AI-generated content in the commit. AI-assisted contributions follow the
+[organization policy](https://github.com/corfedo/.github/blob/main/CONTRIBUTING.md#ai-assisted-contributions).
+
 ## Commit messages
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) as described in the
