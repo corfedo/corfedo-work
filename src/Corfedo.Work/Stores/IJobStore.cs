@@ -149,6 +149,13 @@ public interface IJobStore
     ValueTask<RetentionPass> RetainAsync(int limit, CancellationToken cancellationToken);
 
     /// <summary>
+    /// For each of <paramref name="definitions"/> with an unsettled lease, from committed records in one statement: the
+    /// time until its earliest unsettled lease expires, zero when one has expired and waits for settlement. Definitions
+    /// without one are left out. Job sources settle without an expiry handler, so no settlement backoff applies.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, TimeSpan>> NextExpiriesAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken);
+
+    /// <summary>
     /// One planning pass of the definition in the store's own transaction: locks up to <paramref name="limit"/> due
     /// recurrences without waiting, consumes their ended occurrences, applies the missed rule and the overlap policy
     /// with the store's clock and creates occurrences idempotently. It runs no outcome hook: occurrences the overlap

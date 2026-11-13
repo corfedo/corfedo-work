@@ -196,5 +196,30 @@ internal sealed partial class PostgreSqlJobStore
         return new JobRunPage(entries, new JobRunCursor(last.StartedAt, last.Job, last.Epoch));
     }
 
+    /// <summary>
+    /// Reads, for each definition, the first entry of <c>jobs_unsettled</c>, which holds only unsettled leases: one
+    /// index probe per definition, however many leases are outstanding.
+    /// </summary>
+    public async ValueTask<IReadOnlyDictionary<string, TimeSpan>> NextExpiriesAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        var expiries = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
+        if (definitions.Count == 0)
+        {
+            return expiries;
+        }
+        await using var command = dataSource.CreateCommand(
+            "SELECT d.key, extract(epoch FROM e.t - clock_timestamp())::float8 FROM unnest($1) AS d (key) CROSS JOIN LATERAL "
+            + $"(SELECT r.lease_expires_at AS t FROM {jobTable} AS r WHERE r.definition = d.key AND r.lease_expires_at IS NOT NULL "
+            + "AND r.settled_epoch < r.lease_epoch ORDER BY r.lease_expires_at LIMIT 1) AS e");
+        command.Parameters.Add(Texts([.. definitions.Distinct(StringComparer.Ordinal)]));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            expiries[reader.GetString(0)] = Seconds(reader.GetDouble(1));
+        }
+        return expiries;
+    }
+
     private static NpgsqlParameter<string[]> Texts(string[] values) => new() { TypedValue = values, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text };
 }

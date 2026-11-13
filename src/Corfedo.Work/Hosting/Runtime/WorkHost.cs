@@ -10,9 +10,9 @@ namespace Corfedo.Work;
 /// describes itself, runs a handler, declares a recurrence, registers a calendar or monitors, recording whether it
 /// monitors, then subscribes to due and cancellation signals and starts the dispatch loop, the expiry loop and the layers' background
 /// loops. A source with a handler runs in its pool, or in a pool of its own with its capacity; every pool claims on the
-/// one dispatch loop and every settling source settles on the one expiry loop, so the number of loops does not grow
-/// with the number of sources. With <see cref="StartMode.Manual"/> the host's start ends after verifying sources, and
-/// <see cref="IWorkHost.StartAsync"/> does the rest. On stop, dispatchers release what they still hold; the process
+/// one dispatch loop and every settling source settles on the one expiry loop, the job definitions in one pass for all
+/// of them, so the number of loops does not grow with the number of sources. With <see cref="StartMode.Manual"/> the
+/// host's start ends after verifying sources, and <see cref="IWorkHost.StartAsync"/> does the rest. On stop, dispatchers release what they still hold; the process
 /// heartbeats until then and is marked stopped last.
 /// </summary>
 internal sealed class WorkHost : IHostedService, IWorkHost
@@ -181,13 +181,22 @@ internal sealed class WorkHost : IHostedService, IWorkHost
                 dispatchers[source] = dispatcher;
             }
         }
-        foreach (var registration in registry.Sources)
+        var jobSources = new List<LeaseSourceRegistration<JobId>>();
+        foreach (var registration in registry.Sources.Where(r => r.Settles))
         {
-            if (registration.Settles)
+            if (registration is LeaseSourceRegistration<JobId> { Source.Job: not null } job)
+            {
+                jobSources.Add(job);
+            }
+            else
             {
                 var processor = registration.CreateExpiryProcessor(context);
                 expiryLoop.Add(processor.Source, processor.SettleAsync);
             }
+        }
+        if (jobSources.Count > 0)
+        {
+            expiryLoop.Add(JobExpiryProcessor.Name, new JobExpiryProcessor(jobSources, context).SettleAsync);
         }
         var monitors = services.GetService(typeof(MonitoringRegistration)) is not null;
         if (process.Configured || registry.Sources.Any(r => r.HasHandler) || jobs.DeclaresRecurrences || jobs.Calendars.Count > 0 || monitors)

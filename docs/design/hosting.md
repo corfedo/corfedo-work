@@ -73,7 +73,7 @@ At startup the host:
 
 A process runs one loop per kind of background pass, however many sources and definitions it registers: the dispatch
 loop runs the claim passes of every [pool](#pools), the expiry loop the [settlement](leases.md#expiry-settlement)
-passes of every settling source, and the maintenance loop the [planner](#job-planners) passes of every job definition
+passes of every settling source, with one pass for all the job definitions it runs, and the maintenance loop the [planner](#job-planners) passes of every job definition
 whose handler it runs. Each pass keeps its own wake-ups and its own next run, as described for its kind; a pass that
 is due runs when one of the loop's four workers is free. A pass never runs on two workers at once, and a wake that
 arrives while it runs makes it due again when it ends. Due passes take turns, so a pass that has more to do at once

@@ -115,7 +115,12 @@ settlement, cancellation, next-due and next-expiry lookups. Two filters apply on
   outcome hooks also reach paused and incompatible jobs.
 
 Job sources always settle expiry, so a store-enforced limit introduced by a later revision counts outstanding leases
-the same way as one present from the start.
+the same way as one present from the start. A process settles the expired leases of all the definitions it runs in
+one pass of its [expiry loop](hosting.md#loops): one statement reads, for every definition, when its earliest
+unsettled lease expires, and only definitions with an expired lease run a settlement. The pass is due at the earliest
+expiry it read and at most 750 ms after the last, as for any settling source, so an idle process costs one statement
+per pass however many definitions it runs (J-42, H-8). Settlements of several definitions run one after another, so
+backlogs of several definitions after a crash drain one batch of 100 after another.
 
 ## Job identity and execution identity
 

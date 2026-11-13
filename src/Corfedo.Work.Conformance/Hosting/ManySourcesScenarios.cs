@@ -55,6 +55,56 @@ public abstract class ManySourcesScenarios(IJobConformanceProvider provider) : J
     }
 
     [Fact]
+    public async Task H8_AProcessSettlesTheExpiredLeasesOfItsJobDefinitionsInTheirOnePass()
+    {
+        var definitions = Enumerable.Range(0, 6).Select(_ => Definition(new JobPolicy { Backoff = Backoff.None, RunHistory = true })).ToArray();
+        var client = await ClientAsync(null, definitions);
+        var first = await RequestAsync(client, definitions[1], "first");
+        var second = await RequestAsync(client, definitions[4], "second");
+        // A process that held both jobs crashed: the first lease expires soon, the second a second later.
+        var firstClaim = await CrashClaimAsync(client, definitions[1], TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(5));
+        var secondClaim = await CrashClaimAsync(client, definitions[4], TimeSpan.FromMilliseconds(1500), TimeSpan.FromSeconds(5));
+        // Paused definitions are not claimed, so only expiry settlement, which ignores pauses, ends the attempts.
+        await InTransactionAsync(async transaction =>
+        {
+            await Jobs(client).PauseAsync(transaction, definitions[1], Cancel);
+            await Jobs(client).PauseAsync(transaction, definitions[4], Cancel);
+        });
+        var runs = new ConcurrentQueue<string>();
+        var script = new JobScript
+        {
+            Run = (args, _, _) =>
+            {
+                runs.Enqueue(args.Value);
+                return ValueTask.FromResult<JobDisposition>(JobResult.Completed);
+            },
+        };
+        // The polling interval is longer than the test, so the settlements come from the expiry pass.
+        var worker = await ProcessAsync(
+            work =>
+            {
+                work.Services.AddSingleton(script);
+                foreach (var definition in definitions)
+                {
+                    work.AddJob<TestArgs, ScriptedJobHandler>(definition, job => job.Lease(TimeSpan.FromSeconds(2)));
+                }
+            },
+            pollingInterval: TimeSpan.FromMinutes(5));
+
+        foreach (var (job, claim, definition) in new[] { (first, firstClaim, definitions[1]), (second, secondClaim, definitions[4]) })
+        {
+            JobRunEntry? lost = null;
+            await EventuallyAsync(
+                async () => (lost = (await Jobs(worker).GetRunsAsync(definition, job.Id, cancellationToken: Cancel)).Runs.SingleOrDefault()) is not null,
+                TimeSpan.FromSeconds(10),
+                $"the expired lease of {definition.Key} is settled");
+            Assert.Equal((JobRunOutcome.LeaseLost, claim.Lease.Epoch), (lost!.Outcome, lost.Epoch));
+            Assert.Equal(((JobOutcome?)null, false), ((await ReadJobAsync(job.Id)).State, (await ReadJobAsync(job.Id)).Held));
+        }
+        Assert.Empty(runs);
+    }
+
+    [Fact]
     public async Task H8_AnExpiryHandlerThatWaitsDoesNotStopSettlementOfAnotherSourceInTheProcess()
     {
         RequireConcurrentTransactions();

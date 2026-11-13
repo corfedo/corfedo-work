@@ -143,4 +143,27 @@ internal sealed partial class InMemoryJobStore
         var last = entries[^1];
         return ValueTask.FromResult(new JobRunPage(entries, new JobRunCursor(last.StartedAt, last.Job, last.Epoch)));
     }
+
+    public ValueTask<IReadOnlyDictionary<string, TimeSpan>> NextExpiriesAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        var wanted = definitions.ToHashSet(StringComparer.Ordinal);
+        var fields = LeaseFields.Default;
+        var now = Now;
+        IReadOnlyDictionary<string, TimeSpan> expiries = database.ReadCommitted(() =>
+        {
+            var earliest = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+            foreach (var r in JobRows.Committed.Values)
+            {
+                if (r.Text(JobColumns.Definition) is not { } definition || !wanted.Contains(definition)
+                    || r.Time(fields.LeaseExpiresAt) is not { } expires || r.Int64(fields.SettledEpoch) >= r.Int64(fields.LeaseEpoch))
+                {
+                    continue;
+                }
+                earliest[definition] = earliest.TryGetValue(definition, out var known) && known <= expires ? known : expires;
+            }
+            return earliest.ToDictionary(e => e.Key, e => e.Value > now ? e.Value - now : TimeSpan.Zero, StringComparer.Ordinal);
+        });
+        return ValueTask.FromResult(expiries);
+    }
 }

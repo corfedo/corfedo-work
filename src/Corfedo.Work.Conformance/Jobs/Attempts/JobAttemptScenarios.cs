@@ -30,6 +30,62 @@ public abstract class JobAttemptScenarios(IJobConformanceProvider provider) : Jo
     }
 
     [Fact]
+    public async Task J42_TheNextExpiriesOfSeveralDefinitionsAreReadInOneCall()
+    {
+        var held = Definition();
+        var expired = Definition();
+        var settled = Definition();
+        var idle = Definition();
+        // Two jobs each: a settled expired lease before a held one, and an unsettled expired lease before a held one.
+        var settledThenHeld = Definition(subject: "feed");
+        var expiredThenHeld = Definition(subject: "feed");
+        var client = await ClientAsync(null, held, expired, settled, idle, settledThenHeld, expiredThenHeld);
+        foreach (var definition in new[] { held, expired, settled, idle })
+        {
+            await RequestAsync(client, definition, "x");
+        }
+        foreach (var definition in new[] { settledThenHeld, expiredThenHeld })
+        {
+            await RequestAsync(client, definition, "a", options: For(Subject.Of("feed", "a")));
+            await RequestAsync(client, definition, "b", options: For(Subject.Of("feed", "b")));
+        }
+        var shortLease = TimeSpan.FromMilliseconds(300);
+        var longLease = TimeSpan.FromSeconds(30);
+        await CrashClaimAsync(client, held, longLease, TimeSpan.FromSeconds(5));
+        var expiring = new List<JobId>();
+        foreach (var definition in new[] { expired, settled, settledThenHeld, expiredThenHeld })
+        {
+            expiring.Add((await CrashClaimAsync(client, definition, shortLease, TimeSpan.FromSeconds(5))).Lease.Key);
+        }
+        await CrashClaimAsync(client, settledThenHeld, longLease, TimeSpan.FromSeconds(5));
+        await CrashClaimAsync(client, expiredThenHeld, longLease, TimeSpan.FromSeconds(5));
+        foreach (var job in expiring)
+        {
+            await EventuallyAsync(async () => !(await ReadJobAsync(job)).Held, TimeSpan.FromSeconds(5), $"the short lease of {job} expires");
+        }
+        // The client runs no handler, so nothing settles the expired leases but these settlements.
+        IWorkStore store = null!;
+        foreach (var definition in new[] { settled, settledThenHeld })
+        {
+            (store, var source) = await JobSourceAsync(client, definition, shortLease);
+            Assert.Equal(1, await store.Leases.SettleExpiredAsync(source, LeaseCallbacks<JobId>.None, 10, Cancel));
+        }
+
+        var expiries = await store.Jobs.NextExpiriesAsync(
+            [held.Key, expired.Key, settled.Key, idle.Key, settledThenHeld.Key, expiredThenHeld.Key, "job-without-records"], Cancel);
+
+        Assert.Equal(
+            new[] { held.Key, expired.Key, settledThenHeld.Key, expiredThenHeld.Key }.Order(StringComparer.Ordinal),
+            expiries.Keys.Order(StringComparer.Ordinal));
+        Assert.InRange(expiries[held.Key], TimeSpan.FromSeconds(20), longLease);
+        Assert.InRange(expiries[settledThenHeld.Key], TimeSpan.FromSeconds(20), longLease);
+        Assert.Equal(TimeSpan.Zero, expiries[expired.Key]);
+        Assert.Equal(TimeSpan.Zero, expiries[expiredThenHeld.Key]);
+        Assert.Empty(await store.Jobs.NextExpiriesAsync([], Cancel));
+        Assert.Equal([expired.Key], (await store.Jobs.NextExpiriesAsync([expired.Key], Cancel)).Keys);
+    }
+
+    [Fact]
     public async Task J11_ARetryWaitsForTheLongerOfItsDelayAndTheBackoff()
     {
         var definition = Definition(new JobPolicy { Attempts = 5, Backoff = Backoff.Constant(TimeSpan.FromSeconds(10)) });

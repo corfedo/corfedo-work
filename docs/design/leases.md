@@ -217,7 +217,9 @@ treats its expired leases alike, and the processes that can release the resource
 - the expiry processor's pass for a source is due at the earliest known expiry and at most 750 ms after its last pass,
   also when it knows of no expiry: a claim can commit after its lease expired and a record can stay locked past expiry,
   and neither is signalled. The wait bounds how long such a lease waits once it is committed, expired and unlocked. The
-  pass runs on the process's [expiry loop](hosting.md#loops) when one of its workers is free;
+  pass runs on the process's [expiry loop](hosting.md#loops) when one of its workers is free. The job definitions a
+  process runs share one such pass, which settles them one after another
+  ([jobs](jobs.md#scope-of-a-definitions-statements));
 - a settlement wakes claimers, since it frees a slot of the source's limits and makes the record claimable for
   claimers without the handler.
 

@@ -317,8 +317,8 @@ internal sealed partial class LeaseDispatcher<TKey> : IDispatchLane
 internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
     where TKey : notnull
 {
-    private const int BatchSize = 100;
-    private static readonly TimeSpan MaximumWait = TimeSpan.FromMilliseconds(750);
+    internal const int BatchSize = 100;
+    internal static readonly TimeSpan MaximumWait = TimeSpan.FromMilliseconds(750);
 
     private readonly LeaseSourceRegistration<TKey> registration;
     private readonly LeaseCallbacks<TKey> callbacks;

@@ -236,4 +236,33 @@ internal sealed partial class SqlServerJobStore
         var last = entries[^1];
         return new JobRunPage(entries, new JobRunCursor(last.StartedAt, last.Job, last.Epoch));
     }
+
+    /// <summary>
+    /// Reads, for each definition, the earliest unsettled lease from <c>jobs_expiry</c>, which leads with the definition
+    /// and the expiry and carries the epochs. The index also holds settled leases that were not claimed again, and the
+    /// seek of a definition passes them, as the per-source next-expiry statement does.
+    /// </summary>
+    public async ValueTask<IReadOnlyDictionary<string, TimeSpan>> NextExpiriesAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        var expiries = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
+        if (definitions.Count == 0)
+        {
+            return expiries;
+        }
+        await using var connection = await leases.OpenAsync(cancellationToken);
+        await using var command = Tsql.Command(connection, null, $"""
+            SELECT d.value, {Tsql.Micros("SYSUTCDATETIME()", "e.t")}
+            FROM OPENJSON(@definitions) WITH (value nvarchar(200) COLLATE {Tsql.Binary} '$') AS d
+            CROSS APPLY (SELECT TOP (1) r.lease_expires_at AS t FROM {Jobs} AS r WITH (INDEX(jobs_expiry))
+                WHERE r.[definition] = d.value AND r.lease_expires_at IS NOT NULL AND r.settled_epoch < r.lease_epoch ORDER BY r.lease_expires_at) AS e;
+            """,
+            Tsql.Strings("@definitions", definitions.Distinct(StringComparer.Ordinal)));
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
+        {
+            expiries[reader.GetString(0)] = Tsql.FromMicros(reader.GetInt64(1));
+        }
+        return expiries;
+    }
 }
