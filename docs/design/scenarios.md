@@ -88,9 +88,10 @@ client holding a lease; "pause" means a holder stops running (a long GC pause, a
 
 The conformance suite runs scenarios stated in minutes with seconds: J-7 with a grace of 2 seconds, J-27 with a timeout
 of 1 second and a handler that ignores it for 6 seconds. Recurring scenarios scale minutes and days to seconds: J-3,
-J-4, J-14 and J-16 use intervals of 1 second, J-6 a cron expression every second with 3.5 seconds of downtime, J-12 a
-3-second grid in place of a day, and J-18 a pause of 2.5 seconds. Scenarios that need an occurrence to be absent use
-hourly schedules.
+J-4, J-14 and J-16 use intervals of 1 second, J-6 a cron expression every second with at least 3.5 seconds of
+downtime, ending within the first 100 ms of a second so the first planning pass has about 900 ms before the next
+instant, J-12 a 3-second grid in place of a day, and J-18 a pause of 2.5 seconds. Scenarios that need an occurrence to
+be absent use hourly schedules.
 
 | ID | Scenario | Expected | Covers |
 |---|---|---|---|

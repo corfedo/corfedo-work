@@ -171,7 +171,12 @@ public abstract class JobRecurrenceScenarios(IJobConformanceProvider provider) :
         Assert.Equal(latest.Instant + TimeSpan.FromSeconds(1), observed[1].Instant);
     }
 
-    /// <summary>A recurrence every second is scheduled while no process runs the definition, which starts 3.5 seconds later.</summary>
+    /// <summary>
+    /// A recurrence every second is scheduled while no process runs the definition, which starts at least 3.5 seconds
+    /// later, within the first 100 ms of a second by the store's clock. The latest missed instant is the one at or before
+    /// the start only if the worker's first planning pass reads the clock before the next second, so starting early in
+    /// a second leaves that pass about 900 ms whatever second the scenario starts in.
+    /// </summary>
     private async Task<(ConcurrentQueue<ObservedOccurrence> Runs, DateTimeOffset Started, DateTimeOffset Scheduled)> DowntimeAsync(Missed missed)
     {
         var definition = Definition(subject: "feed");
@@ -179,10 +184,25 @@ public abstract class JobRecurrenceScenarios(IJobConformanceProvider provider) :
         var scheduled = await Provider.NowAsync(Cancel);
         await ScheduleAsync(client, definition, "x", Schedule.Cron("* * * * * *", "UTC"), Recurring(Subject.Of("feed", "a"), missed: missed));
         await Task.Delay(3500, Cancel);
-        var started = await Provider.NowAsync(Cancel);
+        var started = await StartOfSecondAsync();
         var runs = new ConcurrentQueue<ObservedOccurrence>();
         await WorkerAsync(definition, Occurrences(runs), pollingInterval: Polling);
         return (runs, started, scheduled);
+    }
+
+    /// <summary>The store's clock, read within the first 100 ms of a second.</summary>
+    private async Task<DateTimeOffset> StartOfSecondAsync()
+    {
+        while (true)
+        {
+            var now = await Provider.NowAsync(Cancel);
+            var into = TimeSpan.FromTicks(now.UtcTicks % TimeSpan.TicksPerSecond);
+            if (into < TimeSpan.FromMilliseconds(100))
+            {
+                return now;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(1) - into + TimeSpan.FromMilliseconds(10), Cancel);
+        }
     }
 
     [Fact]
