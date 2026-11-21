@@ -467,8 +467,9 @@ they run no outcome hook and do not require the definition to be registered.
   default, at most 1 000) after `after`, the cursor of the previous page, newest end first and in an order the store
   keeps stable at equal end times; `Next` is null on the last page. Each `FailedJob` has the job id, the ended
   execution id, the outcome, reason code, end time, attempts used, subject, partition and argument version;
-  arguments and results are not read. The cursor, `FailedJobCursor`, is opaque; it holds the last entry's end time
-  and job id, so pages neither repeat nor skip a job while others fail, are rerun or discarded.
+  arguments and results are not read. The cursor, `FailedJobCursor(EndedAt, Job)`, is the last entry's end time
+  and job id, like the run history's cursor, so pages neither repeat nor skip a job while others fail, are rerun or
+  discarded, and a caller can carry it across requests. Built from a listed `FailedJob`, it continues after that job.
 - `CountFailedAsync(definitions)` returns the number of failed jobs of each given definition in one statement, keyed
   by definition key, zero for a definition that has none or is not stored. It reads every failed job the definitions
   keep, so callers such as readiness checks read it periodically, not per request.
@@ -570,6 +571,8 @@ a definition that does not declare it keeps its digest and stored revision.
 - Ended occurrences are kept until their recurrence's planner consumed them, and a recurrence's awaited occurrence
   is kept.
 - Run history is retained independently of its jobs: entries outlive a deleted job, and expire while it is kept.
+- A window that reaches before 0001-01-01, the earliest time .NET and SQL Server keep, deletes nothing, in every
+  provider and for jobs, failed jobs, run history, chains and incidents alike: `TimeSpan.MaxValue` keeps them for good.
 - A deleted job's outcome and result go with it: `GetOutcomeAsync` returns null as for an unknown id, and status by
   subject no longer shows it. Applications that need outcomes for longer persist them through the outcome hook.
 

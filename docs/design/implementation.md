@@ -14,7 +14,7 @@ PostgreSQL; a stage that changes semantics updates the design and the scenarios 
 | 7. Signals | The signals layer of [signals](signals.md): the signals layer, the PostgreSQL and in-memory transports, framework topics, the EF Core send. | S-1–S-8 (S-6, S-7 as PostgreSQL tests) | Done |
 | 8. First public release | Package metadata, SourceLink and symbol packages, CI and release workflows, package readme, public documentation pass; the owner makes the repository public and publishes. | — | Done |
 | 9. SQL Server provider | `Corfedo.Work.SqlServer` as designed in [SQL Server provider](sqlserver.md): schema, every store contract, the signals table transport, the EF Core adapter on SQL Server, the guides; the whole conformance suite on SQL Server 2022 and 2025. | All | Done |
-| 10. Failed jobs | `JobPolicy.FailedRetention`, the failed-jobs list and count, discard, in every provider, as designed in [retention](jobs.md#retention) and [operator actions](jobs.md#operator-actions). | J-43–J-46 | Done |
+| 10. Failed jobs | `JobPolicy.FailedRetention`, the failed-jobs list and count, discard, in every provider, as designed in [retention](jobs.md#retention) and [operator actions](jobs.md#operator-actions). | J-43–J-47 | Done |
 
 The lease, reconciliation, job and process registry scenarios run as `Corfedo.Work.Conformance` tests against
 PostgreSQL 18.6 in `tests/Corfedo.Work.PostgreSql.Tests`, and against the in-memory provider in
@@ -156,6 +156,7 @@ The cron scenarios J-5 and J-34 involve no store: they run as tests of the occur
 | J-44 | J21 | [Operator actions](jobs.md#operator-actions): failed jobs | 10b |
 | J-45 | J21 | Operator actions: failed jobs | 10b |
 | J-46 | J21, D4 | [Operator actions](jobs.md#operator-actions) | 10c |
+| J-47 | J12 | [Retention](jobs.md#retention) | 10a |
 | D-1 | D2 | [Subject lifecycle](domain-and-jobs.md#the-subjects-lifecycle-in-the-domain-transaction) | 4a |
 | D-2 | D3 | [Completion with the domain output](domain-and-jobs.md#completion-with-the-domain-output) | 4a |
 | D-3 | D4 | Outcome hooks, attempts | 4a |
@@ -229,8 +230,9 @@ The provider passes the whole conformance suite before 0.2.0 is released. Each s
 Each step adds its conformance scenarios first and runs them on PostgreSQL, SQL Server and the in-memory provider.
 The upgrade script of 10a narrows `jobs_retention`, so it is an exception to keeping the previous release working:
 during a rolling deployment, retention in processes of the previous release fails on SQL Server, whose statement names
-the index in a hint, and runs without a matching index on PostgreSQL, until those processes are replaced. Everything
-else of the previous release keeps working. The release notes state it.
+the index in a hint, and on PostgreSQL runs without a matching index and deletes failed jobs once the job window has
+passed, whatever their `FailedRetention`, until those processes are replaced. Everything else of the previous release
+keeps working. The release notes state it.
 
 | Step | Contents | Status |
 |---|---|---|
