@@ -439,7 +439,8 @@ The first provider.
   70% terminal ended over the last 30 days), 7 days job retention: 20 definitions keep failed jobs until handled
   (97 663, 48 000 of them in the large definition) and 30 take the job window (4 903). `jobs_failed` takes 6.4 MB and
   `jobs_retention` 24 MB. A page of 50 failed jobs takes 0.45 ms, and 0.51 ms at any depth with the cursor (400 pages);
-  counting 20 or 50 definitions in one statement 3.9–4.2 ms, reading every failed job they keep; a discard 0.76 ms
+  counting 20 or 50 definitions in one statement 3.9–4.2 ms, reading every failed job they keep (16.5 ms at 397 663),
+  an index-only scan measured right after `VACUUM`, so heap fetches on pages written since the last vacuum add to it; a discard 0.76 ms
   (p90 0.90 ms). The first retention pass deleted 53 723 jobs in 359 ms, the drain of 462 062 took 286 passes and
   13.2 s, and a pass with nothing expired takes 37 ms for the 50 definitions, about 150 statements in transactions of their own. Drained, the
   large definition's job statement reads 5 buffers in 0.02 ms; on an index that also holds failed jobs

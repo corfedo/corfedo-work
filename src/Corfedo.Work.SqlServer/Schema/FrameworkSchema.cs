@@ -426,12 +426,13 @@ internal static class FrameworkSchema
         // -10 000 (-1 ms) to keep them until they are rerun or discarded; null, as stored definitions and those a previous
         // release stores have it, takes the job retention. Retention reads failed jobs on jobs_failed and the other
         // terminal jobs on jobs_retention, so neither reads the other's; jobs_failed also serves the failed-jobs list and
-        // count.
+        // count. A filtered index does not hold its filter's columns: jobs_failed includes them, so the count reads the
+        // index alone instead of looking every failed job up in the clustered index.
         (3, """
             ALTER TABLE {schema}.job_definitions ADD failed_retention bigint;
             DROP INDEX jobs_retention ON {schema}.jobs;
             CREATE INDEX jobs_retention ON {schema}.jobs (definition, ended_at) WHERE state <> 0 AND state <> 2 AND state <> 4 AND chain_id IS NULL;
-            CREATE INDEX jobs_failed ON {schema}.jobs (definition, ended_at, id) WHERE state IN (2, 4) AND chain_id IS NULL;
+            CREATE INDEX jobs_failed ON {schema}.jobs (definition, ended_at, id) INCLUDE (state, chain_id) WHERE state IN (2, 4) AND chain_id IS NULL;
             """),
     ];
 
