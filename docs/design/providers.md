@@ -414,10 +414,12 @@ The first provider.
   standalone job holds its identity (`jobs_merge`) in a new statement. It then updates the row: state 0, due now, a new `execution_id`, attempts, failures and takeovers 0, not
   started, the cancellation request and progress cleared and the pause copied from `job_pauses`. The outcome,
   reason, end time, ended execution and result of the ended execution stay on the row, and `lease_epoch` continues.
-- Retention: `job_definitions` stores `job_retention` and `run_history_retention`. A pass reads the stored definitions
-  and runs two statements per definition, each in its own transaction: `DELETE ... USING (SELECT ... ORDER BY
-  ended_at LIMIT n FOR UPDATE SKIP LOCKED)` over `jobs_retention (definition, ended_at) WHERE state <> 0 AND chain_id IS
-  NULL`, which leaves chain steps to their chain's retention, bounded by
+- Retention: `job_definitions` stores `job_retention`, `failed_retention` (null keeps failed jobs until handled) and
+  `run_history_retention`. A pass reads the stored definitions and runs three statements per definition, each in its
+  own transaction: `DELETE ... USING (SELECT ... ORDER BY ended_at LIMIT n FOR UPDATE SKIP LOCKED)` over `jobs_failed
+  (definition, ended_at, id) WHERE state IN (2, 4) AND chain_id IS NULL` with the failed window, the same over
+  `jobs_retention (definition, ended_at) WHERE state <> 0 AND state <> 2 AND state <> 4 AND chain_id IS NULL` with the
+  job window, which leave chain steps to their chain's retention, bounded by
   `now()` minus the stored duration as a scalar subquery, keeping unconsumed occurrences and a recurrence's awaited
   job; and the same over `job_runs_retention
   (definition, ended_at)`, which covers entries with and without a subject. A job a rerun made outstanding again

@@ -14,7 +14,7 @@ PostgreSQL; a stage that changes semantics updates the design and the scenarios 
 | 7. Signals | The signals layer of [signals](signals.md): the signals layer, the PostgreSQL and in-memory transports, framework topics, the EF Core send. | S-1–S-8 (S-6, S-7 as PostgreSQL tests) | Done |
 | 8. First public release | Package metadata, SourceLink and symbol packages, CI and release workflows, package readme, public documentation pass; the owner makes the repository public and publishes. | — | Done |
 | 9. SQL Server provider | `Corfedo.Work.SqlServer` as designed in [SQL Server provider](sqlserver.md): schema, every store contract, the signals table transport, the EF Core adapter on SQL Server, the guides; the whole conformance suite on SQL Server 2022 and 2025. | All | Done |
-| 10. Failed jobs | `JobPolicy.FailedRetention`, the failed-jobs list and count, discard, in every provider, as designed in [retention](jobs.md#retention) and [operator actions](jobs.md#operator-actions). | J-43–J-46 | Designed |
+| 10. Failed jobs | `JobPolicy.FailedRetention`, the failed-jobs list and count, discard, in every provider, as designed in [retention](jobs.md#retention) and [operator actions](jobs.md#operator-actions). | J-43–J-46 | Implemented; SQL Server suite, full check and measurements pending |
 
 The lease, reconciliation, job and process registry scenarios run as `Corfedo.Work.Conformance` tests against
 PostgreSQL 18.6 in `tests/Corfedo.Work.PostgreSql.Tests`, and against the in-memory provider in
