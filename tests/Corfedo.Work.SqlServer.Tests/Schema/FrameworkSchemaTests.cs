@@ -163,14 +163,15 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
                 "SELECT STRING_AGG(CONCAT(i.name, N':', i.filter_definition), N'|') WITHIN GROUP (ORDER BY i.name) FROM sys.indexes AS i "
                 + "WHERE i.object_id = OBJECT_ID(N'failed_upgrade.jobs') AND i.name IN (N'jobs_failed', N'jobs_retention')",
                 Cancel));
+        const string FailedColumns =
+            "FROM sys.indexes AS i JOIN sys.index_columns AS ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id "
+            + "JOIN sys.columns AS c ON c.object_id = ic.object_id AND c.column_id = ic.column_id "
+            + "WHERE i.object_id = OBJECT_ID(N'failed_upgrade.jobs') AND i.name = N'jobs_failed' AND ic.is_included_column = ";
         Assert.Equal(
             "definition,ended_at,id|chain_id,state",
             await database.ScalarAsync(
-                "SELECT CONCAT(STRING_AGG(CASE WHEN ic.is_included_column = 0 THEN c.name END, N',') WITHIN GROUP (ORDER BY ic.key_ordinal), N'|', "
-                + "STRING_AGG(CASE WHEN ic.is_included_column = 1 THEN c.name END, N',') WITHIN GROUP (ORDER BY c.name)) "
-                + "FROM sys.indexes AS i JOIN sys.index_columns AS ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id "
-                + "JOIN sys.columns AS c ON c.object_id = ic.object_id AND c.column_id = ic.column_id "
-                + "WHERE i.object_id = OBJECT_ID(N'failed_upgrade.jobs') AND i.name = N'jobs_failed'",
+                $"SELECT CONCAT((SELECT STRING_AGG(c.name, N',') WITHIN GROUP (ORDER BY ic.key_ordinal) {FailedColumns}0), N'|', "
+                + $"(SELECT STRING_AGG(c.name, N',') WITHIN GROUP (ORDER BY c.name) {FailedColumns}1))",
                 Cancel));
 
         // Failed jobs that ended four and two days ago: retention deletes the first with the three-day job window.
