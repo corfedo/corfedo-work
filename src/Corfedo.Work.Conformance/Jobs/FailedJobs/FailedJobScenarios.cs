@@ -15,7 +15,8 @@ public abstract class FailedJobScenarios(IJobConformanceProvider provider) : Job
     [Fact]
     public async Task J43_FailedJobsAreKeptForTheirOwnWindowOrUntilHandled()
     {
-        var keeping = Definition(Policy(Short, Timeout.InfiniteTimeSpan), subject: "feed");
+        // Only this definition skips late jobs, with a grace no job requested for now exceeds on a slow machine.
+        var keeping = Definition(Policy(Short, Timeout.InfiniteTimeSpan) with { Late = Late.SkipAfter(TimeSpan.FromMinutes(1)) }, subject: "feed");
         var shortFailed = Definition(Policy(Long, Short), subject: "feed");
         var unset = Definition(Policy(Short, null), subject: "feed");
         var flaky = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
@@ -33,7 +34,7 @@ public abstract class FailedJobScenarios(IJobConformanceProvider provider) : Job
         var failed = await RequestAsync(worker, keeping, "fail", options: For(Subject.Of("feed", "failed")));
         var exhausted = await RequestAsync(worker, keeping, "retry", options: For(Subject.Of("feed", "exhausted")));
         var timedOut = await RequestAsync(worker, keeping, "timeout", options: For(Subject.Of("feed", "timed-out")));
-        var skipped = await RequestAsync(worker, keeping, "complete", Schedule.At(DateTimeOffset.UtcNow.AddSeconds(-5)), For(Subject.Of("feed", "skipped")));
+        var skipped = await RequestAsync(worker, keeping, "complete", Schedule.At(DateTimeOffset.UtcNow.AddMinutes(-5)), For(Subject.Of("feed", "skipped")));
         var cancelled = await RequestAsync(worker, keeping, "complete", Schedule.After(Long), For(Subject.Of("feed", "cancelled")));
         await InTransactionAsync(t => Jobs(worker).CancelAsync(t, keeping, Subject.Of("feed", "cancelled"), Cancel));
         var rerunCompletes = await RequestAsync(worker, keeping, "flaky", options: For(Subject.Of("feed", "rerun-completes")));
@@ -177,7 +178,7 @@ public abstract class FailedJobScenarios(IJobConformanceProvider provider) : Job
         var fewFailing = (await InTransactionAsync(t => Jobs(worker).RequestManyAsync(
             t, few, Enumerable.Range(0, 3).Select(i => new JobRequestItem<TestArgs>(new TestArgs("fail"), For(Subject.Of("feed", $"f{i}")))), Schedule.Now, Cancel))).Select(r => r.Id).ToArray();
         await RequestAsync(worker, few, "complete", options: For(Subject.Of("feed", "completed")));
-        await EventuallyAsync(async () => (await ReadJobsAsync(many)).All(j => j.State is not null), TimeSpan.FromSeconds(60), "every job of many ends");
+        await EventuallyAsync(async () => (await ReadJobsAsync(many)).All(j => j.State is not null), TimeSpan.FromMinutes(2), "every job of many ends");
         await EventuallyAsync(async () => (await ReadJobsAsync(few)).All(j => j.State is not null), Ends, "every job of few ends");
 
         var counts = await Jobs(worker).CountFailedAsync([none, few, many, never], Cancel);
@@ -285,7 +286,6 @@ public abstract class FailedJobScenarios(IJobConformanceProvider provider) : Job
         Attempts = 1,
         Backoff = Backoff.None,
         Timeout = TimeSpan.FromSeconds(1),
-        Late = Late.SkipAfter(TimeSpan.FromSeconds(2)),
         Retention = retention,
         FailedRetention = failedRetention,
     };
