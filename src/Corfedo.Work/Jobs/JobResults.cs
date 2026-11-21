@@ -170,21 +170,11 @@ public sealed record FailedJob(
     string? Partition,
     int ArgsVersion);
 
-/// <summary>Where a page of failed jobs continues; obtained from <see cref="FailedJobPage.Next"/>.</summary>
-public sealed class FailedJobCursor
-{
-    internal FailedJobCursor(DateTimeOffset endedAt, JobId job)
-    {
-        EndedAt = endedAt;
-        Job = job;
-    }
-
-    /// <summary>The end time of the last job of the previous page.</summary>
-    internal DateTimeOffset EndedAt { get; }
-
-    /// <summary>The last job of the previous page, which orders jobs that ended at the same time.</summary>
-    internal JobId Job { get; }
-}
+/// <summary>
+/// Where a page of failed jobs ended: the end time and id of its last job. Jobs that ended at the same time continue in
+/// the store's own order of their ids.
+/// </summary>
+public sealed record FailedJobCursor(DateTimeOffset EndedAt, JobId Job);
 
 /// <summary>Failed jobs, newest end first, and the cursor of the next page; null when there are no more.</summary>
 public sealed record FailedJobPage(IReadOnlyList<FailedJob> Jobs, FailedJobCursor? Next);
