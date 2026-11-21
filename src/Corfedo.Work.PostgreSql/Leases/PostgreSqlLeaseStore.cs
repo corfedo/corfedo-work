@@ -41,6 +41,13 @@ internal sealed partial class PostgreSqlLeaseStore(NpgsqlDataSource dataSource, 
 
     internal static NpgsqlParameter<TimeSpan> Interval(TimeSpan value) => new() { TypedValue = value, NpgsqlDbType = NpgsqlDbType.Interval };
 
+    /// <summary>
+    /// The SQL time <paramref name="window"/> before <paramref name="clock"/>, clamped to 0001-01-01, the earliest time
+    /// .NET and SQL Server keep: a window that reaches before it, or a null one, deletes nothing, where the subtraction
+    /// alone would fail out of the timestamp range.
+    /// </summary>
+    internal static string Before(string clock, string window) => $"({clock} - LEAST({window}, {clock} - timestamptz '0001-01-01 00:00:00+00'))";
+
     internal static NpgsqlParameter<string> Text(string value) => new() { TypedValue = value, NpgsqlDbType = NpgsqlDbType.Text };
 
     internal static TimeSpan Seconds(double seconds) => seconds <= 0 ? TimeSpan.Zero : TimeSpan.FromSeconds(seconds);

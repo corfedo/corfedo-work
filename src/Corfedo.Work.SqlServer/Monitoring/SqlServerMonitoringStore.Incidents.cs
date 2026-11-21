@@ -239,7 +239,7 @@ internal sealed partial class SqlServerMonitoringStore
             await reader.NextRowAsync(cancellationToken);
             now = Tsql.Time(reader, 0);
         }
-        var bound = retention.Ticks >= (now - DateTimeOffset.MinValue).Ticks ? DateTimeOffset.MinValue : now - retention;
+        var bound = JobRetention.Before(now, retention);
         var resolved = await DeleteAsync($"""
             DECLARE @doomed nvarchar(max) = N'';
             {Tsql.LockEach("resolved_scan", "@limit",

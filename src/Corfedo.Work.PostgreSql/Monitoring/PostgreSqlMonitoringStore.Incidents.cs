@@ -229,7 +229,7 @@ internal sealed partial class PostgreSqlMonitoringStore
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         await using var batch = dataSource.CreateBatch();
         batch.BatchCommands.Add(Command(
-            $"DELETE FROM {incidents} AS i USING (SELECT r.id FROM {incidents} AS r WHERE r.resolved_at < clock_timestamp() - $1 "
+            $"DELETE FROM {incidents} AS i USING (SELECT r.id FROM {incidents} AS r WHERE r.resolved_at < {Before("clock_timestamp()", "$1")} "
             + "ORDER BY r.resolved_at LIMIT $2 FOR UPDATE SKIP LOCKED) AS v WHERE i.id = v.id",
             Interval(retention),
             Int32(limit)));

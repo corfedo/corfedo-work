@@ -46,7 +46,7 @@ internal sealed partial class InMemoryJobStore
                 {
                     return 0;
                 }
-                var horizon = Now - retention;
+                var horizon = JobRetention.Before(Now, retention);
                 var expired = work.Scan(application.Runs)
                     .Where(r => r.Row.Definition == key && r.Row.Entry.EndedAt < horizon)
                     .OrderBy(r => r.Row.Entry.EndedAt)
@@ -68,7 +68,7 @@ internal sealed partial class InMemoryJobStore
 
         int DeleteExpired(InMemoryTransaction work, string key, TimeSpan window, bool failed)
         {
-            var horizon = Now - window;
+            var horizon = JobRetention.Before(Now, window);
             var awaited = Awaited(work);
             var expired = Jobs(work, key)
                 .Where(r => Failed(r) == failed && Deletable(r, awaited) && r.Time(JobColumns.EndedAt) < horizon)

@@ -384,7 +384,7 @@ internal sealed partial class InMemoryJobStore
             .Where(c => c.Row.SettledAt is { } settled
                 && (c.Row.OwnerDefinition is { } owner ? [owner] : c.Row.Definitions).Where(retention.ContainsKey).Select(d => retention[d]).DefaultIfEmpty(TimeSpan.MaxValue).Max() is var window
                 && window != TimeSpan.MaxValue
-                && settled < now - window)
+                && settled < JobRetention.Before(now, window))
             .OrderBy(c => c.Row.SettledAt)
             .Take(limit)
             .Select(c => c.Key)

@@ -40,13 +40,13 @@ internal sealed partial class PostgreSqlJobStore
         var runs = Leases.LeaseSql.Quote(schema) + ".job_runs";
         // Failed jobs and the other terminal jobs are read on indexes of their own, jobs_failed and jobs_retention, whose
         // predicates the state conditions repeat. A null failed retention takes the job window; the negative one of
-        // Timeout.InfiniteTimeSpan keeps failed jobs: the bound is null and selects none.
+        // Timeout.InfiniteTimeSpan keeps failed jobs: the window is null and the bound the earliest time.
         var deleteJobs = DeleteExpired(table, "r.state <> 2 AND r.state <> 4", "d.job_retention");
         var deleteFailed = DeleteExpired(
             table, "r.state IN (2, 4)", "CASE WHEN d.failed_retention < interval '0' THEN NULL ELSE COALESCE(d.failed_retention, d.job_retention) END");
         var deleteRuns =
             $"DELETE FROM {runs} AS h USING (SELECT r.job_id, r.epoch FROM {runs} AS r WHERE r.definition = $1 "
-            + $"AND r.ended_at < now() - (SELECT d.run_history_retention FROM {definitions} AS d WHERE d.key = $1) "
+            + $"AND r.ended_at < {Before("now()", $"(SELECT d.run_history_retention FROM {definitions} AS d WHERE d.key = $1)")} "
             + "ORDER BY r.ended_at LIMIT $2 FOR UPDATE OF r SKIP LOCKED) AS v WHERE h.job_id = v.job_id AND h.epoch = v.epoch";
         int jobs = 0, entries = 0;
         var more = false;
@@ -64,9 +64,8 @@ internal sealed partial class PostgreSqlJobStore
         // The chosen chains are collected into an array, so their steps and rows are deleted by key lookups; joined to
         // the selection, the planner merged it with the whole step index.
         var chainsDeleted = await DeleteAsync(
-            $"WITH v AS (SELECT array_agg(c.id) AS ids FROM (SELECT c.id FROM {chains} AS c WHERE c.settled_at < now() - (SELECT min(d.job_retention) FROM {definitions} AS d) "
-            + $"AND c.settled_at < now() - (SELECT max(d.job_retention) FROM {definitions} AS d "
-            + "WHERE d.key = ANY(CASE WHEN c.owner_definition IS NULL THEN c.definitions ELSE ARRAY[c.owner_definition] END)) "
+            $"WITH v AS (SELECT array_agg(c.id) AS ids FROM (SELECT c.id FROM {chains} AS c WHERE c.settled_at < {Before("now()", $"(SELECT min(d.job_retention) FROM {definitions} AS d)")} "
+            + $"AND c.settled_at < {Before("now()", $"(SELECT max(d.job_retention) FROM {definitions} AS d WHERE d.key = ANY(CASE WHEN c.owner_definition IS NULL THEN c.definitions ELSE ARRAY[c.owner_definition] END))")} "
             + "ORDER BY c.settled_at LIMIT $2 FOR UPDATE OF c SKIP LOCKED) AS c), "
             + $"s AS (DELETE FROM {table} AS j WHERE j.chain_id = ANY((SELECT ids FROM v)::uuid[])) "
             + $"DELETE FROM {chains} AS c WHERE c.id = ANY((SELECT ids FROM v)::uuid[])",
@@ -75,7 +74,7 @@ internal sealed partial class PostgreSqlJobStore
 
         string DeleteExpired(string jobs, string state, string window) =>
             $"DELETE FROM {jobs} AS j USING (SELECT r.id FROM {jobs} AS r WHERE r.definition = $1 AND {state} AND {Deletable("r")} "
-            + $"AND r.ended_at < now() - (SELECT {window} FROM {definitions} AS d WHERE d.key = $1) "
+            + $"AND r.ended_at < {Before("now()", $"(SELECT {window} FROM {definitions} AS d WHERE d.key = $1)")} "
             + "ORDER BY r.ended_at LIMIT $2 FOR UPDATE OF r SKIP LOCKED) AS v WHERE j.id = v.id";
 
         async Task<int> DeleteAsync(string text, string key)

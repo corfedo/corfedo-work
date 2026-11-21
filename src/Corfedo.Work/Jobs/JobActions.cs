@@ -126,6 +126,13 @@ public sealed record JobRetention
         Incidents = resolved;
     }
 
+    /// <summary>
+    /// The time <paramref name="window"/> before <paramref name="now"/>, clamped to <see cref="DateTimeOffset.MinValue"/>,
+    /// the earliest time .NET and SQL Server keep: a window that reaches before it deletes nothing.
+    /// </summary>
+    internal static DateTimeOffset Before(DateTimeOffset now, TimeSpan window) =>
+        window.Ticks >= (now - DateTimeOffset.MinValue).Ticks ? DateTimeOffset.MinValue : now - window;
+
     /// <summary>Seven days for terminal jobs, thirty days for run history, ninety days for resolved incidents.</summary>
     public static JobRetention Default { get; } = new(TimeSpan.FromDays(7), TimeSpan.FromDays(30));
 

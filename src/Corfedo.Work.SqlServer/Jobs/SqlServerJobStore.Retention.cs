@@ -69,12 +69,12 @@ internal sealed partial class SqlServerJobStore
             // Timeout.InfiniteTimeSpan keeps failed jobs until they are rerun or discarded and is never subtracted from the clock.
             if (failedRetention != Timeout.InfiniteTimeSpan)
             {
-                var deletedFailed = await DeleteAsync(deleteFailed, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, failedRetention)));
+                var deletedFailed = await DeleteAsync(deleteFailed, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", JobRetention.Before(now, failedRetention)));
                 jobs += deletedFailed;
                 more |= deletedFailed == limit;
             }
-            var deleted = await DeleteAsync(deleteJobs, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, jobRetention)));
-            var deletedRuns = await DeleteAsync(deleteRuns, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, runRetention)));
+            var deleted = await DeleteAsync(deleteJobs, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", JobRetention.Before(now, jobRetention)));
+            var deletedRuns = await DeleteAsync(deleteRuns, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", JobRetention.Before(now, runRetention)));
             jobs += deleted;
             entries += deletedRuns;
             more |= deleted == limit || deletedRuns == limit;
@@ -97,7 +97,7 @@ internal sealed partial class SqlServerJobStore
                 DELETE c FROM {Tsql.KeyRows("@doomed", Tsql.IdKey)} AS d INNER LOOP JOIN {chains} AS c WITH (FORCESEEK) ON c.id = d.id;
                 SELECT @@ROWCOUNT;
                 """,
-                Tsql.Time("@bound", Before(now, keys.Min(k => k.Jobs))),
+                Tsql.Time("@bound", JobRetention.Before(now, keys.Min(k => k.Jobs))),
                 Tsql.Time("@now", now));
         }
         return new(jobs, entries, chainsDeleted, more || chainsDeleted == limit);
@@ -127,8 +127,4 @@ internal sealed partial class SqlServerJobStore
 
     /// <summary>The key of the run history.</summary>
     private static readonly (string Column, string Type)[] RunKey = [("job_id", "uniqueidentifier"), ("epoch", "bigint")];
-
-    /// <summary><paramref name="now"/> moved back by <paramref name="retention"/>, or the earliest time when that is before it.</summary>
-    private static DateTimeOffset Before(DateTimeOffset now, TimeSpan retention) =>
-        retention.Ticks >= (now - DateTimeOffset.MinValue).Ticks ? DateTimeOffset.MinValue : now - retention;
 }

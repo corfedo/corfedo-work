@@ -239,6 +239,55 @@ public abstract class JobRetentionScenarios(IJobConformanceProvider provider) : 
         Assert.Throws<ArgumentOutOfRangeException>(() => Create(new JobPolicy { Retention = TimeSpan.Zero }));
     }
 
+    [Fact]
+    public async Task J47_WindowsThatReachBeforeTheClocksRangeDeleteNothingAndThePassGoesOn()
+    {
+        // About 3 000 years reaches before 0001-01-01 but stays within PostgreSQL's timestamps; TimeSpan.MaxValue does not.
+        var past = TimeSpan.FromDays(1_100_000);
+        JobPolicy Policy(TimeSpan retention, TimeSpan runs, TimeSpan? failed) => new()
+        {
+            Attempts = 1, Backoff = Backoff.None, RunHistory = true, Retention = retention, RunHistoryRetention = runs, FailedRetention = failed,
+        };
+        var longest = Definition(Policy(TimeSpan.MaxValue, TimeSpan.MaxValue, past), key: "window-a");
+        var beyond = Definition(Policy(past, past, TimeSpan.MaxValue), key: "window-b");
+        var later = Definition(Policy(Short, Short, null), key: "window-z");
+        var script = new JobScript { Run = (args, _, _) => ValueTask.FromResult<JobDisposition>(args.Value == "fail" ? JobResult.Fail("broken") : JobResult.Completed) };
+        var worker = await WorkerAsync(longest, script, also: work =>
+        {
+            work.AddJob<TestArgs, ScriptedJobHandler>(beyond);
+            work.AddJob<TestArgs, ScriptedJobHandler>(later);
+        });
+        var kept = new List<JobId>();
+        foreach (var definition in new[] { longest, beyond })
+        {
+            kept.Add((await RequestAsync(worker, definition, "complete")).Id);
+            kept.Add((await RequestAsync(worker, definition, "fail")).Id);
+        }
+        var chain = await InTransactionAsync(t => Jobs(worker).RequestChainAsync(t, builder => builder.StartWith(longest, new TestArgs("complete")), Cancel));
+        var expired = new[] { (await RequestAsync(worker, later, "complete")).Id, (await RequestAsync(worker, later, "fail")).Id };
+        foreach (var job in kept.Concat(expired))
+        {
+            await EndedAsync(job, TimeSpan.FromSeconds(10));
+        }
+        await EventuallyAsync(async () => await Jobs(worker).GetChainAsync(chain, Cancel) is { Settled: true }, TimeSpan.FromSeconds(10), "the chain settles");
+        await Task.Delay(Short + TimeSpan.FromMilliseconds(500), Cancel);
+
+        await RetainAllAsync(worker);
+        var monitoring = worker.Services.GetRequiredService<IWorkStore>().Monitoring;
+        await monitoring.RetainAsync(TimeSpan.MaxValue, WorkRetention.BatchSize, Cancel);
+        await monitoring.RetainAsync(past, WorkRetention.BatchSize, Cancel);
+
+        Assert.Equal(kept.Take(2).ToHashSet(), (await ReadJobsAsync(longest)).Where(j => j.State is not null && kept.Contains(j.Id)).Select(j => j.Id).ToHashSet());
+        Assert.Equal(kept.Skip(2).ToHashSet(), (await ReadJobsAsync(beyond)).Select(j => j.Id).ToHashSet());
+        foreach (var (definition, job) in new[] { (longest, kept[0]), (longest, kept[1]), (beyond, kept[2]), (beyond, kept[3]) })
+        {
+            Assert.Single((await Jobs(worker).GetRunsAsync(definition, job, cancellationToken: Cancel)).Runs);
+        }
+        Assert.NotNull(await Jobs(worker).GetChainAsync(chain, Cancel));
+        Assert.Empty(await ReadJobsAsync(later));
+        Assert.Empty((await Jobs(worker).GetRunsAsync(later, expired[0], cancellationToken: Cancel)).Runs);
+    }
+
     /// <summary>Runs retention passes through the store until one leaves nothing more.</summary>
     private async Task RetainAllAsync(TestProcess process)
     {

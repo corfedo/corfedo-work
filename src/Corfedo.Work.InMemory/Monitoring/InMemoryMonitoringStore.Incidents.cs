@@ -164,7 +164,7 @@ internal sealed partial class InMemoryMonitoringStore
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var incidents = await DeleteAsync(work =>
         {
-            var horizon = Now - retention;
+            var horizon = JobRetention.Before(Now, retention);
             var expired = AllIncidents(work).Where(i => i.Time(IncidentColumns.ResolvedAt) < horizon).OrderBy(i => i.Time(IncidentColumns.ResolvedAt)).Take(limit).ToList();
             foreach (var i in expired)
             {
