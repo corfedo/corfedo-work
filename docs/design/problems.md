@@ -162,7 +162,7 @@ Work that has no record of its own.
 - **J11 Argument versions.** Arguments carry a schema version and are never misread. A job fails with a stable reason
   only when its version has been retired on purpose; otherwise it waits for a process that accepts it (R21).
 - **J12 Retention.** Finished jobs, run history, resolved incidents and stopped process records are removed after
-  retention windows.
+  retention windows. Failed jobs can have a window of their own or be kept until an operator handles them.
 - **J13 Ensure outstanding.** A request can create a job only if none with its identity is outstanding, leaving an
   existing one (revision, arguments, schedule, attempts) untouched and creating no follow-up.
 - **J14 Occurrence lifecycle.** An occurrence of a recurring job keeps its identity and attempts until it succeeds,
@@ -183,7 +183,7 @@ Work that has no record of its own.
 - **J20 Results.** A job can return a typed result, stored with its outcome; callers can read the outcome or wait for
   it with a timeout.
 - **J21 Operator actions.** Run a job or recurring job now, rerun a finished one, retry many at once, all without
-  duplicating running work.
+  duplicating running work. List and count failed jobs, and discard finished ones.
 - **J22 Definition-wide limits.** A definition can limit its running jobs across all processes, in addition to
   per-process capacity and partition limits.
 

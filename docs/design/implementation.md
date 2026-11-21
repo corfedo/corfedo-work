@@ -14,6 +14,7 @@ PostgreSQL; a stage that changes semantics updates the design and the scenarios 
 | 7. Signals | The signals layer of [signals](signals.md): the signals layer, the PostgreSQL and in-memory transports, framework topics, the EF Core send. | S-1–S-8 (S-6, S-7 as PostgreSQL tests) | Done |
 | 8. First public release | Package metadata, SourceLink and symbol packages, CI and release workflows, package readme, public documentation pass; the owner makes the repository public and publishes. | — | Done |
 | 9. SQL Server provider | `Corfedo.Work.SqlServer` as designed in [SQL Server provider](sqlserver.md): schema, every store contract, the signals table transport, the EF Core adapter on SQL Server, the guides; the whole conformance suite on SQL Server 2022 and 2025. | All | Done |
+| 10. Failed jobs | `JobPolicy.FailedRetention`, the failed-jobs list and count, discard, in every provider, as designed in [retention](jobs.md#retention) and [operator actions](jobs.md#operator-actions). | J-43–J-46 | Designed |
 
 The lease, reconciliation, job and process registry scenarios run as `Corfedo.Work.Conformance` tests against
 PostgreSQL 18.6 in `tests/Corfedo.Work.PostgreSql.Tests`, and against the in-memory provider in
@@ -151,6 +152,10 @@ The cron scenarios J-5 and J-34 involve no store: they run as tests of the occur
 | J-38 | J8, J9 | [Cancellation and pause](jobs.md#cancellation-and-pause) | 4b |
 | J-39 | J5, D4 | [Definitions](jobs.md#definitions-and-registrations) | 4c |
 | J-40 | J3, J4, J15 | [Common patterns](jobs.md#common-patterns) | 4f |
+| J-43 | J12 | [Retention](jobs.md#retention): failed jobs | 10a |
+| J-44 | J21 | [Operator actions](jobs.md#operator-actions): failed jobs | 10b |
+| J-45 | J21 | Operator actions: failed jobs | 10b |
+| J-46 | J21, D4 | [Operator actions](jobs.md#operator-actions) | 10c |
 | D-1 | D2 | [Subject lifecycle](domain-and-jobs.md#the-subjects-lifecycle-in-the-domain-transaction) | 4a |
 | D-2 | D3 | [Completion with the domain output](domain-and-jobs.md#completion-with-the-domain-output) | 4a |
 | D-3 | D4 | Outcome hooks, attempts | 4a |
@@ -219,3 +224,14 @@ The provider passes the whole conformance suite before 0.2.0 is released. Each s
 | 9g | EF Core adapter on SQL Server; Native AOT and trimming of the provider; the outstanding-lease column on both providers; guides and README. | Done |
 | 9h | Validation: the measurements of [SQL Server provider](sqlserver.md) repeated on the provider at 1M and 10M jobs, the open items there closed. | Done |
 
+## Stage 10 steps
+
+Each step adds its conformance scenarios first and runs them on PostgreSQL, SQL Server and the in-memory provider.
+Each upgrade script keeps processes of the previous release working, retention included.
+
+| Step | Contents | Status |
+|---|---|---|
+| 10a | `FailedRetention` with `Timeout.InfiniteTimeSpan`, validation, the digest appended only when set, resolution to the job window, the `failed_retention` and `keep_failed` columns in an upgrade script, the `jobs_failed` index, retention's statement for failed jobs. | Designed |
+| 10b | `GetFailedAsync` with its page and cursor, `CountFailedAsync`. | Designed |
+| 10c | `DiscardAsync`, `DiscardManyAsync`, `DiscardOutcome`. | Designed |
+| 10d | Measurements recorded in [providers](providers.md) on PostgreSQL 18.6 and SQL Server at 1M jobs with 100 000 failed jobs kept: a page of the list, the count of 20 definitions, a discard, and a retention pass of a definition with its own failed window, reading past its kept failed jobs on `jobs_retention`. | Designed |

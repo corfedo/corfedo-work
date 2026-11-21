@@ -30,6 +30,7 @@ public static readonly JobDefinition<SyncFeed> FeedSync = JobDefinition.Create<S
         Late = Late.Run,                              // or Late.SkipAfter(grace) (J2)
         RunHistory = true,                            // record every attempt (D7); unset: the host's default, off
         Retention = TimeSpan.FromDays(3),             // terminal jobs (J12); unset: the host's default
+        FailedRetention = TimeSpan.FromDays(30),      // failed and timed-out jobs; Timeout.InfiniteTimeSpan: until handled; unset: Retention
         RunHistoryRetention = TimeSpan.FromDays(90),  // run history entries (D7); unset: the host's default
     });
 ```
@@ -442,6 +443,8 @@ duplicates running work and never throws for the job's state: it reports what it
 | `RunNowAsync(definition, jobId)` | Returns `RunNowResult(Job, Outcome)`. An outstanding job that is not held becomes due now in one locked update, with its attempts and backoff count kept: `MadeDue` for one scheduled later or waiting for a retry backoff, `Paused` for one whose definition or subject is paused (due now, runs once resumed), `AlreadyDue` for one already due or whose lost lease waits for its takeover. `AlreadyRunning`: it is held; nothing is queued. `Waiting`: an occurrence waiting to be recorded skipped. `Ended`: a terminal one-shot job; rerun it with `RerunAsync`. `ChainStep`: a [chain](chains.md) step, which runs when its parent settled; nothing changed. `NotFound`: the definition has no such job. An occurrence of a recurrence that has ended triggers the recurrence, with the trigger's outcomes (`Started` names the new occurrence). |
 | `RerunAsync(definition, jobId)` | Returns `RerunResult(Job, Outcome)`. A terminal one-shot job becomes outstanding again on the same record (`Rerun`): due now, the same job id, a new execution id, fresh attempts, failures and takeovers, not started, its pause copied anew. Refused, changing nothing: `Outstanding` while any execution of the job is outstanding (scheduled, running or waiting for a retry); `IdentityHeld` while another outstanding standalone job holds its merge identity, also when a request takes it concurrently; `Recurring` for an occurrence, which `RunNowAsync` or `TriggerAsync` run; `ChainStep` for a chain step, which `RetryFromAsync` reruns with its chain; `CalendarRemoved` for a job whose calendar has been removed; `NotFound`. A rerun never queues a follow-up. |
 | `RerunManyAsync(definition, jobIds)` | `RerunAsync` for each, each in its own transaction, one result per given id in order; an id given again is `Duplicate`. |
+| `DiscardAsync(definition, jobId)` | Returns `DiscardResult(Job, Outcome)`. A terminal job is deleted with its outcome and result (`Discarded`), as retention deletes it once its window passed: `GetOutcomeAsync` returns null as for an unknown id, status by subject no longer shows it, and its run history entries stay until their own window. Refused, changing nothing, where retention keeps a job: `Outstanding` while any execution of the job is outstanding, a rerun's included; `Unconsumed` for an ended occurrence its recurrence's planner has not consumed or that its recurrence awaits; `ChainStep` for a chain step, which is deleted with its chain; `NotFound`. Nothing ends, so no outcome hook runs, and expectations keep their state: a `FailsAtMostInARow` incident resolves at the key's next success. |
+| `DiscardManyAsync(definition, jobIds)` | `DiscardAsync` for each, each in its own transaction, one result per given id in order; an id given again is `Duplicate`. |
 | `RetryFromAsync(chainId, stepId)` | For chains; see [chains](chains.md#retry-from-a-step). |
 
 Work with a [calendar](calendars.md#applying-a-calendar) is planned at the next allowed instant instead of made due
@@ -450,6 +453,27 @@ outside the calendar's windows. `RunNowAsync` and `TriggerAsync` report `MadeDue
 
 After a rerun, the outcome reads as for a follow-up that reuses the id: `GetOutcomeAsync` returns the ended execution's
 outcome, reason and result with `Ended` false until the rerun execution ends, and `WaitAsync` waits for that end.
+
+A discard locks the job, waiting as a rerun does, and deletes it in the same statement that checks it, so a discard
+and a rerun of one job never both succeed: the later one finds `NotFound` or `Outstanding`. Retention skips the locked
+row and leaves it to the discard.
+
+**Failed jobs.** The jobs an operator handles are the definition's jobs that ended `Failed` or `TimedOut`, outside
+chains; their retention is `FailedRetention` ([retention](#retention)). Two reads find them. Like the other reads,
+they run no outcome hook and do not require the definition to be registered.
+
+- `GetFailedAsync(definition, limit, after)` returns `FailedJobPage(Jobs, Next)`: up to `limit` failed jobs (50 by
+  default, at most 1 000) after `after`, the cursor of the previous page, newest end first and by job id at equal end
+  times; `Next` is null on the last page. Each `FailedJob` has the job id, the ended execution id, the outcome, reason
+  code, end time, attempts used, subject, partition and argument version; arguments and results are not read. The
+  cursor is the last entry's end time and job id, so pages neither repeat nor skip a job while others fail, are rerun
+  or discarded.
+- `CountFailedAsync(definitions)` returns the number of failed jobs of each given definition in one statement, keyed
+  by definition key, zero for a definition that has none or is not stored.
+
+A rerun job leaves both while it is outstanding; if it fails again, it returns with its new end time, on a new first
+page. The argument
+version shows which failed jobs a higher `MinimumArgsVersion` would end with `args_version` once they are rerun.
 
 ## Fan-out
 
@@ -483,6 +507,7 @@ A stored revision with a new priority applies once the dispatcher rebuilds the d
 | Run a recurring job now | `TriggerAsync`; under `Overlap.Wait` a trigger during a run queues one run after it. |
 | Scheduled, manual and webhook runs that coalesce (sync a repository every 15 minutes and on demand) | A dispatcher: a recurrence on its own definition (per tenant, say) whose handler requests the standalone jobs with `RequestManyAsync`; manual actions and webhooks request the same standalone identity, so all of them merge or become one follow-up. |
 | Run a scheduled or retrying job now; rerun finished ones | `RunNowAsync`; `RerunAsync`, `RerunManyAsync`. |
+| Keep failed jobs until an operator handles them | `FailedRetention = Timeout.InfiniteTimeSpan`; `GetFailedAsync` and `CountFailedAsync`, then `RerunManyAsync` or `DiscardManyAsync`. |
 | Fan-out over partitions or subjects | `RequestManyAsync`. |
 | Fan-out then final aggregate | A [dynamic group](chains.md#dynamic-groups) with an after-all continuation. |
 | Incremental aggregate as children finish | Each child requests the aggregate with `Schedule.Debounce`. |
@@ -526,8 +551,18 @@ are part of the digest, the host's defaults are not, so a changed default applie
 revision. An unset `RunHistory` and `false` share one digest, the one definitions had before the host default existed,
 so upgrading keeps stored revisions.
 
+**Failed jobs** are jobs that ended `Failed` or `TimedOut` outside a chain, occurrences included. They are kept for the
+definition's `FailedRetention` instead of `Retention`, so an application can keep failures longer than other ended
+jobs, or until an operator reruns or discards them ([operator actions](#operator-actions)). `Timeout.InfiniteTimeSpan`
+keeps them until then; any other value is a duration greater than zero, also one shorter than `Retention`. Left unset,
+it is the definition's job window as stored with the revision, the host's default job retention included. Cancelled and skipped jobs are not failures and keep the job window; chain steps stay with their
+[chain](chains.md). `FailedRetention` is part of the digest only when declared, so a definition that does not declare
+it keeps its digest and stored revision.
+
 - Only terminal jobs are deleted, selected by state: a restarted follow-up or a rerun keeps the end time of its
-  previous execution while it is outstanding. Jobs with and without a subject are retained alike.
+  previous execution while it is outstanding. Jobs with and without a subject are retained alike. The state also
+  picks the window: a rerun of a failed job that completes takes the job window from its new end, one that fails again
+  `FailedRetention`.
 - Ended occurrences are kept until their recurrence's planner consumed them, and a recurrence's awaited occurrence
   is kept.
 - Run history is retained independently of its jobs: entries outlive a deleted job, and expire while it is kept.
@@ -540,4 +575,6 @@ default durations. Processes that only request work stay without a dispatcher. A
 and application opts in; several replicas may, and the job's lease runs one pass at a time. Each run deletes in
 batches of 1 000 per definition until a pass leaves nothing more, each statement in its own transaction and skipping
 locked rows, so it never waits for a transition, a rerun or a planner; it can be run at once with
-`TriggerAsync(WorkRetention.Definition)`.
+`TriggerAsync(WorkRetention.Definition)`. A definition whose failed window equals its job window deletes all its
+terminal jobs in one statement; any other deletes its failed jobs in a statement of their own on the failed-jobs
+index, or not at all when it keeps them until handled.
