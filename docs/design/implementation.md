@@ -227,11 +227,14 @@ The provider passes the whole conformance suite before 0.2.0 is released. Each s
 ## Stage 10 steps
 
 Each step adds its conformance scenarios first and runs them on PostgreSQL, SQL Server and the in-memory provider.
-Each upgrade script keeps processes of the previous release working, retention included.
+The upgrade script of 10a narrows `jobs_retention`, so it is an exception to keeping the previous release working:
+during a rolling deployment, retention in processes of the previous release fails on SQL Server, whose statement names
+the index in a hint, and runs without a matching index on PostgreSQL, until those processes are replaced. Everything
+else of the previous release keeps working. The release notes state it.
 
 | Step | Contents | Status |
 |---|---|---|
-| 10a | `FailedRetention` with `Timeout.InfiniteTimeSpan`, validation, the digest appended only when set, resolution to the job window, the `failed_retention` and `keep_failed` columns in an upgrade script, the `jobs_failed` index, retention's statement for failed jobs. | Designed |
+| 10a | `FailedRetention` with `Timeout.InfiniteTimeSpan` translated to no bound in every provider, validation, the digest appended only when set, resolution to the job window; an upgrade script that adds `failed_retention` set from `job_retention`, narrows `jobs_retention` and adds `jobs_failed`; retention's two statements per definition with the deletable predicate shared with discard; provider tests that a definition stored before the upgrade deletes failed jobs with its job window. | Designed |
 | 10b | `GetFailedAsync` with its page and cursor, `CountFailedAsync`. | Designed |
 | 10c | `DiscardAsync`, `DiscardManyAsync`, `DiscardOutcome`. | Designed |
-| 10d | Measurements recorded in [providers](providers.md) on PostgreSQL 18.6 and SQL Server at 1M jobs with 100 000 failed jobs kept: a page of the list, the count of 20 definitions, a discard, and a retention pass of a definition with its own failed window, reading past its kept failed jobs on `jobs_retention`. | Designed |
+| 10d | Measurements recorded in [providers](providers.md) on PostgreSQL 18.6 and SQL Server at 1M jobs with 100 000 failed jobs kept: a page of the list, the count of 20 definitions, a discard, a retention pass, and the upgrade script's index rebuild, which blocks job writes while it runs. | Designed |
