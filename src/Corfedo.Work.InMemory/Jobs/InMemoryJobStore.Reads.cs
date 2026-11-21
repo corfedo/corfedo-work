@@ -144,6 +144,65 @@ internal sealed partial class InMemoryJobStore
         return ValueTask.FromResult(new JobRunPage(entries, new JobRunCursor(last.StartedAt, last.Job, last.Epoch)));
     }
 
+    /// <summary>From committed state: the definition's failed jobs, newest end first and by id at equal end times.</summary>
+    public ValueTask<FailedJobPage> GetFailedAsync(string definition, int limit, FailedJobCursor? after, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        static int Compare(FailedJob j, FailedJobCursor c)
+        {
+            var compared = j.EndedAt.CompareTo(c.EndedAt);
+            return compared != 0 ? compared : j.Job.Value.CompareTo(c.Job.Value);
+        }
+        var jobs = database.ReadCommitted(() => JobRows.Committed.Values
+            .Where(r => r.Text(JobColumns.Definition) == definition && Failed(r) && r.Uuid(JobColumns.ChainId) is null)
+            .Select(r =>
+            {
+                var partition = r.Text(JobColumns.Partition)!;
+                return new FailedJob(
+                    r.JobId(),
+                    r.Uuid(JobColumns.EndedExecutionId)!.Value,
+                    (JobOutcome)r.Int32(JobColumns.State),
+                    r.Text(JobColumns.Reason),
+                    r.Time(JobColumns.EndedAt)!.Value,
+                    r.Int32(JobColumns.Attempts),
+                    r.Subject(),
+                    partition.Length == 0 ? null : partition,
+                    r.Int32(JobColumns.ArgsVersion));
+            })
+            .Where(j => after is null || Compare(j, after) < 0)
+            .OrderByDescending(j => j.EndedAt)
+            .ThenByDescending(j => j.Job.Value)
+            .Take(limit + 1)
+            .ToList());
+        if (jobs.Count <= limit)
+        {
+            return ValueTask.FromResult(new FailedJobPage(jobs, null));
+        }
+        jobs.RemoveAt(limit);
+        var last = jobs[^1];
+        return ValueTask.FromResult(new FailedJobPage(jobs, new FailedJobCursor(last.EndedAt, last.Job)));
+    }
+
+    /// <summary>From committed state: the number of failed jobs of each definition.</summary>
+    public ValueTask<IReadOnlyDictionary<string, long>> CountFailedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        IReadOnlyDictionary<string, long> counts = database.ReadCommitted(() =>
+        {
+            var counts = definitions.Distinct(StringComparer.Ordinal).ToDictionary(d => d, _ => 0L, StringComparer.Ordinal);
+            foreach (var r in JobRows.Committed.Values)
+            {
+                if (Failed(r) && r.Uuid(JobColumns.ChainId) is null && counts.TryGetValue(r.Text(JobColumns.Definition)!, out var count))
+                {
+                    counts[r.Text(JobColumns.Definition)!] = count + 1;
+                }
+            }
+            return counts;
+        });
+        return ValueTask.FromResult(counts);
+    }
+
     public ValueTask<IReadOnlyDictionary<string, TimeSpan>> NextExpiriesAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(definitions);

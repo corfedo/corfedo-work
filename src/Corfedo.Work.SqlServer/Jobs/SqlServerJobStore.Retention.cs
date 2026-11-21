@@ -7,8 +7,18 @@ namespace Corfedo.Work.SqlServer.Jobs;
 internal sealed partial class SqlServerJobStore
 {
     /// <summary>
-    /// Deletes, per stored definition, the oldest expired terminal jobs outside chains and then the oldest expired run
-    /// history entries, then the oldest expired settled chains as units, each statement in its own transaction.
+    /// The condition on the job row <paramref name="j"/> under which retention and discard may delete it: terminal, not an
+    /// occurrence its recurrence's planner has not consumed or that its recurrence awaits, and not a chain step, which
+    /// is deleted with its chain.
+    /// </summary>
+    private string Deletable(string j) =>
+        $"{j}.state <> 0 AND {j}.unconsumed = 0 AND {j}.chain_id IS NULL "
+        + $"AND ({j}.recurrence_id IS NULL OR NOT EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.id = {j}.recurrence_id AND c.awaited_job = {j}.id))";
+
+    /// <summary>
+    /// Deletes, per stored definition, the oldest expired failed jobs, the oldest expired other terminal jobs outside
+    /// chains and the oldest expired run history entries, then the oldest expired settled chains as units, each statement
+    /// in its own transaction.
     /// Candidates are found through the end-time indexes without locks and locked through their key without waiting, so
     /// retention never waits for a transition, a rerun, a retry or a planner, and a job a concurrent rerun made
     /// outstanding again fails the recheck of its state. The bounds are the store's clock, read with the stored
@@ -19,7 +29,7 @@ internal sealed partial class SqlServerJobStore
     public async ValueTask<RetentionPass> RetainAsync(int limit, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
-        var keys = new List<(string Key, TimeSpan Jobs, TimeSpan Runs)>();
+        var keys = new List<(string Key, TimeSpan Jobs, TimeSpan? Failed, TimeSpan Runs)>();
         DateTimeOffset now;
         await using (var connection = await leases.OpenAsync(cancellationToken))
         {
@@ -29,24 +39,19 @@ internal sealed partial class SqlServerJobStore
                 await reader.NextRowAsync(cancellationToken);
                 now = Tsql.Time(reader, 0);
             }
-            await using (var command = Tsql.Command(connection, null, $"SELECT [key], job_retention, run_history_retention FROM {definitions} ORDER BY [key];"))
+            await using (var command = Tsql.Command(connection, null, $"SELECT [key], job_retention, failed_retention, run_history_retention FROM {definitions} ORDER BY [key];"))
             await using (var reader = await command.ReaderAsync(cancellationToken))
             {
                 while (await reader.NextRowAsync(cancellationToken))
                 {
-                    keys.Add((reader.GetString(0), TimeSpan.FromTicks(reader.GetInt64(1)), TimeSpan.FromTicks(reader.GetInt64(2))));
+                    keys.Add((reader.GetString(0), TimeSpan.FromTicks(reader.GetInt64(1)), reader.IsDBNull(2) ? null : TimeSpan.FromTicks(reader.GetInt64(2)), TimeSpan.FromTicks(reader.GetInt64(3))));
                 }
             }
         }
-        var expired = $"j.[definition] = @definition AND j.ended_at IS NOT NULL AND j.ended_at < @bound AND j.state <> 0 AND j.chain_id IS NULL AND j.unconsumed = 0 "
-            + $"AND (j.recurrence_id IS NULL OR NOT EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.id = j.recurrence_id AND c.awaited_job = j.id))";
-        var deleteJobs = $"""
-            DECLARE @doomed nvarchar(max) = N'';
-            {Tsql.LockEach("job_scan", "@limit", $"SELECT j.id FROM {Jobs} AS j WITH (INDEX(jobs_retention)) WHERE {expired} ORDER BY j.ended_at",
-                Jobs, Tsql.IdKey, expired.Replace("j.", "r.", StringComparison.Ordinal), "@doomed")}
-            DELETE r FROM {Tsql.KeyRows("@doomed", Tsql.IdKey)} AS d INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = d.id;
-            SELECT @@ROWCOUNT;
-            """;
+        // Failed jobs and the other terminal jobs are read on filtered indexes of their own, jobs_failed and
+        // jobs_retention, whose filters the state conditions repeat.
+        var deleteJobs = DeleteExpired("jobs_retention", "j.state <> 2 AND j.state <> 4");
+        var deleteFailed = DeleteExpired("jobs_failed", "j.state IN (2, 4)");
         var deleteRuns = $"""
             DECLARE @doomed nvarchar(max) = N'';
             {Tsql.LockEach("run_scan", "@limit",
@@ -57,8 +62,15 @@ internal sealed partial class SqlServerJobStore
             """;
         int jobs = 0, entries = 0;
         var more = false;
-        foreach (var (key, jobRetention, runRetention) in keys)
+        foreach (var (key, jobRetention, failedRetention, runRetention) in keys)
         {
+            // A null failed retention keeps failed jobs until they are rerun or discarded.
+            if (failedRetention is { } failedWindow)
+            {
+                var deletedFailed = await DeleteAsync(deleteFailed, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, failedWindow)));
+                jobs += deletedFailed;
+                more |= deletedFailed == limit;
+            }
             var deleted = await DeleteAsync(deleteJobs, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, jobRetention)));
             var deletedRuns = await DeleteAsync(deleteRuns, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, runRetention)));
             jobs += deleted;
@@ -87,6 +99,18 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Time("@now", now));
         }
         return new(jobs, entries, chainsDeleted, more || chainsDeleted == limit);
+
+        string DeleteExpired(string index, string state)
+        {
+            var expired = $"j.[definition] = @definition AND j.ended_at IS NOT NULL AND j.ended_at < @bound AND {state} AND {Deletable("j")}";
+            return $"""
+                DECLARE @doomed nvarchar(max) = N'';
+                {Tsql.LockEach("job_scan", "@limit", $"SELECT j.id FROM {Jobs} AS j WITH (INDEX({index})) WHERE {expired} ORDER BY j.ended_at",
+                    Jobs, Tsql.IdKey, expired.Replace("j.", "r.", StringComparison.Ordinal), "@doomed")}
+                DELETE r FROM {Tsql.KeyRows("@doomed", Tsql.IdKey)} AS d INNER LOOP JOIN {Jobs} AS r WITH (INDEX(jobs_key), FORCESEEK) ON r.id = d.id;
+                SELECT @@ROWCOUNT;
+                """;
+        }
 
         async Task<int> DeleteAsync(string text, params SqlParameter[] parameters)
         {

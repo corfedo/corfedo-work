@@ -9,6 +9,9 @@ public interface IJobConformanceProvider : ILeaseConformanceProvider
     /// <summary>Every job record of a definition, oldest first.</summary>
     Task<IReadOnlyList<JobState>> ReadJobsAsync(string definition, CancellationToken cancellationToken);
 
+    /// <summary>Sets a terminal job's end time, as if it had ended then.</summary>
+    Task SetEndedAtAsync(JobId job, DateTimeOffset endedAt, CancellationToken cancellationToken);
+
     /// <summary>The copied pause flag of the subject's recurrence of a definition.</summary>
     Task<bool> ReadRecurrencePausedAsync(string definition, Subject subject, CancellationToken cancellationToken);
 

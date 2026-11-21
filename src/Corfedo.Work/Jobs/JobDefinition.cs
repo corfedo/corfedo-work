@@ -157,6 +157,10 @@ public abstract class JobDefinition
                 ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(kept, TimeSpan.Zero, nameof(policy));
             }
         }
+        if (policy.FailedRetention is { } failed && failed != Timeout.InfiniteTimeSpan)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(failed, TimeSpan.Zero, nameof(policy));
+        }
         if (!Enum.IsDefined(policy.Priority))
         {
             throw new ArgumentException("Unknown priority.", nameof(policy));
@@ -199,6 +203,11 @@ public abstract class JobDefinition
                 expect.RunningLimit?.Ticks.ToString(CultureInfo.InvariantCulture) ?? "",
                 expect.FailureLimit?.ToString(CultureInfo.InvariantCulture) ?? "",
             ]);
+        }
+        // Appended only when set, after a tag of its own, for the same reason.
+        if (policy.FailedRetention is { } failed)
+        {
+            lines = lines.Concat(["failed_retention", failed.Ticks.ToString(CultureInfo.InvariantCulture)]);
         }
         return SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", lines)));
     }

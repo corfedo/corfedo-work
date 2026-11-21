@@ -14,6 +14,7 @@ internal sealed partial class InMemoryJobStore
         ArgumentNullException.ThrowIfNull(policy.RunHistory, nameof(policy));
         ArgumentNullException.ThrowIfNull(policy.Retention, nameof(policy));
         ArgumentNullException.ThrowIfNull(policy.RunHistoryRetention, nameof(policy));
+        ArgumentNullException.ThrowIfNull(policy.FailedRetention, nameof(policy));
         using var transaction = await database.BeginAsync(cancellationToken);
         var stored = Stored(transaction, definition.Key);
         if (stored is not null && stored.Revision > definition.Revision)

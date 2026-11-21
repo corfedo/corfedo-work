@@ -435,6 +435,15 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
         return new ProcessRecord(p.Type, p.Release, p.Age, p.Stopped, definitions);
     }
 
+    public async Task SetEndedAtAsync(JobId job, DateTimeOffset endedAt, CancellationToken cancellationToken)
+    {
+        await using var connection = await OpenAsync(cancellationToken);
+        await using var command = new SqlCommand("UPDATE work.jobs SET ended_at = @at WHERE id = @job AND state <> 0", connection);
+        command.Parameters.Add(new SqlParameter("@job", SqlDbType.UniqueIdentifier) { Value = job.Value });
+        command.Parameters.Add(new SqlParameter("@at", SqlDbType.DateTime2) { Scale = 7, Value = endedAt.UtcDateTime });
+        Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellationToken));
+    }
+
     public async Task AgeProcessAsync(OwnerId owner, TimeSpan by, CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken);
@@ -610,6 +619,9 @@ public sealed class SqlServerJobActionScenarios(SqlServerConformanceProvider pro
 
 public sealed class SqlServerJobRetentionScenarios(SqlServerConformanceProvider provider)
     : JobRetentionScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
+
+public sealed class SqlServerFailedJobScenarios(SqlServerConformanceProvider provider)
+    : FailedJobScenarios(provider), IClassFixture<SqlServerConformanceProvider>;
 
 public sealed class SqlServerProcessRegistryScenarios(SqlServerConformanceProvider provider)
     : ProcessRegistryScenarios(provider), IClassFixture<SqlServerConformanceProvider>;

@@ -81,6 +81,33 @@ public enum RerunOutcome
 
 public readonly record struct RerunResult(JobId Job, RerunOutcome Outcome);
 
+/// <summary>What discarding a job did (J21).</summary>
+public enum DiscardOutcome
+{
+    /// <summary>The terminal job was deleted with its outcome and result.</summary>
+    Discarded,
+
+    /// <summary>An execution of the job is outstanding: scheduled, running or waiting for a retry.</summary>
+    Outstanding,
+
+    /// <summary>
+    /// The job is an ended occurrence its recurrence still holds: the planner has not consumed it, or the recurrence
+    /// awaits it.
+    /// </summary>
+    HeldByRecurrence,
+
+    /// <summary>The job is a chain step, which is deleted with its chain.</summary>
+    ChainStep,
+
+    /// <summary>The same job id came earlier in the same call.</summary>
+    Duplicate,
+
+    /// <summary>The definition has no job with the id.</summary>
+    NotFound,
+}
+
+public readonly record struct DiscardResult(JobId Job, DiscardOutcome Outcome);
+
 /// <summary>
 /// The retention durations of a host: terminal jobs after they ended and run history entries after their attempt
 /// ended, for definitions whose policy leaves them unset (J12), and incidents after they resolved.
@@ -118,12 +145,17 @@ internal sealed record JobPolicyDefaults(JobRetention Retention, bool RunHistory
     public static JobPolicyDefaults Default { get; } = new(JobRetention.Default, false);
 
     /// <summary>The policy with every unset part taken from these defaults.</summary>
-    public JobPolicy Resolve(JobPolicy policy) => policy with
+    public JobPolicy Resolve(JobPolicy policy)
     {
-        RunHistory = policy.RunHistory ?? RunHistory,
-        Retention = policy.Retention ?? Retention.Jobs,
-        RunHistoryRetention = policy.RunHistoryRetention ?? Retention.RunHistory,
-    };
+        var jobs = policy.Retention ?? Retention.Jobs;
+        return policy with
+        {
+            RunHistory = policy.RunHistory ?? RunHistory,
+            Retention = jobs,
+            FailedRetention = policy.FailedRetention ?? jobs,
+            RunHistoryRetention = policy.RunHistoryRetention ?? Retention.RunHistory,
+        };
+    }
 }
 
 /// <summary>What one retention pass deleted: terminal jobs, run history entries and chains, and whether a batch was full so more may remain.</summary>

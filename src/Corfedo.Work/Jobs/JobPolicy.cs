@@ -47,6 +47,13 @@ public sealed record JobPolicy
     /// </summary>
     public TimeSpan? Retention { get; init; }
 
+    /// <summary>
+    /// How long a job that ended failed or timed out outside a chain is kept after it ended before retention deletes it
+    /// (J12); <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> keeps it until it is rerun or discarded, null
+    /// takes <see cref="Retention"/> as stored with the revision.
+    /// </summary>
+    public TimeSpan? FailedRetention { get; init; }
+
     /// <summary>How long a run history entry is kept after its attempt ended (D7); null for the host's default.</summary>
     public TimeSpan? RunHistoryRetention { get; init; }
 

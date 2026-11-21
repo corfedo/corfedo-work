@@ -141,9 +141,17 @@ public interface IJobStore
     ValueTask<RerunResult> RerunAsync(LeaseSource<JobId> source, JobId job, bool ignoreCalendar, CancellationToken cancellationToken);
 
     /// <summary>
+    /// In the store's own transaction, locks the job, waiting, and deletes it if retention could: it is terminal, not an
+    /// occurrence its recurrence's planner has not consumed or that its recurrence awaits, and not a chain step. Refused,
+    /// changing nothing, otherwise. Runs no outcome hook; the job's run history entries stay.
+    /// </summary>
+    ValueTask<DiscardResult> DiscardAsync(LeaseSource<JobId> source, JobId job, CancellationToken cancellationToken);
+
+    /// <summary>
     /// One retention pass over every stored definition, each statement in its own transaction and skipping locked
     /// rows: deletes up to <paramref name="limit"/> terminal jobs that ended longer ago than the definition's stored job
-    /// retention, keeping occurrences the planner has not consumed and a recurrence's awaited occurrence, and up to
+    /// retention, and up to <paramref name="limit"/> failed and timed-out jobs that ended longer ago than its stored
+    /// failed retention, keeping occurrences the planner has not consumed and a recurrence's awaited occurrence, and up to
     /// <paramref name="limit"/> run history entries that ended longer ago than its run history retention.
     /// </summary>
     ValueTask<RetentionPass> RetainAsync(int limit, CancellationToken cancellationToken);
@@ -216,6 +224,18 @@ public interface IJobStore
     /// first, at most <paramref name="limit"/>, continuing after <paramref name="after"/>.
     /// </summary>
     ValueTask<JobRunPage> GetRunsAsync(string definition, Subject? subject, JobId? job, int limit, JobRunCursor? after, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The definition's jobs that ended failed or timed out outside chains, newest end first and in a stable order at
+    /// equal end times, at most <paramref name="limit"/>, continuing after <paramref name="after"/>.
+    /// </summary>
+    ValueTask<FailedJobPage> GetFailedAsync(string definition, int limit, FailedJobCursor? after, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The number of jobs that ended failed or timed out outside chains of each of <paramref name="definitions"/>, in one
+    /// statement; zero for a definition with none.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, long>> CountFailedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken);
 
     /// <summary>Records the definitions a registered process registers; definitions it already recorded are left as they are.</summary>
     ValueTask RegisterProcessAsync(OwnerId owner, IReadOnlyList<ProcessDefinition> definitions, CancellationToken cancellationToken);

@@ -9,7 +9,7 @@ public sealed partial class JobOperations
     /// <summary>The most subjects one <see cref="GetManyAsync"/> reads.</summary>
     public const int MaximumSubjects = 1000;
 
-    /// <summary>The most entries one page of run history holds.</summary>
+    /// <summary>The most entries one page of run history or failed jobs holds.</summary>
     public const int MaximumRuns = 1000;
 
     private JobWaiter? waiter;
@@ -109,6 +109,28 @@ public sealed partial class JobOperations
     {
         ArgumentNullException.ThrowIfNull(definition);
         return Store.GetRunsAsync(definition.Key, null, job, CheckLimit(limit), after, cancellationToken);
+    }
+
+    /// <summary>
+    /// The definition's jobs that ended failed or timed out outside chains, newest end first: up to
+    /// <paramref name="limit"/> after <paramref name="after"/>, the cursor of the previous page. Jobs that ended at the
+    /// same time come in an order the store keeps stable. A rerun job is left out while it is outstanding.
+    /// </summary>
+    public ValueTask<FailedJobPage> GetFailedAsync(JobDefinition definition, int limit = 50, FailedJobCursor? after = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return Store.GetFailedAsync(definition.Key, CheckLimit(limit), after, cancellationToken);
+    }
+
+    /// <summary>
+    /// The number of jobs that ended failed or timed out outside chains of each of <paramref name="definitions"/>, keyed
+    /// by definition key, in one read; zero for a definition with none. It reads every failed job the definitions keep.
+    /// </summary>
+    public async ValueTask<IReadOnlyDictionary<string, long>> CountFailedAsync(IEnumerable<JobDefinition> definitions, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        var keys = definitions.Select(d => d.Key).Distinct(StringComparer.Ordinal).ToArray();
+        return keys.Length == 0 ? new Dictionary<string, long>() : await Store.CountFailedAsync(keys, cancellationToken);
     }
 
     private async ValueTask WaitEndedAsync(JobDefinition definition, JobId job, TimeSpan timeout, CancellationToken cancellationToken)

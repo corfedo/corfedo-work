@@ -14,7 +14,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
             await new PostgreSqlWorkStore(database.DataSource, "concurrent", NullLoggerFactory.Instance, TimeProvider.System).PrepareAsync(Cancel))));
 
-        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("concurrent"));
+        Assert.Equal(new[] { 14, 15, 16 }, await VersionsAsync("concurrent"));
     }
 
     [Fact]
@@ -50,7 +50,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         await PostgreSqlWorkSchema.MigrateAsync(database.DataSource, "ungranted", [role], Cancel);
         await ExecuteAsync("DELETE FROM ungranted.schema_versions");
         var older = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Verifying(runtime, "ungranted").PrepareAsync(Cancel));
-        Assert.Contains("is at version 0; this release needs version 15", older.Message, StringComparison.Ordinal);
+        Assert.Contains("is at version 0; this release needs version 16", older.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -62,7 +62,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         await PostgreSqlWorkSchema.MigrateAsync(database.DataSource, "exact", [role], Cancel);
 
-        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("exact"));
+        Assert.Equal(new[] { 14, 15, 16 }, await VersionsAsync("exact"));
         await using var command = database.DataSource.CreateCommand($"""
             SELECT has_table_privilege('{role}', 'exact.jobs', 'TRUNCATE'), has_table_privilege('{role}', 'exact.jobs', 'TRIGGER'),
                    has_schema_privilege('{role}', 'exact', 'CREATE'), has_table_privilege('{role}', 'exact.job_runs', 'DELETE')
@@ -81,7 +81,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         await new PostgreSqlWorkStore(owner, "owned", NullLoggerFactory.Instance, TimeProvider.System).PrepareAsync(Cancel);
 
-        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("owned"));
+        Assert.Equal(new[] { 14, 15, 16 }, await VersionsAsync("owned"));
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
         await ExecuteAsync(PostgreSqlWorkSchema.Script("scripted", [role]));
         await ExecuteAsync(PostgreSqlWorkSchema.Script("scripted", [role]));
 
-        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("scripted"));
+        Assert.Equal(new[] { 14, 15, 16 }, await VersionsAsync("scripted"));
         await using var runtime = NpgsqlDataSource.Create(connectionString);
         await Verifying(runtime, "scripted").PrepareAsync(Cancel);
     }
@@ -106,7 +106,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         var older = await Assert.ThrowsAsync<InvalidOperationException>(async () => await Verifying(runtime, "unmigrated").PrepareAsync(Cancel));
 
-        Assert.Contains("is at version 0; this release needs version 15", older.Message, StringComparison.Ordinal);
+        Assert.Contains("is at version 0; this release needs version 16", older.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -117,7 +117,7 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
 
         await ExecuteAsync(PostgreSqlWorkSchema.Script("s$corfedo_work$x$corfedo_work_15$", [role]));
 
-        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("\"s$corfedo_work$x$corfedo_work_15$\""));
+        Assert.Equal(new[] { 14, 15, 16 }, await VersionsAsync("\"s$corfedo_work$x$corfedo_work_15$\""));
     }
 
     [Fact]
@@ -139,7 +139,43 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
             await release.ExecuteNonQueryAsync(Cancel);
         }
         await migration;
-        Assert.Equal(new[] { 14, 15 }, await VersionsAsync("locked"));
+        Assert.Equal(new[] { 14, 15, 16 }, await VersionsAsync("locked"));
+    }
+
+    [Fact]
+    public async Task TheFailedRetentionUpgradeKeepsTheJobWindowOfStoredDefinitionsForTheirFailedJobs()
+    {
+        var store = new PostgreSqlWorkStore(database.DataSource, "failed_upgrade", NullLoggerFactory.Instance, TimeProvider.System);
+        await store.PrepareAsync(Cancel);
+        var definition = JobDefinition.Create<string>("failed.upgrade");
+        var policy = new JobPolicy { RunHistory = false, Retention = TimeSpan.FromDays(3), RunHistoryRetention = TimeSpan.FromDays(30), FailedRetention = Timeout.InfiniteTimeSpan };
+        await store.Jobs.StoreDefinitionAsync(definition, policy, Cancel);
+        // The schema and the stored definition as the previous release leaves them.
+        await ExecuteAsync("""
+            ALTER TABLE failed_upgrade.job_definitions DROP COLUMN failed_retention;
+            DROP INDEX failed_upgrade.jobs_failed;
+            DROP INDEX failed_upgrade.jobs_retention;
+            CREATE INDEX jobs_retention ON failed_upgrade.jobs (definition, ended_at) WHERE state <> 0 AND chain_id IS NULL;
+            DELETE FROM failed_upgrade.schema_versions WHERE version = 16;
+            """);
+
+        await new PostgreSqlWorkStore(database.DataSource, "failed_upgrade", NullLoggerFactory.Instance, TimeProvider.System).PrepareAsync(Cancel);
+
+        Assert.Equal(new[] { 14, 15, 16 }, await VersionsAsync("failed_upgrade"));
+        var stored = (await store.Jobs.GetDefinitionAsync(definition.Key, Cancel))!;
+        Assert.Equal(TimeSpan.FromDays(3), stored.Policy.FailedRetention);
+        await using var command = database.DataSource.CreateCommand(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'failed_upgrade' AND indexname IN ('jobs_retention', 'jobs_failed') ORDER BY indexname");
+        await using var reader = await command.ExecuteReaderAsync(Cancel);
+        var indexes = new List<string>();
+        while (await reader.ReadAsync(Cancel))
+        {
+            indexes.Add(reader.GetString(1));
+        }
+        Assert.Collection(
+            indexes,
+            failed => Assert.EndsWith("(definition, ended_at, id) WHERE ((state = ANY (ARRAY[2, 4])) AND (chain_id IS NULL))", failed),
+            retention => Assert.EndsWith("(definition, ended_at) WHERE ((state <> 0) AND (state <> 2) AND (state <> 4) AND (chain_id IS NULL))", retention));
     }
 
     private static PostgreSqlWorkStore Verifying(NpgsqlDataSource dataSource, string schema) =>

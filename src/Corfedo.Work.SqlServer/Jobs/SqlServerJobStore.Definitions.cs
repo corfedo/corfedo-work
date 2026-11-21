@@ -9,7 +9,7 @@ internal sealed partial class SqlServerJobStore
     private const string DefinitionColumns =
         "[key], revision, digest, subject_kind, attempts, backoff_kind, backoff_initial, backoff_maximum, partition_limit, "
         + "definition_limit, priority, attempt_timeout, retry_timeouts, late_grace, minimum_args_version, paused, run_history, job_retention, run_history_retention, "
-        + "expect_time, expect_zone, expect_calendar, expect_running, expect_failures";
+        + "expect_time, expect_zone, expect_calendar, expect_running, expect_failures, failed_retention";
 
     /// <summary>
     /// Takes the definition fence exclusively, so claims in flight finish first and claims that start meanwhile queue
@@ -23,6 +23,7 @@ internal sealed partial class SqlServerJobStore
         ArgumentNullException.ThrowIfNull(policy.RunHistory, nameof(policy));
         ArgumentNullException.ThrowIfNull(policy.Retention, nameof(policy));
         ArgumentNullException.ThrowIfNull(policy.RunHistoryRetention, nameof(policy));
+        ArgumentNullException.ThrowIfNull(policy.FailedRetention, nameof(policy));
         return await InTransactionAsync(async work =>
         {
             StoredJobDefinition? stored;
@@ -51,12 +52,12 @@ internal sealed partial class SqlServerJobStore
             var write = stored is null
                 ? $"INSERT INTO {definitions} ({DefinitionColumns}) VALUES (@key, @revision, @digest, @subject, @attempts, @backoff_kind, @backoff_initial, @backoff_maximum, "
                     + "@partition_limit, @definition_limit, @priority, @timeout, @retry_timeouts, @late_grace, @minimum_args, 0, @run_history, @job_retention, @run_history_retention, "
-                    + "@expect_time, @expect_zone, @expect_calendar, @expect_running, @expect_failures);"
+                    + "@expect_time, @expect_zone, @expect_calendar, @expect_running, @expect_failures, @failed_retention);"
                 : $"UPDATE {definitions} SET revision = @revision, digest = @digest, subject_kind = @subject, attempts = @attempts, backoff_kind = @backoff_kind, "
                     + "backoff_initial = @backoff_initial, backoff_maximum = @backoff_maximum, partition_limit = @partition_limit, definition_limit = @definition_limit, "
                     + "priority = @priority, attempt_timeout = @timeout, retry_timeouts = @retry_timeouts, late_grace = @late_grace, minimum_args_version = @minimum_args, "
                     + "run_history = @run_history, job_retention = @job_retention, run_history_retention = @run_history_retention, expect_time = @expect_time, "
-                    + "expect_zone = @expect_zone, expect_calendar = @expect_calendar, expect_running = @expect_running, expect_failures = @expect_failures, "
+                    + "expect_zone = @expect_zone, expect_calendar = @expect_calendar, expect_running = @expect_running, expect_failures = @expect_failures, failed_retention = @failed_retention, "
                     + "stored_at = SYSUTCDATETIME() WHERE [key] = @key;";
             var deadline = policy.Expect?.Deadline;
             await using (var command = Tsql.Command(work, write,
@@ -82,7 +83,9 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Text("@expect_zone", deadline?.TimeZone, 100),
                 Tsql.Text("@expect_calendar", deadline?.Calendar, 128),
                 Tsql.Ticks("@expect_running", policy.Expect?.RunningLimit),
-                Tsql.Int32("@expect_failures", policy.Expect?.FailureLimit)))
+                Tsql.Int32("@expect_failures", policy.Expect?.FailureLimit),
+                // Null keeps failed jobs until they are rerun or discarded.
+                Tsql.Ticks("@failed_retention", policy.FailedRetention == Timeout.InfiniteTimeSpan ? null : policy.FailedRetention)))
             {
                 await command.NonQueryAsync(cancellationToken);
             }
@@ -121,6 +124,7 @@ internal sealed partial class SqlServerJobStore
             RunHistory = reader.GetBoolean(16),
             Retention = TimeSpan.FromTicks(reader.GetInt64(17)),
             RunHistoryRetention = TimeSpan.FromTicks(reader.GetInt64(18)),
+            FailedRetention = reader.IsDBNull(24) ? Timeout.InfiniteTimeSpan : TimeSpan.FromTicks(reader.GetInt64(24)),
             Expect = ReadExpectation(reader, 19),
         };
         return new StoredJobDefinition(

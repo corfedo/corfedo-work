@@ -10,7 +10,7 @@ internal sealed partial class PostgreSqlJobStore
     private const string DefinitionColumns =
         "key, revision, digest, subject_kind, attempts, backoff_kind, backoff_initial, backoff_maximum, partition_limit, "
         + "definition_limit, priority, attempt_timeout, retry_timeouts, late_grace, minimum_args_version, paused, run_history, job_retention, run_history_retention, "
-        + "expect_time, expect_zone, expect_calendar, expect_running, expect_failures";
+        + "expect_time, expect_zone, expect_calendar, expect_running, expect_failures, failed_retention";
 
     /// <summary>
     /// Takes the definition fence exclusively, so claims in flight finish first and claims that start meanwhile queue
@@ -24,6 +24,7 @@ internal sealed partial class PostgreSqlJobStore
         ArgumentNullException.ThrowIfNull(policy.RunHistory, nameof(policy));
         ArgumentNullException.ThrowIfNull(policy.Retention, nameof(policy));
         ArgumentNullException.ThrowIfNull(policy.RunHistoryRetention, nameof(policy));
+        ArgumentNullException.ThrowIfNull(policy.FailedRetention, nameof(policy));
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, cancellationToken);
         StoredJobDefinition? stored;
@@ -49,11 +50,11 @@ internal sealed partial class PostgreSqlJobStore
             return stored;
         }
         var write = stored is null
-            ? $"INSERT INTO {definitions} ({DefinitionColumns}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false, $16, $17, $18, $19, $20, $21, $22, $23)"
+            ? $"INSERT INTO {definitions} ({DefinitionColumns}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, false, $16, $17, $18, $19, $20, $21, $22, $23, $24)"
             : $"UPDATE {definitions} SET revision = $2, digest = $3, subject_kind = $4, attempts = $5, backoff_kind = $6, backoff_initial = $7, "
                 + "backoff_maximum = $8, partition_limit = $9, definition_limit = $10, priority = $11, attempt_timeout = $12, retry_timeouts = $13, "
                 + "late_grace = $14, minimum_args_version = $15, run_history = $16, job_retention = $17, run_history_retention = $18, "
-                + "expect_time = $19, expect_zone = $20, expect_calendar = $21, expect_running = $22, expect_failures = $23, stored_at = clock_timestamp() WHERE key = $1";
+                + "expect_time = $19, expect_zone = $20, expect_calendar = $21, expect_running = $22, expect_failures = $23, failed_retention = $24, stored_at = clock_timestamp() WHERE key = $1";
         await using (var command = new NpgsqlCommand(write, connection, transaction))
         {
             command.Parameters.Add(Text(definition.Key));
@@ -80,6 +81,8 @@ internal sealed partial class PostgreSqlJobStore
             command.Parameters.Add(Nullable(deadline?.Calendar, NpgsqlDbType.Text));
             command.Parameters.Add(Nullable(policy.Expect?.RunningLimit, NpgsqlDbType.Interval));
             command.Parameters.Add(Nullable(policy.Expect?.FailureLimit, NpgsqlDbType.Integer));
+            // Null keeps failed jobs until they are rerun or discarded.
+            command.Parameters.Add(Nullable(policy.FailedRetention == Timeout.InfiniteTimeSpan ? null : policy.FailedRetention, NpgsqlDbType.Interval));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
@@ -117,6 +120,7 @@ internal sealed partial class PostgreSqlJobStore
             RunHistory = reader.GetBoolean(16),
             Retention = reader.GetFieldValue<TimeSpan>(17),
             RunHistoryRetention = reader.GetFieldValue<TimeSpan>(18),
+            FailedRetention = reader.IsDBNull(24) ? Timeout.InfiniteTimeSpan : reader.GetFieldValue<TimeSpan>(24),
             Expect = ReadExpectation(reader, 19),
         };
         return new StoredJobDefinition(

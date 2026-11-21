@@ -154,4 +154,24 @@ internal sealed partial class InMemoryJobStore
         work.Commit();
         return new(job, RerunOutcome.Rerun);
     }
+
+    /// <summary>Deletes the job when retention could: terminal, not held by its recurrence and not a chain step.</summary>
+    public async ValueTask<DiscardResult> DiscardAsync(LeaseSource<JobId> source, JobId job, CancellationToken cancellationToken)
+    {
+        var rules = Rules(source);
+        using var work = await database.BeginAsync(cancellationToken);
+        var r = rules.Find(work, Key(job.Value));
+        var outcome = r is null ? DiscardOutcome.NotFound
+            : r.Outstanding() ? DiscardOutcome.Outstanding
+            : r.Uuid(JobColumns.ChainId) is not null ? DiscardOutcome.ChainStep
+            : HeldByRecurrence(r, Awaited(work)) ? DiscardOutcome.HeldByRecurrence
+            : DiscardOutcome.Discarded;
+        if (outcome != DiscardOutcome.Discarded)
+        {
+            return new(job, outcome);
+        }
+        work.Remove(JobRows, Key(job.Value));
+        work.Commit();
+        return new(job, DiscardOutcome.Discarded);
+    }
 }

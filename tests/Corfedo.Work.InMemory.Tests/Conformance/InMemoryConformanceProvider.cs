@@ -230,6 +230,16 @@ public class InMemoryConformanceProvider : IReconcileConformanceProvider, IJobCo
             : new ProcessRecord(process.Type, process.Release, Now - process.HeartbeatAt, process.StoppedAt is not null, [.. process.Definitions.OrderBy(d => d.Definition, StringComparer.Ordinal)]));
     }
 
+    public async Task SetEndedAtAsync(JobId job, DateTimeOffset endedAt, CancellationToken cancellationToken)
+    {
+        using var transaction = await database.BeginAsync(cancellationToken);
+        var key = new Database.RowKey([job.Value]);
+        var record = transaction.Get(Work.Jobs.Rows, key) ?? throw new InvalidOperationException($"No job {job}.");
+        Assert.False(record.Outstanding());
+        transaction.Put(Work.Jobs.Rows, key, record.With([new(JobColumns.EndedAt, endedAt)], database.NextVersion()));
+        transaction.Commit();
+    }
+
     public async Task AgeProcessAsync(OwnerId owner, TimeSpan by, CancellationToken cancellationToken)
     {
         using var transaction = await database.BeginAsync(cancellationToken);
@@ -415,6 +425,9 @@ public sealed class InMemoryJobCoverageScenarios(InMemoryConformanceProvider pro
 
 public sealed class InMemoryJobRetentionScenarios(InMemoryConformanceProvider provider)
     : JobRetentionScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
+
+public sealed class InMemoryFailedJobScenarios(InMemoryConformanceProvider provider)
+    : FailedJobScenarios(provider), IClassFixture<InMemoryConformanceProvider>;
 
 public sealed class InMemoryJobCalendarScenarios(InMemoryConformanceProvider provider)
     : JobCalendarScenarios(provider), IClassFixture<InMemoryConformanceProvider>;

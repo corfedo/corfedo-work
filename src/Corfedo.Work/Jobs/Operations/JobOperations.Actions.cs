@@ -72,5 +72,34 @@ public sealed partial class JobOperations
         return results;
     }
 
+    /// <summary>
+    /// Deletes the terminal <paramref name="job"/> with its outcome and result, as retention deletes it once its window
+    /// passed; its run history entries stay. Refused while an execution of the job is outstanding, for an occurrence
+    /// its recurrence still holds and for a chain step. Nothing ends, so no outcome hook runs.
+    /// </summary>
+    public async ValueTask<DiscardResult> DiscardAsync(JobDefinition definition, JobId job, CancellationToken cancellationToken = default)
+    {
+        var registration = registry.Find(definition);
+        return await Store.DiscardAsync(await registration.SourceAsync(store, cancellationToken), job, cancellationToken);
+    }
+
+    /// <summary>
+    /// Discards each job as <see cref="DiscardAsync"/> does, each in its own transaction, and reports one result per
+    /// given id in order; an id given again is reported <see cref="DiscardOutcome.Duplicate"/>.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<DiscardResult>> DiscardManyAsync(JobDefinition definition, IEnumerable<JobId> jobs, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(jobs);
+        var registration = registry.Find(definition);
+        var source = await registration.SourceAsync(store, cancellationToken);
+        var seen = new HashSet<JobId>();
+        var results = new List<DiscardResult>();
+        foreach (var job in jobs)
+        {
+            results.Add(seen.Add(job) ? await Store.DiscardAsync(source, job, cancellationToken) : new DiscardResult(job, DiscardOutcome.Duplicate));
+        }
+        return results;
+    }
+
     private static bool Ignores(JobActionOptions options) => (options & JobActionOptions.IgnoreCalendar) != 0;
 }

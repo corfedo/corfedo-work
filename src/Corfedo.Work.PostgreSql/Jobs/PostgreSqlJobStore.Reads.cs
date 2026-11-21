@@ -221,5 +221,73 @@ internal sealed partial class PostgreSqlJobStore
         return expiries;
     }
 
+    /// <summary>
+    /// Reads the definition's failed jobs on <c>jobs_failed</c>, whose predicate the state and chain conditions repeat,
+    /// backwards from the cursor.
+    /// </summary>
+    public async ValueTask<FailedJobPage> GetFailedAsync(string definition, int limit, FailedJobCursor? after, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        await using var command = dataSource.CreateCommand(
+            "SELECT id, ended_execution_id, state, reason, ended_at, attempts, subject_kind, subject_id, partition_key, args_version "
+            + $"FROM {jobTable} WHERE definition = $1 AND state IN (2, 4) AND chain_id IS NULL"
+            + (after is null ? "" : " AND (ended_at, id) < ($3, $4)")
+            + " ORDER BY ended_at DESC, id DESC LIMIT $2");
+        command.Parameters.Add(Text(definition));
+        command.Parameters.Add(Int32(limit + 1));
+        if (after is not null)
+        {
+            command.Parameters.Add(new NpgsqlParameter<DateTimeOffset> { TypedValue = after.EndedAt.ToUniversalTime(), NpgsqlDbType = NpgsqlDbType.TimestampTz });
+            command.Parameters.Add(Uuid(after.Job.Value));
+        }
+        var jobs = new List<FailedJob>(Math.Min(limit + 1, 1001));
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var partition = reader.GetString(8);
+                jobs.Add(new FailedJob(
+                    new JobId(reader.GetGuid(0)),
+                    reader.GetGuid(1),
+                    (JobOutcome)reader.GetInt16(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.GetFieldValue<DateTimeOffset>(4),
+                    reader.GetInt32(5),
+                    reader.IsDBNull(6) ? null : Subject.Of(reader.GetString(6), reader.GetString(7)),
+                    partition.Length == 0 ? null : partition,
+                    reader.GetInt32(9)));
+            }
+        }
+        if (jobs.Count <= limit)
+        {
+            return new FailedJobPage(jobs, null);
+        }
+        jobs.RemoveAt(limit);
+        var last = jobs[^1];
+        return new FailedJobPage(jobs, new FailedJobCursor(last.EndedAt, last.Job));
+    }
+
+    /// <summary>Counts each definition's failed jobs on <c>jobs_failed</c> in one statement.</summary>
+    public async ValueTask<IReadOnlyDictionary<string, long>> CountFailedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        var counts = new Dictionary<string, long>(StringComparer.Ordinal);
+        if (definitions.Count == 0)
+        {
+            return counts;
+        }
+        await using var command = dataSource.CreateCommand(
+            "SELECT d.key, (SELECT count(*) FROM " + jobTable + " AS r WHERE r.definition = d.key AND r.state IN (2, 4) AND r.chain_id IS NULL) "
+            + "FROM unnest($1) AS d (key)");
+        command.Parameters.Add(Texts([.. definitions.Distinct(StringComparer.Ordinal)]));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            counts[reader.GetString(0)] = reader.GetInt64(1);
+        }
+        return counts;
+    }
+
     private static NpgsqlParameter<string[]> Texts(string[] values) => new() { TypedValue = values, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Text };
 }

@@ -384,6 +384,14 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
         return state;
     }
 
+    public async Task SetEndedAtAsync(JobId job, DateTimeOffset endedAt, CancellationToken cancellationToken)
+    {
+        await using var command = dataSource.CreateCommand("UPDATE work.jobs SET ended_at = $2 WHERE id = $1 AND state <> 0");
+        command.Parameters.Add(new NpgsqlParameter<Guid> { TypedValue = job.Value });
+        command.Parameters.Add(new NpgsqlParameter<DateTimeOffset> { TypedValue = endedAt.ToUniversalTime(), NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.TimestampTz });
+        Assert.Equal(1, await command.ExecuteNonQueryAsync(cancellationToken));
+    }
+
     public async Task AgeProcessAsync(OwnerId owner, TimeSpan by, CancellationToken cancellationToken)
     {
         await using var command = dataSource.CreateCommand(
@@ -530,6 +538,9 @@ public sealed class PostgreSqlJobActionScenarios(PostgreSqlConformanceProvider p
 
 public sealed class PostgreSqlJobRetentionScenarios(PostgreSqlConformanceProvider provider)
     : JobRetentionScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
+
+public sealed class PostgreSqlFailedJobScenarios(PostgreSqlConformanceProvider provider)
+    : FailedJobScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;
 
 public sealed class PostgreSqlProcessRegistryScenarios(PostgreSqlConformanceProvider provider)
     : ProcessRegistryScenarios(provider), IClassFixture<PostgreSqlConformanceProvider>;

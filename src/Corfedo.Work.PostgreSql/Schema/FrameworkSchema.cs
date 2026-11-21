@@ -427,6 +427,17 @@ internal static class FrameworkSchema
         (15, """
             ALTER TABLE {schema}.job_recurrences ADD COLUMN last_ended_at timestamptz;
             """),
+        // Failed retention: how long a definition keeps its jobs that ended failed or timed out outside chains, null to
+        // keep them until they are rerun or discarded; stored definitions keep their job retention for them. Retention
+        // reads failed jobs on jobs_failed and the other terminal jobs on jobs_retention, so neither reads the other's;
+        // jobs_failed also serves the failed-jobs list and count.
+        (16, """
+            ALTER TABLE {schema}.job_definitions ADD COLUMN failed_retention interval;
+            UPDATE {schema}.job_definitions SET failed_retention = job_retention;
+            DROP INDEX {schema}.jobs_retention;
+            CREATE INDEX jobs_retention ON {schema}.jobs (definition, ended_at) WHERE state <> 0 AND state <> 2 AND state <> 4 AND chain_id IS NULL;
+            CREATE INDEX jobs_failed ON {schema}.jobs (definition, ended_at, id) WHERE state IN (2, 4) AND chain_id IS NULL;
+            """),
     ];
 
     /// <summary>The schema version this release needs: the number of its last script.</summary>

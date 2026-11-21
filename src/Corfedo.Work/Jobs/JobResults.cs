@@ -154,3 +154,37 @@ public sealed record JobRunCursor(DateTimeOffset StartedAt, JobId Job, long Epoc
 
 /// <summary>Run history entries, newest first, and the cursor of the next page; null when there are no more.</summary>
 public sealed record JobRunPage(IReadOnlyList<JobRunEntry> Runs, JobRunCursor? Next);
+
+/// <summary>
+/// A job that ended failed or timed out outside a chain: its ended execution, outcome and reason, the attempts it used
+/// and its argument version. Never carries the arguments or a result.
+/// </summary>
+public sealed record FailedJob(
+    JobId Job,
+    Guid ExecutionId,
+    JobOutcome Outcome,
+    string? Reason,
+    DateTimeOffset EndedAt,
+    int Attempts,
+    Subject? Subject,
+    string? Partition,
+    int ArgsVersion);
+
+/// <summary>Where a page of failed jobs continues; obtained from <see cref="FailedJobPage.Next"/>.</summary>
+public sealed class FailedJobCursor
+{
+    internal FailedJobCursor(DateTimeOffset endedAt, JobId job)
+    {
+        EndedAt = endedAt;
+        Job = job;
+    }
+
+    /// <summary>The end time of the last job of the previous page.</summary>
+    internal DateTimeOffset EndedAt { get; }
+
+    /// <summary>The last job of the previous page, which orders jobs that ended at the same time.</summary>
+    internal JobId Job { get; }
+}
+
+/// <summary>Failed jobs, newest end first, and the cursor of the next page; null when there are no more.</summary>
+public sealed record FailedJobPage(IReadOnlyList<FailedJob> Jobs, FailedJobCursor? Next);

@@ -200,4 +200,46 @@ internal sealed partial class SqlServerJobStore
             return new RerunResult(job, RerunOutcome.Rerun);
         });
     }
+
+    /// <summary>
+    /// Locks the job through its key, waiting, and evaluates it in a new statement: a job with an outstanding execution,
+    /// an occurrence its recurrence holds and a chain step are refused. The delete repeats the retention condition, so it
+    /// removes only what retention could.
+    /// </summary>
+    public async ValueTask<DiscardResult> DiscardAsync(LeaseSource<JobId> source, JobId job, CancellationToken cancellationToken)
+    {
+        var sql = await SqlAsync(source, cancellationToken);
+        return await SqlServerLeaseStore.RetryDeadlocksAsync(async () =>
+        {
+            await using var connection = await leases.OpenAsync(cancellationToken);
+            await using var transaction = await SqlServerLeaseStore.BeginAsync(connection, cancellationToken);
+            var work = new SqlServerTransaction(transaction);
+            DiscardOutcome outcome;
+            await using (var command = Tsql.Command(work, $"""
+                DECLARE @held int;
+                SELECT @held = 1 FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK) WHERE r.id = @job AND {sql.Scope};
+                SELECT {Tsql.Bit("r.state = 0")}, {Tsql.Bit("r.chain_id IS NOT NULL")},
+                    {Tsql.Bit($"r.unconsumed = 1 OR EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.id = r.recurrence_id AND c.awaited_job = r.id)")}
+                FROM {sql.Table} AS r WHERE r.id = @job AND {sql.Scope};
+                """, Tsql.Guid("@job", job.Value)))
+            await using (var reader = await command.ReaderAsync(cancellationToken))
+            {
+                outcome = !await reader.NextRowAsync(cancellationToken) ? DiscardOutcome.NotFound
+                    : reader.GetBoolean(0) ? DiscardOutcome.Outstanding
+                    : reader.GetBoolean(1) ? DiscardOutcome.ChainStep
+                    : reader.GetBoolean(2) ? DiscardOutcome.HeldByRecurrence
+                    : DiscardOutcome.Discarded;
+            }
+            if (outcome != DiscardOutcome.Discarded)
+            {
+                return new DiscardResult(job, outcome);
+            }
+            await using (var delete = Tsql.Command(work, $"DELETE r FROM {sql.Table} AS r WHERE r.id = @job AND {sql.Scope} AND {Deletable("r")};", Tsql.Guid("@job", job.Value)))
+            {
+                await delete.NonQueryAsync(cancellationToken);
+            }
+            await transaction.CommitAsync(cancellationToken);
+            return new DiscardResult(job, DiscardOutcome.Discarded);
+        });
+    }
 }

@@ -238,6 +238,79 @@ internal sealed partial class SqlServerJobStore
     }
 
     /// <summary>
+    /// Reads the definition's failed jobs on <c>jobs_failed</c>, whose filter the state and chain conditions repeat,
+    /// backwards from the cursor; jobs that ended at the same time follow the index's order of their ids.
+    /// </summary>
+    public async ValueTask<FailedJobPage> GetFailedAsync(string definition, int limit, FailedJobCursor? after, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        var parameters = new List<SqlParameter> { Tsql.Text("@definition", definition, 200), Tsql.Int32("@limit", limit + 1) };
+        var filter = "[definition] = @definition AND state IN (2, 4) AND chain_id IS NULL";
+        if (after is not null)
+        {
+            filter += " AND (ended_at < @after_end OR (ended_at = @after_end AND id < @after_job))";
+            parameters.Add(Tsql.Time("@after_end", after.EndedAt));
+            parameters.Add(Tsql.Guid("@after_job", after.Job.Value));
+        }
+        await using var connection = await leases.OpenAsync(cancellationToken);
+        await using var command = Tsql.Command(connection, null,
+            "SELECT TOP (@limit) id, ended_execution_id, state, reason, ended_at, attempts, subject_kind, subject_id, partition_key, args_version "
+            + $"FROM {Jobs} WITH (INDEX(jobs_failed)) WHERE {filter} ORDER BY ended_at DESC, id DESC;",
+            [.. parameters]);
+        var jobs = new List<FailedJob>(Math.Min(limit + 1, 1001));
+        await using (var reader = await command.ReaderAsync(cancellationToken))
+        {
+            while (await reader.NextRowAsync(cancellationToken))
+            {
+                var partition = reader.GetString(8);
+                jobs.Add(new FailedJob(
+                    new JobId(reader.GetGuid(0)),
+                    reader.GetGuid(1),
+                    (JobOutcome)reader.GetInt16(2),
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    Tsql.Time(reader, 4),
+                    reader.GetInt32(5),
+                    reader.IsDBNull(6) ? null : Subject.Of(reader.GetString(6), reader.GetString(7)),
+                    partition.Length == 0 ? null : partition,
+                    reader.GetInt32(9)));
+            }
+        }
+        if (jobs.Count <= limit)
+        {
+            return new FailedJobPage(jobs, null);
+        }
+        jobs.RemoveAt(limit);
+        var last = jobs[^1];
+        return new FailedJobPage(jobs, new FailedJobCursor(last.EndedAt, last.Job));
+    }
+
+    /// <summary>Counts each definition's failed jobs on <c>jobs_failed</c> in one statement.</summary>
+    public async ValueTask<IReadOnlyDictionary<string, long>> CountFailedAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(definitions);
+        var counts = new Dictionary<string, long>(StringComparer.Ordinal);
+        if (definitions.Count == 0)
+        {
+            return counts;
+        }
+        await using var connection = await leases.OpenAsync(cancellationToken);
+        await using var command = Tsql.Command(connection, null, $"""
+            SELECT d.value, f.n
+            FROM OPENJSON(@definitions) WITH (value nvarchar(200) COLLATE {Tsql.Binary} '$') AS d
+            CROSS APPLY (SELECT COUNT_BIG(*) AS n FROM {Jobs} AS r WITH (INDEX(jobs_failed))
+                WHERE r.[definition] = d.value AND r.state IN (2, 4) AND r.chain_id IS NULL) AS f;
+            """,
+            Tsql.Strings("@definitions", definitions.Distinct(StringComparer.Ordinal)));
+        await using var reader = await command.ReaderAsync(cancellationToken);
+        while (await reader.NextRowAsync(cancellationToken))
+        {
+            counts[reader.GetString(0)] = reader.GetInt64(1);
+        }
+        return counts;
+    }
+
+    /// <summary>
     /// Reads, for each definition, the earliest unsettled lease from <c>jobs_expiry</c>, which leads with the definition
     /// and the expiry and carries the epochs. The index also holds settled leases that were not claimed again, and the
     /// seek of a definition passes them, as the per-source next-expiry statement does.
