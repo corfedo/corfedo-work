@@ -39,10 +39,11 @@ internal sealed partial class PostgreSqlJobStore
         var table = $"{Leases.LeaseSql.Quote(Table.Schema)}.{Leases.LeaseSql.Quote(Table.Name)}";
         var runs = Leases.LeaseSql.Quote(schema) + ".job_runs";
         // Failed jobs and the other terminal jobs are read on indexes of their own, jobs_failed and jobs_retention, whose
-        // predicates the state conditions repeat. A null failed retention keeps failed jobs: the bound is null and
-        // selects none.
-        var deleteJobs = DeleteExpired(table, "r.state <> 2 AND r.state <> 4", "job_retention");
-        var deleteFailed = DeleteExpired(table, "r.state IN (2, 4)", "failed_retention");
+        // predicates the state conditions repeat. A null failed retention takes the job window; the negative one of
+        // Timeout.InfiniteTimeSpan keeps failed jobs: the bound is null and selects none.
+        var deleteJobs = DeleteExpired(table, "r.state <> 2 AND r.state <> 4", "d.job_retention");
+        var deleteFailed = DeleteExpired(
+            table, "r.state IN (2, 4)", "CASE WHEN d.failed_retention < interval '0' THEN NULL ELSE COALESCE(d.failed_retention, d.job_retention) END");
         var deleteRuns =
             $"DELETE FROM {runs} AS h USING (SELECT r.job_id, r.epoch FROM {runs} AS r WHERE r.definition = $1 "
             + $"AND r.ended_at < now() - (SELECT d.run_history_retention FROM {definitions} AS d WHERE d.key = $1) "
@@ -74,7 +75,7 @@ internal sealed partial class PostgreSqlJobStore
 
         string DeleteExpired(string jobs, string state, string window) =>
             $"DELETE FROM {jobs} AS j USING (SELECT r.id FROM {jobs} AS r WHERE r.definition = $1 AND {state} AND {Deletable("r")} "
-            + $"AND r.ended_at < now() - (SELECT d.{window} FROM {definitions} AS d WHERE d.key = $1) "
+            + $"AND r.ended_at < now() - (SELECT {window} FROM {definitions} AS d WHERE d.key = $1) "
             + "ORDER BY r.ended_at LIMIT $2 FOR UPDATE OF r SKIP LOCKED) AS v WHERE j.id = v.id";
 
         async Task<int> DeleteAsync(string text, string key)

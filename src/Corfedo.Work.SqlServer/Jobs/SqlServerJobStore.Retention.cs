@@ -29,7 +29,7 @@ internal sealed partial class SqlServerJobStore
     public async ValueTask<RetentionPass> RetainAsync(int limit, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
-        var keys = new List<(string Key, TimeSpan Jobs, TimeSpan? Failed, TimeSpan Runs)>();
+        var keys = new List<(string Key, TimeSpan Jobs, TimeSpan Failed, TimeSpan Runs)>();
         DateTimeOffset now;
         await using (var connection = await leases.OpenAsync(cancellationToken))
         {
@@ -44,7 +44,9 @@ internal sealed partial class SqlServerJobStore
             {
                 while (await reader.NextRowAsync(cancellationToken))
                 {
-                    keys.Add((reader.GetString(0), TimeSpan.FromTicks(reader.GetInt64(1)), reader.IsDBNull(2) ? null : TimeSpan.FromTicks(reader.GetInt64(2)), TimeSpan.FromTicks(reader.GetInt64(3))));
+                    // A null failed retention takes the job window.
+                    var jobRetention = TimeSpan.FromTicks(reader.GetInt64(1));
+                    keys.Add((reader.GetString(0), jobRetention, reader.IsDBNull(2) ? jobRetention : TimeSpan.FromTicks(reader.GetInt64(2)), TimeSpan.FromTicks(reader.GetInt64(3))));
                 }
             }
         }
@@ -64,10 +66,10 @@ internal sealed partial class SqlServerJobStore
         var more = false;
         foreach (var (key, jobRetention, failedRetention, runRetention) in keys)
         {
-            // A null failed retention keeps failed jobs until they are rerun or discarded.
-            if (failedRetention is { } failedWindow)
+            // Timeout.InfiniteTimeSpan keeps failed jobs until they are rerun or discarded and is never subtracted from the clock.
+            if (failedRetention != Timeout.InfiniteTimeSpan)
             {
-                var deletedFailed = await DeleteAsync(deleteFailed, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, failedWindow)));
+                var deletedFailed = await DeleteAsync(deleteFailed, Tsql.Text("@definition", key, 200), Tsql.Time("@bound", Before(now, failedRetention)));
                 jobs += deletedFailed;
                 more |= deletedFailed == limit;
             }

@@ -40,7 +40,7 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
         await store.PrepareAsync(Cancel);
 
         Assert.Equal(1, await database.ScalarAsync("SELECT COUNT(*) FROM signals_first.signals", Cancel));
-        Assert.Equal(2, await database.ScalarAsync("SELECT COUNT(*) FROM signals_first.schema_versions", Cancel));
+        Assert.Equal(3, await database.ScalarAsync("SELECT COUNT(*) FROM signals_first.schema_versions", Cancel));
     }
 
     [Fact]
@@ -158,10 +158,26 @@ public sealed class FrameworkSchemaTests(SqlServerInstance server, SqlServerData
         var stored = (await store.Jobs.GetDefinitionAsync(definition.Key, Cancel))!;
         Assert.Equal(TimeSpan.FromDays(3), stored.Policy.FailedRetention);
         Assert.Equal(
-            "jobs_failed:([state]=(2) OR [state]=(4)) AND [chain_id] IS NULL|jobs_retention:[state]<>(0) AND [state]<>(2) AND [state]<>(4) AND [chain_id] IS NULL",
+            "jobs_failed:(([state] IN ((2), (4))) AND [chain_id] IS NULL)|jobs_retention:([state]<>(0) AND [state]<>(2) AND [state]<>(4) AND [chain_id] IS NULL)",
             await database.ScalarAsync(
                 "SELECT STRING_AGG(CONCAT(i.name, N':', i.filter_definition), N'|') WITHIN GROUP (ORDER BY i.name) FROM sys.indexes AS i "
                 + "WHERE i.object_id = OBJECT_ID(N'failed_upgrade.jobs') AND i.name IN (N'jobs_failed', N'jobs_retention')",
+                Cancel));
+
+        // Failed jobs that ended four and two days ago: retention deletes the first with the three-day job window.
+        await database.ExecuteAsync("""
+            INSERT INTO failed_upgrade.jobs (id, definition, state, args, args_version, first_requested_at, created_at, execution_id, outcome, reason, ended_at, ended_execution_id, attempts)
+            SELECT j.id, N'failed.upgrade', 2, 0x7B7D, 1, DATEADD(day, -5, SYSUTCDATETIME()), DATEADD(day, -5, SYSUTCDATETIME()), j.id, 2, N'broken',
+                DATEADD(day, -e.days, SYSUTCDATETIME()), j.id, 1
+            FROM (VALUES (4), (2)) AS e (days) CROSS APPLY (SELECT NEWID() AS id) AS j;
+            """, Cancel);
+        while ((await store.Jobs.RetainAsync(1000, Cancel)).More)
+        {
+        }
+        Assert.Equal(
+            "1:1",
+            await database.ScalarAsync(
+                "SELECT CONCAT(SUM(CASE WHEN ended_at > DATEADD(day, -3, SYSUTCDATETIME()) THEN 1 ELSE 0 END), N':', COUNT(*)) FROM failed_upgrade.jobs",
                 Cancel));
     }
 

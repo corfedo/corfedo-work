@@ -84,8 +84,8 @@ internal sealed partial class SqlServerJobStore
                 Tsql.Text("@expect_calendar", deadline?.Calendar, 128),
                 Tsql.Ticks("@expect_running", policy.Expect?.RunningLimit),
                 Tsql.Int32("@expect_failures", policy.Expect?.FailureLimit),
-                // Null keeps failed jobs until they are rerun or discarded.
-                Tsql.Ticks("@failed_retention", policy.FailedRetention == Timeout.InfiniteTimeSpan ? null : policy.FailedRetention)))
+                // Timeout.InfiniteTimeSpan is stored as it is, -1 ms, and keeps failed jobs until they are rerun or discarded.
+                Tsql.Ticks("@failed_retention", policy.FailedRetention.Value)))
             {
                 await command.NonQueryAsync(cancellationToken);
             }
@@ -105,6 +105,7 @@ internal sealed partial class SqlServerJobStore
     private static StoredJobDefinition ReadDefinition(SqlDataReader reader)
     {
         var initial = TimeSpan.FromTicks(reader.GetInt64(6));
+        var retention = TimeSpan.FromTicks(reader.GetInt64(17));
         var policy = new JobPolicy
         {
             Attempts = reader.GetInt32(4),
@@ -122,9 +123,10 @@ internal sealed partial class SqlServerJobStore
             Late = reader.IsDBNull(13) ? Late.Run : Late.SkipAfter(TimeSpan.FromTicks(reader.GetInt64(13))),
             MinimumArgsVersion = reader.GetInt32(14),
             RunHistory = reader.GetBoolean(16),
-            Retention = TimeSpan.FromTicks(reader.GetInt64(17)),
+            Retention = retention,
             RunHistoryRetention = TimeSpan.FromTicks(reader.GetInt64(18)),
-            FailedRetention = reader.IsDBNull(24) ? Timeout.InfiniteTimeSpan : TimeSpan.FromTicks(reader.GetInt64(24)),
+            // Null, as a definition stored without the column has it, takes the job window.
+            FailedRetention = reader.IsDBNull(24) ? retention : TimeSpan.FromTicks(reader.GetInt64(24)),
             Expect = ReadExpectation(reader, 19),
         };
         return new StoredJobDefinition(

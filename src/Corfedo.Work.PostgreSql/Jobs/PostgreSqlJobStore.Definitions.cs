@@ -81,8 +81,8 @@ internal sealed partial class PostgreSqlJobStore
             command.Parameters.Add(Nullable(deadline?.Calendar, NpgsqlDbType.Text));
             command.Parameters.Add(Nullable(policy.Expect?.RunningLimit, NpgsqlDbType.Interval));
             command.Parameters.Add(Nullable(policy.Expect?.FailureLimit, NpgsqlDbType.Integer));
-            // Null keeps failed jobs until they are rerun or discarded.
-            command.Parameters.Add(Nullable(policy.FailedRetention == Timeout.InfiniteTimeSpan ? null : policy.FailedRetention, NpgsqlDbType.Interval));
+            // Timeout.InfiniteTimeSpan is stored as it is, -1 ms, and keeps failed jobs until they are rerun or discarded.
+            command.Parameters.Add(Interval(policy.FailedRetention.Value));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
@@ -101,6 +101,7 @@ internal sealed partial class PostgreSqlJobStore
     private static StoredJobDefinition ReadDefinition(NpgsqlDataReader reader)
     {
         var initial = reader.GetFieldValue<TimeSpan>(6);
+        var retention = reader.GetFieldValue<TimeSpan>(17);
         var policy = new JobPolicy
         {
             Attempts = reader.GetInt32(4),
@@ -118,9 +119,10 @@ internal sealed partial class PostgreSqlJobStore
             Late = reader.IsDBNull(13) ? Late.Run : Late.SkipAfter(reader.GetFieldValue<TimeSpan>(13)),
             MinimumArgsVersion = reader.GetInt32(14),
             RunHistory = reader.GetBoolean(16),
-            Retention = reader.GetFieldValue<TimeSpan>(17),
+            Retention = retention,
             RunHistoryRetention = reader.GetFieldValue<TimeSpan>(18),
-            FailedRetention = reader.IsDBNull(24) ? Timeout.InfiniteTimeSpan : reader.GetFieldValue<TimeSpan>(24),
+            // Null, as a definition stored without the column has it, takes the job window.
+            FailedRetention = reader.IsDBNull(24) ? retention : reader.GetFieldValue<TimeSpan>(24),
             Expect = ReadExpectation(reader, 19),
         };
         return new StoredJobDefinition(

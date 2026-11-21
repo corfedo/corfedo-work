@@ -176,6 +176,21 @@ public sealed class FrameworkSchemaTests(PostgreSqlDatabase database) : IClassFi
             indexes,
             failed => Assert.EndsWith("(definition, ended_at, id) WHERE ((state = ANY (ARRAY[2, 4])) AND (chain_id IS NULL))", failed),
             retention => Assert.EndsWith("(definition, ended_at) WHERE ((state <> 0) AND (state <> 2) AND (state <> 4) AND (chain_id IS NULL))", retention));
+
+        // Failed jobs that ended four and two days ago: retention deletes the first with the three-day job window.
+        await ExecuteAsync("""
+            INSERT INTO failed_upgrade.jobs (id, definition, state, args, args_version, first_requested_at, created_at, execution_id, outcome, reason, ended_at, ended_execution_id, attempts)
+            SELECT id, 'failed.upgrade', 2, '\x7b7d'::bytea, 1, now() - interval '5 days', now() - interval '5 days', id, 2, 'broken', now() - ended, id, 1
+            FROM (SELECT gen_random_uuid() AS id, ended FROM unnest(ARRAY[interval '4 days', interval '2 days']) AS e (ended)) AS j
+            """);
+        while ((await store.Jobs.RetainAsync(1000, Cancel)).More)
+        {
+        }
+        await using var kept = database.DataSource.CreateCommand(
+            "SELECT count(*) FILTER (WHERE ended_at > now() - interval '3 days'), count(*) FROM failed_upgrade.jobs");
+        await using var keptReader = await kept.ExecuteReaderAsync(Cancel);
+        await keptReader.ReadAsync(Cancel);
+        Assert.Equal((1L, 1L), (keptReader.GetInt64(0), keptReader.GetInt64(1)));
     }
 
     private static PostgreSqlWorkStore Verifying(NpgsqlDataSource dataSource, string schema) =>

@@ -423,12 +423,12 @@ internal static class FrameworkSchema
             ALTER TABLE {schema}.job_recurrences ADD last_ended_at datetime2(7);
             """),
         // Failed retention: how long a definition keeps its jobs that ended failed or timed out outside chains, in ticks,
-        // null to keep them until they are rerun or discarded; stored definitions keep their job retention for them. The
-        // update is compiled after the column exists. Retention reads failed jobs on jobs_failed and the other terminal
-        // jobs on jobs_retention, so neither reads the other's; jobs_failed also serves the failed-jobs list and count.
+        // -10 000 (-1 ms) to keep them until they are rerun or discarded; null, as stored definitions and those a previous
+        // release stores have it, takes the job retention. Retention reads failed jobs on jobs_failed and the other
+        // terminal jobs on jobs_retention, so neither reads the other's; jobs_failed also serves the failed-jobs list and
+        // count.
         (3, """
             ALTER TABLE {schema}.job_definitions ADD failed_retention bigint;
-            EXEC (N'UPDATE {schema}.job_definitions SET failed_retention = job_retention;');
             DROP INDEX jobs_retention ON {schema}.jobs;
             CREATE INDEX jobs_retention ON {schema}.jobs (definition, ended_at) WHERE state <> 0 AND state <> 2 AND state <> 4 AND chain_id IS NULL;
             CREATE INDEX jobs_failed ON {schema}.jobs (definition, ended_at, id) WHERE state IN (2, 4) AND chain_id IS NULL;

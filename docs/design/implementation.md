@@ -234,7 +234,7 @@ else of the previous release keeps working. The release notes state it.
 
 | Step | Contents | Status |
 |---|---|---|
-| 10a | `FailedRetention` with `Timeout.InfiniteTimeSpan` translated to no bound in every provider, validation, the digest appended only when set, resolution to the job window; an upgrade script that adds `failed_retention` set from `job_retention`, narrows `jobs_retention` and adds `jobs_failed`; retention's two statements per definition with the deletable predicate shared with discard; provider tests that a definition stored before the upgrade deletes failed jobs with its job window. | Designed |
-| 10b | `GetFailedAsync` with its page and cursor, `CountFailedAsync`. | Designed |
-| 10c | `DiscardAsync`, `DiscardManyAsync`, `DiscardOutcome`. | Designed |
+| 10a | `FailedRetention` with `Timeout.InfiniteTimeSpan` translated to no bound in every provider, validation, the digest appended only when set, resolution to the job window; an upgrade script that adds `failed_retention`, null for the job window, narrows `jobs_retention` and adds `jobs_failed`; retention's two statements per definition with the deletable predicate shared with discard; provider tests that a definition stored before the upgrade deletes failed jobs with its job window. | Done |
+| 10b | `GetFailedAsync` with its page and cursor, `CountFailedAsync`. | Done |
+| 10c | `DiscardAsync`, `DiscardManyAsync`, `DiscardOutcome`. | Done |
 | 10d | Measurements recorded in [providers](providers.md) on PostgreSQL 18.6 and SQL Server at 1M jobs with 100 000 failed jobs kept: a page of the list, the count of 20 definitions, a discard, a retention pass, and the upgrade script's index rebuild, which blocks job writes while it runs. | Designed |
