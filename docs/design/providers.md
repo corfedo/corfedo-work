@@ -435,6 +435,16 @@ The first provider.
   and 1M expired entries with one transaction per statement took 8.8 s for 60 100 statements, most of them finding
   nothing in already drained definitions. A rerun's lock takes 0.02 ms, its evaluation 0.03 ms and its update
   0.12–0.14 ms; `RunNowAsync`'s read takes 0.02 ms, its lock 0.01 ms, its evaluation 0.02 ms and its update 0.05 ms.
+- Failed-jobs measurements, PostgreSQL 18.6 on an AMD Ryzen 7 7700X, 1M jobs over 50 definitions (600 000 of one,
+  70% terminal ended over the last 30 days), 7 days job retention: 20 definitions keep failed jobs until handled
+  (97 663, 48 000 of them in the large definition) and 30 take the job window (4 903). `jobs_failed` takes 6.4 MB and
+  `jobs_retention` 24 MB. A page of 50 failed jobs takes 0.45 ms, and 0.51 ms at any depth with the cursor (400 pages);
+  counting 20 or 50 definitions in one statement 3.9–4.2 ms, reading every failed job they keep; a discard 0.76 ms
+  (p90 0.90 ms). The first retention pass deleted 53 723 jobs in 359 ms, the drain of 462 062 took 286 passes and
+  13.2 s, and a pass with nothing expired takes 37 ms for the 50 definitions, about 150 statements in transactions of their own. Drained, the
+  large definition's job statement reads 5 buffers in 0.02 ms; on an index that also holds failed jobs
+  (`WHERE state <> 0`) it passed over the 36 810 kept failed jobs older than the job window, 29 ms. The upgrade
+  script's index rebuild takes 455 ms at 1M jobs and blocks job writes while it runs.
 - Process registry: a framework table `processes`, one row per instance keyed by its owner id, with its type, release,
   start, heartbeat and stop times and its own `stale_after`, so every reader judges its heartbeat alike; writes use
   `clock_timestamp()`. A process is live while `stopped_at IS NULL AND heartbeat_at + stale_after > now()`, evaluated

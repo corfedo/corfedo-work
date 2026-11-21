@@ -14,7 +14,7 @@ PostgreSQL; a stage that changes semantics updates the design and the scenarios 
 | 7. Signals | The signals layer of [signals](signals.md): the signals layer, the PostgreSQL and in-memory transports, framework topics, the EF Core send. | S-1–S-8 (S-6, S-7 as PostgreSQL tests) | Done |
 | 8. First public release | Package metadata, SourceLink and symbol packages, CI and release workflows, package readme, public documentation pass; the owner makes the repository public and publishes. | — | Done |
 | 9. SQL Server provider | `Corfedo.Work.SqlServer` as designed in [SQL Server provider](sqlserver.md): schema, every store contract, the signals table transport, the EF Core adapter on SQL Server, the guides; the whole conformance suite on SQL Server 2022 and 2025. | All | Done |
-| 10. Failed jobs | `JobPolicy.FailedRetention`, the failed-jobs list and count, discard, in every provider, as designed in [retention](jobs.md#retention) and [operator actions](jobs.md#operator-actions). | J-43–J-46 | Implemented; SQL Server suite, full check and measurements pending |
+| 10. Failed jobs | `JobPolicy.FailedRetention`, the failed-jobs list and count, discard, in every provider, as designed in [retention](jobs.md#retention) and [operator actions](jobs.md#operator-actions). | J-43–J-46 | Done |
 
 The lease, reconciliation, job and process registry scenarios run as `Corfedo.Work.Conformance` tests against
 PostgreSQL 18.6 in `tests/Corfedo.Work.PostgreSql.Tests`, and against the in-memory provider in
@@ -237,4 +237,4 @@ else of the previous release keeps working. The release notes state it.
 | 10a | `FailedRetention` with `Timeout.InfiniteTimeSpan` translated to no bound in every provider, validation, the digest appended only when set, resolution to the job window; an upgrade script that adds `failed_retention`, null for the job window, narrows `jobs_retention` and adds `jobs_failed`; retention's two statements per definition with the deletable predicate shared with discard; provider tests that a definition stored before the upgrade deletes failed jobs with its job window. | Done |
 | 10b | `GetFailedAsync` with its page and cursor, `CountFailedAsync`. | Done |
 | 10c | `DiscardAsync`, `DiscardManyAsync`, `DiscardOutcome`. | Done |
-| 10d | Measurements recorded in [providers](providers.md) on PostgreSQL 18.6 and SQL Server at 1M jobs with 100 000 failed jobs kept: a page of the list, the count of 20 definitions, a discard, a retention pass, and the upgrade script's index rebuild, which blocks job writes while it runs. | Designed |
+| 10d | Measurements recorded in [providers](providers.md) on PostgreSQL 18.6 and SQL Server at 1M jobs with 100 000 failed jobs kept: a page of the list, the count of 20 definitions, a discard, a retention pass, and the upgrade script's index rebuild, which blocks job writes while it runs. | Done |
