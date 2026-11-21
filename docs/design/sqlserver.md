@@ -569,13 +569,13 @@ statement is named; statement times are `sys.dm_exec_query_stats` averages.
 | Commits/s at 8 clients without / with a signal | 6 662 / 6 084 | | |
 
 - Failed jobs, on the 1M jobs over 50 definitions with about 100 000 kept failed jobs of the failed-jobs
-  measurements in [providers](providers.md): a page of 50 failed jobs 0.68 ms, 1.39 ms at any depth with the cursor
-  (400 pages); counting 20 definitions 8.4 ms (36 ms at 397 663 kept failed jobs, PostgreSQL 4.0 and 16.5 ms),
-  reading every failed job they keep from `jobs_failed`, which includes `state` and `chain_id`: without them each
-  failed job was looked up in the clustered index, 27 ms on 16 cores with 417 000 logical reads, and 648 ms with
-  1.6M reads at 397 663; a discard 1.09 ms (p90 1.33 ms). The first retention pass deleted 53 813 jobs in 2.4 s, the drain of
-  462 330 took 26.9 s, and a pass with nothing expired 35 ms. The upgrade's index rebuild takes 552 ms at 1M jobs.
-  `jobs_failed` takes 5 MB and `jobs_retention` 31 MB.
+  measurements in [providers](providers.md): a page of 50 failed jobs 0.66 ms, 1.60 ms at any depth with the cursor
+  (400 pages); counting 20 or 50 definitions 8.2–8.6 ms (36 ms at 397 663 kept failed jobs, PostgreSQL 4.0 and
+  16.5 ms), reading every failed job they keep from `jobs_failed` alone, which includes `state` and `chain_id`:
+  without them each failed job was looked up in the clustered index, 27–33 ms on 16 cores with 417 000 logical reads,
+  and 648 ms with 1.6M reads at 397 663. A discard takes 1.17 ms (p90 1.34 ms). The first retention pass deleted
+  53 755 jobs in 2.4 s, the drain of 461 653 took 26.9 s, and a pass with nothing expired 34 ms. The upgrade's index
+  rebuild takes 530 ms at 1M jobs. `jobs_failed` takes 7 MB and `jobs_retention` 31 MB.
 - The 1M values of claim passes, merging requests, `RequestManyAsync`, the status page and the unserved report are
   measured without temporary objects; the 10M column and the other rows with table variables in every batch. The
   same 1M run with table variables: claim passes 17.4 ms p50 and 31.7 ms p99, terminal transitions (whole call)
