@@ -83,7 +83,8 @@ provider's monotonic timestamp, so a change of the wall clock does not move them
 These loops hold at most four connections each, so a process's connections grow with the work it runs (holds,
 renewals, releases and handlers), not with the number of sources. The passes of one kind share the workers: a slow
 claim callback, expiry handler or planning pass occupies one, and the others of its kind run on the rest; as many
-waiting passes as workers stop that kind in the process until one returns.
+waiting passes as workers stop that kind in the process until one returns. `WorkConnections` computes these
+connections from the registrations alone, so a data source can be sized from it before the store exists.
 
 `work.StartMode(StartMode.Manual)` defers step 4 until the application calls `IWorkHost.StartAsync`, for hosts that
 must finish their own initialization first; the host's start still does steps 1–3, so the application can request

@@ -10,10 +10,12 @@
   opens an incident when such work waits longer than `UnservedGrace` (5 minutes by default).
 - **Rolling deployments.** Definitions carry revisions: shared policy comes from the newest stored revision, and older
   processes never claim work requested with argument versions they cannot read.
-- **Connections.** Work uses your data source. Besides your own needs, size its pool for: up to 12 connections for
-  Work's background passes (dispatch, expiry settlement and job maintenance, each on four workers however many
-  sources and definitions you register), one for the signal listener and one for the process heartbeat, and up to the
-  sum of your sources' capacities for running work, whose renewals, ends and handlers use connections.
+- **Connections.** Work uses your data source. Size its pool from `WorkConnections`, which the container resolves from
+  the process's registrations without creating the store: `Listener` for the signal listener (on the listener data
+  source when it has one of its own), `Passes` for the background passes that run at once (dispatch, expiry settlement
+  and job maintenance, each up to four however many sources and definitions you register), `Housekeeping` for the
+  heartbeat, the signal sender and the monitoring and calendar loops, and `Runs`, the sum of your sources' and pools'
+  capacities, whose renewals and ends take connections briefly. Your handlers' own statements come on top.
 - **Connection poolers.** Work runs through any data source. Listening for signals holds one session-level
   connection, so behind PgBouncer in transaction mode, give `AddPostgreSqlWorkStore` a direct listener data source
   (`listenerDataSource` or `listenerDataSourceKey`) and the pooled one for everything else; `AddPostgreSqlSignals`

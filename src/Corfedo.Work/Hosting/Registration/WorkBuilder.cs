@@ -341,6 +341,7 @@ public static class WorkServiceCollectionExtensions
         services.TryAddSingleton<CalendarOperations>();
         services.TryAddSingleton<IncidentOperations>();
         services.AddSingleton(new WorkHostOptions(builder.PollingIntervalValue, builder.ShutdownGraceValue, builder.StartModeValue));
+        services.AddSingleton(static services => WorkConnections.From(services));
         services.AddSingleton<WorkHost>();
         services.AddSingleton<IWorkHost>(static services => services.GetRequiredService<WorkHost>());
         services.AddHostedService(static services => services.GetRequiredService<WorkHost>());
