@@ -19,8 +19,8 @@
 - **Connection poolers.** Work runs through any data source. Listening for signals holds one session-level
   connection, so behind PgBouncer in transaction mode, give `AddPostgreSqlWorkStore` a direct listener data source
   (`listenerDataSource` or `listenerDataSourceKey`) and the pooled one for everything else; `AddPostgreSqlSignals`
-  takes a direct data source. Work's own statements need no session state: its advisory locks and settings are
-  transaction-scoped.
+  takes a direct data source. The listener data source must reach the store's database; Work logs a warning when it
+  does not. Work's own statements need no session state: its advisory locks and settings are transaction-scoped.
 - **Shutdown.** Running work gets a grace period. Work still held after it is released for another process.
 - **At least once.** A run can repeat after a crash. Writes to the same database are fenced; external effects, such
   as emails or HTTP calls, are deduplicated with the run's stable execution id.

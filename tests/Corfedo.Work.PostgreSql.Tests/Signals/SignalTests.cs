@@ -41,7 +41,8 @@ public sealed class SignalTests(PostgreSqlDatabase database) : IClassFixture<Pos
     public async Task TheListenerUsesTheListenerDataSourceAndSignalsArrive()
     {
         await using var listener = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(database.ConnectionString) { ApplicationName = "work-listener" }.ConnectionString);
-        var store = new PostgreSqlWorkStore(database.DataSource, "signals_listener", NullLoggerFactory.Instance, TimeProvider.System, listenerDataSource: listener);
+        var logs = new CapturedLogs();
+        var store = new PostgreSqlWorkStore(database.DataSource, "signals_listener", logs, TimeProvider.System, listenerDataSource: listener);
         await using var signals = new WorkSignals(store.Signals);
         var orders = new Recorder();
         using var subscription = signals.Subscribe(Orders, orders);
@@ -59,6 +60,31 @@ public sealed class SignalTests(PostgreSqlDatabase database) : IClassFixture<Pos
             names.Add(reader.GetString(0));
         }
         Assert.Equal(["work-listener"], names);
+        Assert.DoesNotContain("signals.listener_database_differs", logs.Events);
+    }
+
+    /// <summary>A listener data source that reaches another database receives none of the store's signals; a warning says so.</summary>
+    [Fact]
+    public async Task AListenerDataSourceOfAnotherDatabaseIsReported()
+    {
+        await using (var exists = database.DataSource.CreateCommand("SELECT count(*) FROM pg_database WHERE datname = 'signals_other'"))
+        {
+            if ((long)(await exists.ExecuteScalarAsync(Cancel))! == 0)
+            {
+                await using var create = database.DataSource.CreateCommand("CREATE DATABASE signals_other");
+                await create.ExecuteNonQueryAsync(Cancel);
+            }
+        }
+        await using var listener = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(database.ConnectionString) { Database = "signals_other" }.ConnectionString);
+        var logs = new CapturedLogs();
+        var store = new PostgreSqlWorkStore(database.DataSource, "signals_other_database", logs, TimeProvider.System, listenerDataSource: listener);
+        await using var signals = new WorkSignals(store.Signals);
+        var orders = new Recorder();
+        using var subscription = signals.Subscribe(Orders, orders);
+
+        await EventuallyAsync(() => orders.Resyncs == 1, "the listener connects");
+
+        Assert.Contains("signals.listener_database_differs", logs.Events);
     }
 
     /// <summary>A signal is sent once its transaction commits, however long after the send that is.</summary>
