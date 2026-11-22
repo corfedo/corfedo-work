@@ -38,7 +38,10 @@ public interface ILeaseStore
     ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, LeaseCallbacks<TKey> callbacks, OwnerId owner, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken)
         where TKey : notnull;
 
-    /// <summary>Extends a valid lease in its own transaction.</summary>
+    /// <summary>
+    /// Extends a valid lease in its own transaction without waiting for the record's lock: a record another transaction
+    /// has locked is <see cref="RenewOutcome.Busy"/> and unchanged, and a record that no longer exists is lost.
+    /// </summary>
     ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, CancellationToken cancellationToken)
         where TKey : notnull;
 

@@ -583,8 +583,9 @@ reports `ConcurrentTransactions` as false, and these scenarios skip:
 |---|---|
 | `L1_ConcurrentClaimersClaimEachRecordOnceWithoutWaiting` | a record locked by an open transaction that claims skip |
 | `L5_ExpiredLeaseCannotBeRenewed` | a renewal waiting for an open guarded transaction while a claim skips the record |
-| `L6_GuardedTransactionOutlastsOriginalExpiry` | a renewal waiting for an open guarded transaction while a claim skips the record |
-| `L7_RenewalWaitingOnALockEvaluatesExpiryAfterTheWait` | a renewal waiting on a record lock while a claim skips the record |
+| `L6_GuardedTransactionOutlastsOriginalExpiry` | a renewal that finds an open guarded transaction's lock busy while a claim skips the record |
+| `L6_RenewalAfterAGuardedTransactionRolledBackExtendsTheLease` | a renewal that finds an open guarded transaction's lock busy |
+| `L7_RenewalOfALockedRecordIsBusyAndEvaluatesExpiryOnceUnlocked` | renewals that find a record lock busy while a claim skips the record |
 | `L21_SettlementPassesLockedAndFailingRecords` | a record locked by an open transaction that settlement skips |
 | `L27_GuardedLeaseKeepsPartitionSlot` | due claims and claims by key while an open guarded transaction holds the partition's slot |
 | `L29_DueClaimSkipsLimitScopesAnApplicationTransactionHolds` | due claims while an open application transaction holds a partition or owner scope |

@@ -73,10 +73,35 @@ public sealed record LeaseClaim<TKey>
 public sealed record LeaseExpiry<TKey>(LeaseSource<TKey> Source, TKey Key, OwnerId Owner, long Epoch, string? Partition)
     where TKey : notnull;
 
-/// <summary>The outcome of a renewal.</summary>
-public readonly record struct RenewResult(bool Valid, bool CancelRequested, TimeSpan ValidFor)
+/// <summary>How a renewal ended.</summary>
+public enum RenewOutcome
 {
-    public static RenewResult Lost { get; } = new(false, false, TimeSpan.Zero);
+    /// <summary>The lease was valid and is extended.</summary>
+    Renewed,
+
+    /// <summary>The lease is no longer valid, or its record no longer exists.</summary>
+    Lost,
+
+    /// <summary>
+    /// Another transaction holds the record's lock, for example the holder's own guarded transaction, and the renewal
+    /// changed nothing: the lease keeps its last committed expiry. Only a renewal in its own transaction reports it,
+    /// since it never waits for the lock.
+    /// </summary>
+    Busy,
+}
+
+/// <summary>The outcome of a renewal.</summary>
+public readonly record struct RenewResult(RenewOutcome Outcome, bool CancelRequested, TimeSpan ValidFor)
+{
+    public static RenewResult Lost { get; } = new(RenewOutcome.Lost, false, TimeSpan.Zero);
+
+    public static RenewResult Busy { get; } = new(RenewOutcome.Busy, false, TimeSpan.Zero);
+
+    /// <summary>A lease extended to <paramref name="validFor"/> from the renewal, by the store's clock.</summary>
+    public static RenewResult Renewed(bool cancelRequested, TimeSpan validFor) => new(RenewOutcome.Renewed, cancelRequested, validFor);
+
+    /// <summary>Whether the lease was valid and is extended.</summary>
+    public bool Valid => Outcome == RenewOutcome.Renewed;
 }
 
 /// <summary>Identity and payload digest of the transition that ends a record, for replayed completions.</summary>

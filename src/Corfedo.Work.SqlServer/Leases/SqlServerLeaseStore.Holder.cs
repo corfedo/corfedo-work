@@ -6,56 +6,74 @@ namespace Corfedo.Work.SqlServer.Leases;
 
 internal sealed partial class SqlServerLeaseStore
 {
+    /// <summary>
+    /// Locks the record unless another transaction holds its lock, then extends the lease if it is still valid by a
+    /// clock reading taken in the next statement, both in a transaction of the batch. A locked record is busy if a read
+    /// of its committed version, which takes no lock, still finds it, and lost otherwise. A renewal of its own only
+    /// compares the generation.
+    /// </summary>
     public async ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, CancellationToken cancellationToken)
         where TKey : notnull
     {
-        var sql = await SqlAsync(lease.Source, cancellationToken);
+        var source = lease.Source;
+        var sql = await SqlAsync(source, cancellationToken);
+        var text = Tsql.OwnTransaction($"""
+            DECLARE @held int, @found int, @expires datetime2(7), @cancel bit, @valid_for bigint;
+            SELECT @held = 1 FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK, READPAST) WHERE {sql.KeyMatch};
+            IF @held IS NULL
+                SELECT @found = 1 FROM {sql.Table} AS r WHERE {sql.KeyMatch};
+            ELSE
+                {Update(sql, false)}
+            """) + "SELECT CASE WHEN @expires IS NOT NULL THEN 0 WHEN @found = 1 THEN 2 ELSE 1 END, @cancel, @valid_for;";
         return await RetryDeadlocksAsync(async () =>
         {
             await using var connection = await OpenAsync(cancellationToken);
-            return await RenewAsync(connection, null, sql, lease, false, cancellationToken);
+            await using var command = KeyCommand(connection, null, sql, source, lease.Key, text, Parameters(lease));
+            await using var reader = await command.ReaderAsync(cancellationToken);
+            await reader.NextRowAsync(cancellationToken);
+            return reader.GetInt32(0) switch
+            {
+                0 => RenewResult.Renewed(reader.GetBoolean(1), Tsql.FromMicros(reader.GetInt64(2))),
+                2 => RenewResult.Busy,
+                _ => RenewResult.Lost,
+            };
         });
     }
 
+    /// <summary>
+    /// Locks the record, waiting for its lock, then extends the lease if it is still valid by a clock reading taken in
+    /// the next statement. On a superseding source, the generation fence is taken first, before the row lock, since the
+    /// renewal authorizes what the caller's transaction commits, and the transaction must be READ COMMITTED. A renewal
+    /// that marks progress also resets the takeovers.
+    /// </summary>
     public async ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var work = SqlServerTransaction.From(transaction);
-        var sql = await SqlAsync(lease.Source, cancellationToken);
-        return await RenewAsync(work.Connection, work, sql, lease, progressed, cancellationToken);
-    }
-
-    /// <summary>
-    /// Locks the record, then extends the lease if it is still valid by a clock reading taken in the next statement.
-    /// Without a transaction both statements run in a transaction of the batch. In the caller's transaction on a
-    /// superseding source, the generation fence is taken first, before the row lock, since the renewal authorizes
-    /// what that transaction commits, and the transaction must be READ COMMITTED; a renewal of its own only compares
-    /// the generation. A renewal that marks progress also resets the takeovers.
-    /// </summary>
-    private static async Task<RenewResult> RenewAsync<TKey>(SqlConnection connection, SqlServerTransaction? work, LeaseSql sql, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
-        where TKey : notnull
-    {
         var source = lease.Source;
-        var fence = work is null ? null : sql.GenerationFence(!work.Work.ReadCommitted);
-        var body = $"""
+        var sql = await SqlAsync(source, cancellationToken);
+        var fence = sql.GenerationFence(!work.Work.ReadCommitted);
+        var text = $"""
             DECLARE @held int, @expires datetime2(7), @cancel bit, @valid_for bigint;
             SELECT @held = 1 FROM {sql.Table} AS r WITH (UPDLOCK, ROWLOCK) WHERE {sql.KeyMatch};
-            UPDATE r SET @expires = {LeaseSql.Bare(sql.Expires)} = {Tsql.AddTicks("SYSUTCDATETIME()", "@duration")},{(progressed ? $" {LeaseSql.Bare(sql.Takeovers)} = 0," : "")}
-                @cancel = {Tsql.Bit($"{sql.Cancel} IS NOT NULL")}, @valid_for = {Tsql.Micros("SYSUTCDATETIME()", Tsql.AddTicks("SYSUTCDATETIME()", "@duration"))}
-            FROM {sql.Table} AS r WHERE {sql.KeyMatch} AND {sql.Valid};
+            {Update(sql, progressed)}
+            SELECT @cancel, @valid_for WHERE @expires IS NOT NULL;
             """;
-        // A renewal sets the variables only when it updated the row.
-        const string result = "SELECT @cancel, @valid_for WHERE @expires IS NOT NULL;";
-        var text = work is null ? Tsql.OwnTransaction(body) + result : fence + body + "\n" + result;
-        await using var command = KeyCommand(connection, work?.Transaction, sql, source, lease.Key, text,
-            Tsql.Guid("@owner", lease.Owner.Value),
-            Tsql.Int64("@epoch", lease.Epoch),
-            Tsql.Ticks("@duration", source.Policy.Duration));
-        await using var reader = fence is null ? await command.ReaderAsync(cancellationToken) : await ExecuteFencedAsync(command, work!.Work, cancellationToken);
+        await using var command = KeyCommand(work.Connection, work.Transaction, sql, source, lease.Key, fence + text, Parameters(lease));
+        await using var reader = fence is null ? await command.ReaderAsync(cancellationToken) : await ExecuteFencedAsync(command, work.Work, cancellationToken);
         return await reader.NextRowAsync(cancellationToken)
-            ? new RenewResult(true, reader.GetBoolean(0), Tsql.FromMicros(reader.GetInt64(1)))
+            ? RenewResult.Renewed(reader.GetBoolean(0), Tsql.FromMicros(reader.GetInt64(1)))
             : RenewResult.Lost;
     }
+
+    /// <summary>The renewal's update of a locked record; it sets the variables only when the lease was valid.</summary>
+    private static string Update(LeaseSql sql, bool progressed) =>
+        $"UPDATE r SET @expires = {LeaseSql.Bare(sql.Expires)} = {Tsql.AddTicks("SYSUTCDATETIME()", "@duration")},{(progressed ? $" {LeaseSql.Bare(sql.Takeovers)} = 0," : "")} "
+        + $"@cancel = {Tsql.Bit($"{sql.Cancel} IS NOT NULL")}, @valid_for = {Tsql.Micros("SYSUTCDATETIME()", Tsql.AddTicks("SYSUTCDATETIME()", "@duration"))} "
+        + $"FROM {sql.Table} AS r WHERE {sql.KeyMatch} AND {sql.Valid};";
+
+    private static SqlParameter[] Parameters<TKey>(Lease<TKey> lease)
+        where TKey : notnull => [Tsql.Guid("@owner", lease.Owner.Value), Tsql.Int64("@epoch", lease.Epoch), Tsql.Ticks("@duration", lease.Source.Policy.Duration)];
 
     public async ValueTask<bool> ReleaseAsync<TKey>(Lease<TKey> lease, Due due, bool failed, CancellationToken cancellationToken)
         where TKey : notnull

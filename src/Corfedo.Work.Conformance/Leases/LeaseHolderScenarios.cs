@@ -67,21 +67,47 @@ public abstract class LeaseHolderScenarios(ILeaseConformanceProvider provider) :
         await using var guarded = await BeginAsync();
         await holder.Operations.GuardAsync(claim.Lease, guarded.Work, Cancel);
         await guarded.WriteProgressAsync(source.Store, key, "guarded", Cancel);
-        var renewal = Task.Run(async () => await holder.Operations.RenewAsync(claim.Lease, Cancel));
+        var busy = Stopwatch.StartNew();
+        Assert.Equal(RenewOutcome.Busy, (await holder.Operations.RenewAsync(claim.Lease, Cancel)).Outcome);
+        Assert.True(busy.Elapsed < TimeSpan.FromSeconds(1), "the renewal waited for the guarded transaction");
         await Task.Delay(TimeSpan.FromSeconds(2.4) - stopwatch.Elapsed, Cancel);
         var skip = Stopwatch.StartNew();
         Assert.Null(await claimer.Operations.ClaimAsync(source, key, Cancel));
         Assert.True(skip.Elapsed < TimeSpan.FromSeconds(1), "the claimer waited for the guarded record");
-        Assert.False(renewal.IsCompleted, "the renewal did not wait for the guarded transaction");
         await guarded.CommitAsync(Cancel);
 
-        Assert.True((await renewal).Valid);
+        Assert.True((await holder.Operations.RenewAsync(claim.Lease, Cancel)).Valid);
         var state = await ReadAsync(source, key);
         Assert.Equal(("guarded", true, 1L), (state.Progress, state.Valid, state.Epoch));
     }
 
     [Fact]
-    public async Task L7_RenewalWaitingOnALockEvaluatesExpiryAfterTheWait()
+    public async Task L6_RenewalAfterAGuardedTransactionRolledBackExtendsTheLease()
+    {
+        RequireConcurrentTransactions();
+        var source = await SourceAsync(Policy(TimeSpan.FromSeconds(5)));
+        var key = new TestKey("t", 1);
+        await InsertAsync(source, key, TimeSpan.Zero);
+        var holder = await ClientAsync(source);
+        var claim = (await holder.Operations.ClaimAsync(source, key, Cancel))!;
+
+        await using (var guarded = await BeginAsync())
+        {
+            await holder.Operations.GuardAsync(claim.Lease, guarded.Work, Cancel);
+            await guarded.WriteProgressAsync(source.Store, key, "rolled back", Cancel);
+            Assert.Equal(RenewOutcome.Busy, (await holder.Operations.RenewAsync(claim.Lease, Cancel)).Outcome);
+            await guarded.RollbackAsync(Cancel);
+        }
+
+        var renewed = await holder.Operations.RenewAsync(claim.Lease, Cancel);
+        Assert.Equal(RenewOutcome.Renewed, renewed.Outcome);
+        Assert.True(renewed.ValidFor > TimeSpan.FromSeconds(4));
+        var state = await ReadAsync(source, key);
+        Assert.Equal(((string?)null, true, 1L), (state.Progress, state.Valid, state.Epoch));
+    }
+
+    [Fact]
+    public async Task L7_RenewalOfALockedRecordIsBusyAndEvaluatesExpiryOnceUnlocked()
     {
         RequireConcurrentTransactions();
         var source = await SourceAsync(Policy(TimeSpan.FromSeconds(1)));
@@ -93,15 +119,40 @@ public abstract class LeaseHolderScenarios(ILeaseConformanceProvider provider) :
 
         await using var domain = await BeginAsync();
         await domain.LockAsync(source.Store, key, Cancel);
-        var renewal = Task.Run(async () => await holder.Operations.RenewAsync(claim.Lease, Cancel));
+        var busy = Stopwatch.StartNew();
+        Assert.Equal(RenewOutcome.Busy, (await holder.Operations.RenewAsync(claim.Lease, Cancel)).Outcome);
+        Assert.True(busy.Elapsed < TimeSpan.FromSeconds(1), "the renewal waited for the lock");
         await Task.Delay(1300, Cancel);
         var skip = Stopwatch.StartNew();
         Assert.Null(await claimer.Operations.ClaimAsync(source, key, Cancel));
         Assert.True(skip.Elapsed < TimeSpan.FromSeconds(1), "the claimer waited for the locked record");
-        Assert.False(renewal.IsCompleted, "the renewal did not wait for the lock");
+        Assert.Equal(RenewOutcome.Busy, (await holder.Operations.RenewAsync(claim.Lease, Cancel)).Outcome);
         await domain.CommitAsync(Cancel);
 
-        Assert.False((await renewal).Valid);
+        Assert.Equal(RenewOutcome.Lost, (await holder.Operations.RenewAsync(claim.Lease, Cancel)).Outcome);
+    }
+
+    [Fact]
+    public async Task L7_RenewalOfADeletedRecordIsLost()
+    {
+        var source = await SourceAsync(Policy(TimeSpan.FromSeconds(5)));
+        var key = new TestKey("t", 1);
+        await InsertAsync(source, key, TimeSpan.Zero);
+        var holder = await ClientAsync(source);
+        var claim = (await holder.Operations.ClaimAsync(source, key, Cancel))!;
+
+        await using (var transaction = await BeginAsync())
+        {
+            await transaction.DeleteAsync(source.Store, key, Cancel);
+            if (Provider.ConcurrentTransactions)
+            {
+                // An uncommitted delete holds the record's lock; the lease keeps its committed expiry until it commits.
+                Assert.Equal(RenewOutcome.Busy, (await holder.Operations.RenewAsync(claim.Lease, Cancel)).Outcome);
+            }
+            await transaction.CommitAsync(Cancel);
+        }
+
+        Assert.Equal(RenewOutcome.Lost, (await holder.Operations.RenewAsync(claim.Lease, Cancel)).Outcome);
     }
 
     [Fact]

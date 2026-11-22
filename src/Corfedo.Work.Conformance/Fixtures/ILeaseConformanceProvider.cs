@@ -74,6 +74,9 @@ public interface IConformanceTransaction : IAsyncDisposable
     /// <summary>Locks the record for update without changing it, waiting for other holders of its lock.</summary>
     Task LockAsync(StoreLocation table, TestKey key, CancellationToken cancellationToken);
 
+    /// <summary>Deletes the record, waiting for other holders of its lock.</summary>
+    Task DeleteAsync(StoreLocation table, TestKey key, CancellationToken cancellationToken);
+
     /// <summary>Takes a savepoint that <see cref="RollbackToSavepointAsync"/> returns to.</summary>
     Task SavepointAsync(CancellationToken cancellationToken);
 

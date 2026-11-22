@@ -29,6 +29,11 @@ public sealed partial class LeaseOperations(IWorkStore store, WorkProcess proces
     public ValueTask<IReadOnlyList<LeaseClaim<TKey>>> ClaimAsync<TKey>(WorkTransaction transaction, LeaseSource<TKey> source, IReadOnlyList<TKey> candidates, int limit, CancellationToken cancellationToken = default, OwnerId? owner = null)
         where TKey : notnull => Store.ClaimAsync(transaction, NotJob(source), registry.Callbacks(source), owner ?? Owner, candidates, limit, cancellationToken);
 
+    /// <summary>
+    /// Extends a valid lease without waiting for the record's lock. While another transaction holds it, for example the
+    /// holder's guarded transaction, the result is <see cref="RenewOutcome.Busy"/> and the lease keeps its last
+    /// committed expiry; the caller renews again before that expiry.
+    /// </summary>
     public ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, CancellationToken cancellationToken = default)
         where TKey : notnull => Store.RenewAsync(lease, cancellationToken);
 

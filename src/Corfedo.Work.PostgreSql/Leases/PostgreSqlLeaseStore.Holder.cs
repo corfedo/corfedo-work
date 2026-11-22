@@ -6,35 +6,54 @@ namespace Corfedo.Work.PostgreSql.Leases;
 
 internal sealed partial class PostgreSqlLeaseStore
 {
-    public async ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, CancellationToken cancellationToken)
-        where TKey : notnull
-    {
-        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
-        return await RenewAsync(connection, null, lease, false, cancellationToken);
-    }
-
-    public ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
-        where TKey : notnull
-    {
-        var work = PostgreSqlTransaction.From(transaction);
-        return RenewAsync(work.Connection, work.Transaction, lease, progressed, cancellationToken);
-    }
-
     /// <summary>
-    /// Locks the record, then extends the lease if it is still valid by a clock reading taken after the lock is held.
-    /// Without a transaction both statements run in the batch's implicit transaction. In the caller's transaction on a
-    /// superseding source, the generation fence is taken first, before the row lock, since the renewal authorizes
-    /// what that transaction commits, and the transaction must be READ COMMITTED; a renewal of its own only compares
-    /// the generation. A renewal that marks progress also resets the takeovers.
+    /// Locks the record unless another transaction holds its lock, then extends the lease if it is still valid by a
+    /// clock reading taken after the lock is held, in one statement. A locked record is busy if a read that takes no
+    /// lock still finds it, and lost otherwise. A renewal of its own only compares the generation.
     /// </summary>
-    private async ValueTask<RenewResult> RenewAsync<TKey>(NpgsqlConnection connection, NpgsqlTransaction? transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
+    public async ValueTask<RenewResult> RenewAsync<TKey>(Lease<TKey> lease, CancellationToken cancellationToken)
         where TKey : notnull
     {
         var source = lease.Source;
         var sql = Sql(source);
         var k = sql.KeyCount;
-        await using var batch = new NpgsqlBatch(connection, transaction);
-        if ((transaction is null ? null : sql.GenerationFence) is { } fence)
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+        await using var batch = new NpgsqlBatch(connection);
+        batch.BatchCommands.Add(KeyCommand(
+            $"WITH held AS (SELECT 1 FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)} FOR UPDATE OF r SKIP LOCKED), "
+            + $"renewed AS (UPDATE {sql.Table} AS r SET {LeaseSql.Bare(sql.Expires)} = clock_timestamp() + ${k + 3} "
+            + $"WHERE EXISTS (SELECT FROM held) AND {sql.KeyMatch(1)} AND {sql.Valid(k + 1, k + 2)} "
+            + $"RETURNING {sql.Cancel} IS NOT NULL AS cancel, extract(epoch FROM {sql.Expires} - clock_timestamp())::float8 AS valid_for) "
+            + "SELECT false, cancel, valid_for FROM renewed "
+            + $"UNION ALL SELECT true, false, 0::float8 WHERE NOT EXISTS (SELECT FROM held) AND EXISTS (SELECT FROM {sql.Table} AS r WHERE {sql.KeyMatch(1)})",
+            source,
+            lease.Key,
+            Uuid(lease.Owner.Value),
+            Int64(lease.Epoch),
+            Interval(source.Policy.Duration)));
+        await using var reader = await batch.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return RenewResult.Lost;
+        }
+        return reader.GetBoolean(0) ? RenewResult.Busy : RenewResult.Renewed(reader.GetBoolean(1), Seconds(reader.GetDouble(2)));
+    }
+
+    /// <summary>
+    /// Locks the record, waiting for its lock, then extends the lease if it is still valid by a clock reading taken after
+    /// the lock is held. On a superseding source, the generation fence is taken first, before the row lock, since the
+    /// renewal authorizes what the caller's transaction commits, and the transaction must be READ COMMITTED. A renewal
+    /// that marks progress also resets the takeovers.
+    /// </summary>
+    public async ValueTask<RenewResult> RenewAsync<TKey>(WorkTransaction transaction, Lease<TKey> lease, bool progressed, CancellationToken cancellationToken)
+        where TKey : notnull
+    {
+        var work = PostgreSqlTransaction.From(transaction);
+        var source = lease.Source;
+        var sql = Sql(source);
+        var k = sql.KeyCount;
+        await using var batch = new NpgsqlBatch(work.Connection, work.Transaction);
+        if (sql.GenerationFence is { } fence)
         {
             batch.BatchCommands.Add(new NpgsqlBatchCommand(fence));
         }
@@ -54,7 +73,7 @@ internal sealed partial class PostgreSqlLeaseStore
             await reader.NextResultAsync(cancellationToken);
         }
         return await reader.ReadAsync(cancellationToken)
-            ? new RenewResult(true, reader.GetBoolean(0), Seconds(reader.GetDouble(1)))
+            ? RenewResult.Renewed(reader.GetBoolean(0), Seconds(reader.GetDouble(1)))
             : RenewResult.Lost;
     }
 

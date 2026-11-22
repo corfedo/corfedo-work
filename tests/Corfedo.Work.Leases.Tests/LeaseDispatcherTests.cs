@@ -248,7 +248,7 @@ public sealed class LeaseDispatcherTests
             {
                 await Task.Delay(Timeout.Infinite, cancellationToken);
             }
-            return new RenewResult(true, false, source.Policy.Duration);
+            return RenewResult.Renewed(false, source.Policy.Duration);
         }
 
         public ValueTask<bool> ReleaseAsync<TKey>(Lease<TKey> lease, Due due, bool failed, CancellationToken cancellationToken)

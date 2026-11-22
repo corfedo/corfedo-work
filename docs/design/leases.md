@@ -106,7 +106,7 @@ remain, and a holder gives a record back with a result through `ReconcileOperati
 | `ClaimDueAsync(source, limit)` | Claims up to `limit` claimable records, earliest due first, skipping records another claim is taking (E2, R6). It may commit in several steps; a failure after a step committed returns the claims committed so far. |
 | `ClaimAsync(source, key)` | Claims one specific record if it is claimable (E3). |
 | `ClaimAsync(tx, source, candidates, limit)` | Inside the caller's transaction, claims up to `limit` of the given keys that are claimable. The caller rechecks domain eligibility and reserves resources in the same transaction (E7). |
-| `RenewAsync(lease)` | Extends a valid lease. Returns whether it is still valid and whether cancellation is requested (R8). |
+| `RenewAsync(lease)` | Extends a valid lease without waiting for the record's lock. Returns `Renewed` with whether cancellation is requested (R8), `Lost`, or `Busy` while another transaction holds the record's lock, in which case nothing changed and the lease keeps its last committed expiry. |
 | `RenewAsync(lease, tx)` | The same inside the caller's transaction, so progress written in it commits with the renewal (E4). |
 | `GuardAsync(lease, tx)` | Inside the caller's transaction: requires a valid lease, extends it, and locks the record against claims and other writers until the transaction ends. Every transaction that commits a holder's output calls it (R3, E4). With `progressed: true` it also resets `Takeovers` when the transaction commits. |
 | `ReleaseAsync(lease, due, failed)` | Gives the record back, due at `due`; counts a failure when `failed` (E5, E11). Never counts a takeover. |
@@ -121,9 +121,12 @@ the record's write lock until that transaction ends. While it is held:
 
 - claims skip the record, and settlement and takeover, which must lock the record, cannot happen, so the lease stays
   outstanding and keeps counting against every limit even after its previously committed expiry passes;
-- renewals from the holder's background loop wait for the transaction and then evaluate validity as usual: they
-  succeed if the expiry the guard set is still in the future, and fail otherwise, which happens only when the guarded
-  transaction ran longer than a lease duration;
+- renewals from the holder's background loop do not wait for the transaction: they return `Busy`, and the hold
+  retries until the transaction has ended, so a waiting renewal never holds a store connection. A renewal after a
+  commit extends the expiry the guard set; after a rollback, the expiry of the last committed renewal. The hold
+  still ends at its own last confirmed expiry, which the guard does not move and which can be two thirds of a lease
+  duration after the guard, so a guarded transaction that runs past it loses the hold although its commit stays
+  authorized;
 - stores whose transactions detect conflicts only on writes (document stores) get the conflict they need.
 
 The guard therefore authorizes the whole transaction through commit, and ownership and capacity accounting agree at
@@ -267,7 +270,9 @@ busy do not reduce what it claims, and records that keep failing cannot keep it 
 `LeaseHold<TKey>` keeps a claimed lease alive while work runs:
 
 - renews every third of the lease duration;
-- tolerates failed renewals until the last confirmed expiry would have passed, then treats the lease as lost; it
+- retries a busy renewal, one that found the record locked, from 50 ms, doubling up to the renewal interval and never
+  later than a third of the remaining validity, keeping the last confirmed expiry;
+- tolerates failed and busy renewals until the last confirmed expiry would have passed, then treats the lease as lost; it
   tracks that expiry with the local monotonic clock from the validity the store reports, never with wall-clock time,
   and a timer of its own cancels the token at that moment whether or not a renewal is still running; a claim whose
   validity ran out before the hold started (for example in a slow claim hook) does not start its handler; lost

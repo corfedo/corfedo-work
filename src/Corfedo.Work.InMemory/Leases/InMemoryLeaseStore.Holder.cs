@@ -31,7 +31,7 @@ internal sealed partial class InMemoryLeaseStore
         Write(transaction, rules, key, r, progressed
             ? [Set(rules.Fields.LeaseExpiresAt, now + rules.Policy.Duration), Set(rules.Fields.Takeovers, 0)]
             : [Set(rules.Fields.LeaseExpiresAt, now + rules.Policy.Duration)]);
-        return new RenewResult(true, r.Time(rules.Fields.CancelRequestedAt) is not null, rules.Policy.Duration);
+        return RenewResult.Renewed(r.Time(rules.Fields.CancelRequestedAt) is not null, rules.Policy.Duration);
     }
 
     public async ValueTask<bool> ReleaseAsync<TKey>(Lease<TKey> lease, Due due, bool failed, CancellationToken cancellationToken)

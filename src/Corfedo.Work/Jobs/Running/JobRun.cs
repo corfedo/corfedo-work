@@ -154,7 +154,8 @@ public partial class JobRun
 
     /// <summary>
     /// Writes the attempt's progress: a whole percentage from 0 to 100 and a short message (J19). It is a durable
-    /// write fenced to this attempt's lease and cleared when the next attempt starts; report at checkpoints.
+    /// write fenced to this attempt's lease and cleared when the next attempt starts; report at checkpoints. It runs in a
+    /// transaction of its own that waits for the job's lock, so call it outside a guarded transaction of the attempt.
     /// </summary>
     /// <exception cref="LeaseLostException">The lease is no longer valid.</exception>
     public async ValueTask ReportProgressAsync(int percent, string? message = null, CancellationToken cancellationToken = default)

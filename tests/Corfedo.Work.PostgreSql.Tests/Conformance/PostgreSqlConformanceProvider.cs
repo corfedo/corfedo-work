@@ -437,6 +437,12 @@ public sealed class PostgreSqlConformanceProvider(PostgreSqlServer server) : IRe
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        public async Task DeleteAsync(StoreLocation table, TestKey key, CancellationToken cancellationToken)
+        {
+            await using var command = Command($"DELETE FROM {Name(table)} WHERE tenant = $1 AND id = $2", key);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         public Task SavepointAsync(CancellationToken cancellationToken) => transaction.SaveAsync("conformance", cancellationToken);
 
         public Task RollbackToSavepointAsync(CancellationToken cancellationToken) => transaction.RollbackAsync("conformance", cancellationToken);

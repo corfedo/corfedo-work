@@ -27,7 +27,7 @@ public sealed class LeaseHoldTests
     [Fact]
     public async Task RenewalReportingCancellationStopsWithThatReasonAndKeepsRenewing()
     {
-        var store = new RenewingStore((_, _) => new RenewResult(true, true, TimeSpan.FromMilliseconds(300)));
+        var store = new RenewingStore((_, _) => RenewResult.Renewed(true, TimeSpan.FromMilliseconds(300)));
         await using var hold = Hold(store, TimeSpan.FromMilliseconds(300));
 
         await StoppedAsync(hold);
@@ -50,6 +50,32 @@ public sealed class LeaseHoldTests
 
         Assert.Equal(LeaseStopReason.Lost, hold.StopReason);
         Assert.Equal(1, store.Calls);
+    }
+
+    [Fact]
+    public async Task BusyRenewalsRetrySoonAndKeepTheLeaseOnceTheRecordIsUnlocked()
+    {
+        var store = new RenewingStore((_, call) => call <= 3 ? RenewResult.Busy : RenewResult.Renewed(false, TimeSpan.FromMilliseconds(600)));
+        await using var hold = Hold(store, TimeSpan.FromMilliseconds(600), duration: TimeSpan.FromMilliseconds(600));
+
+        await Task.Delay(900, Cancel);
+
+        Assert.Null(hold.StopReason);
+        Assert.True(store.Calls >= 5);
+    }
+
+    [Fact]
+    public async Task BusyRenewalsUntilTheLastConfirmedExpiryLoseTheLease()
+    {
+        var store = new RenewingStore((_, _) => RenewResult.Busy);
+        var stopwatch = Stopwatch.StartNew();
+        await using var hold = Hold(store, TimeSpan.FromMilliseconds(300));
+
+        await StoppedAsync(hold);
+
+        Assert.Equal(LeaseStopReason.Lost, hold.StopReason);
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(2));
+        Assert.True(store.Calls >= 3);
     }
 
     [Fact]
@@ -96,7 +122,7 @@ public sealed class LeaseHoldTests
     [Fact]
     public async Task ValidityUsedUpBeforeTheHoldStartsLosesTheLeaseAtOnce()
     {
-        var store = new RenewingStore((_, _) => new RenewResult(true, false, TimeSpan.FromMilliseconds(300)));
+        var store = new RenewingStore((_, _) => RenewResult.Renewed(false, TimeSpan.FromMilliseconds(300)));
         var claimedAt = TimeProvider.System.GetTimestamp() - TimeProvider.System.TimestampFrequency;
         await using var hold = Hold(store, TimeSpan.FromMilliseconds(300), claimedAt: claimedAt);
 

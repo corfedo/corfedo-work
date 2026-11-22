@@ -292,6 +292,12 @@ public class InMemoryConformanceProvider : IReconcileConformanceProvider, IJobCo
         /// <summary>The transaction holds the whole store, so every record is locked already.</summary>
         public Task LockAsync(StoreLocation table, TestKey key, CancellationToken cancellationToken) => Task.CompletedTask;
 
+        public Task DeleteAsync(StoreLocation table, TestKey key, CancellationToken cancellationToken)
+        {
+            transaction.Delete(table, [key.Tenant, key.Id]);
+            return Task.CompletedTask;
+        }
+
         public Task SavepointAsync(CancellationToken cancellationToken)
         {
             savepoint = transaction.Save();

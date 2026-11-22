@@ -15,9 +15,11 @@
   source when it has one of its own), `Passes` for the background passes that run at once (dispatch, expiry settlement
   and job maintenance, each up to four however many sources and definitions you register), `Housekeeping` for the
   heartbeat, the signal sender and the monitoring and calendar loops, and `Runs`, the sum of your sources' and pools'
-  capacities, whose renewals and ends take a connection for one round trip each. `Runs` is an upper bound: a smaller
-  pool queues those statements, and if it stays exhausted past a lease's last confirmed expiry, the lease is lost and
-  the run is released as failed. Your handlers' own statements come on top.
+  capacities, whose renewals and releases take a connection for one round trip each, and the ends Work applies for a
+  short transaction with the outcome hook. A renewal never waits for a record's lock, so a long guarded transaction
+  keeps no renewal holding a connection. `Runs` is an upper bound: a smaller pool queues those statements, and if it
+  stays exhausted past a lease's last confirmed expiry, the lease is lost and the run is released as failed. Your
+  handlers' own statements come on top.
 - **Connection poolers.** Work runs through any data source. Listening for signals holds one session-level
   connection, so behind PgBouncer in transaction mode, give `AddPostgreSqlWorkStore` a direct listener data source
   (`listenerDataSource` or `listenerDataSourceKey`) and the pooled one for everything else; `AddPostgreSqlSignals`

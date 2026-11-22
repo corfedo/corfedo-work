@@ -529,6 +529,12 @@ public sealed class SqlServerConformanceProvider(SqlServerInstance server) : IRe
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        public async Task DeleteAsync(StoreLocation table, TestKey key, CancellationToken cancellationToken)
+        {
+            await using var command = KeyCommand(connection, transaction, $"DELETE FROM {Name(table)} WHERE tenant = @tenant AND id = @id", key);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         public Task SavepointAsync(CancellationToken cancellationToken) => transaction.SaveAsync("conformance", cancellationToken);
 
         public Task RollbackToSavepointAsync(CancellationToken cancellationToken) => transaction.RollbackAsync("conformance", cancellationToken);

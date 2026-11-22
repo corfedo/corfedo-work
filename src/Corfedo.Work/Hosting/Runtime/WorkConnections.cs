@@ -5,15 +5,16 @@ namespace Corfedo.Work;
 /// <summary>
 /// The store connections a process's Work host uses, computed from its registrations, for sizing the store's data
 /// source. <see cref="Listener"/>, <see cref="Passes"/> and <see cref="Housekeeping"/> count the background loops'
-/// connections; <see cref="Runs"/> is an upper bound for brief statements of running work, each a single round trip. A
-/// pool smaller than the sum queues those statements; if it stays exhausted past a lease's last confirmed expiry, the
+/// connections; <see cref="Runs"/> is an upper bound for the brief statements of running work: renewals, which never
+/// wait for a record's lock, releases, and the ends the framework applies. A pool smaller than the sum queues those
+/// statements; if it stays exhausted past a lease's last confirmed expiry, the
 /// lease is lost and its run is released as failed. Resolving it reads only registrations, never the store, so a data
 /// source can be sized from it. Handlers and the application's own statements are not counted.
 /// </summary>
 /// <param name="Listener">The signal listener's session-level connection: one when the process has signals. A provider that takes the listener from a data source of its own, such as PostgreSQL with a listener data source, does not use the store's for it.</param>
 /// <param name="Passes">The background passes that run at once: dispatch, expiry settlement and job maintenance, each up to its loop's four workers and no more than it has passes.</param>
 /// <param name="Housekeeping">The process heartbeat, signals sent after commit, and the monitoring and calendar coverage loops, each one connection at a time.</param>
-/// <param name="Runs">Work running at once, the sum of the dispatch pools' capacities; each run's renewals, release and end take a connection for one round trip each.</param>
+/// <param name="Runs">Work running at once, the sum of the dispatch pools' capacities; each run's renewals and release take a connection for one round trip each, and an end the framework applies, for example of a job whose handler returned its result, for a short transaction with the definition's outcome hook.</param>
 public sealed record WorkConnections(int Listener, int Passes, int Housekeeping, int Runs)
 {
     internal static WorkConnections From(IServiceProvider services)

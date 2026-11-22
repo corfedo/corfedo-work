@@ -23,8 +23,8 @@ public enum LeaseStopReason
 }
 
 /// <summary>
-/// Keeps a claimed lease alive while work runs: renews every third of the lease duration, tolerates failed renewals
-/// until the last confirmed expiry would have passed, and cancels <see cref="Token"/> when the lease is lost,
+/// Keeps a claimed lease alive while work runs: renews every third of the lease duration, tolerates failed and busy
+/// renewals until the last confirmed expiry would have passed, and cancels <see cref="Token"/> when the lease is lost,
 /// cancellation is requested, the run times out or the process shuts down. Expiry is tracked with the local
 /// monotonic clock from what the store reports, so process clock skew does not matter, and enforced by a timer of its
 /// own, so a renewal that does not return cannot keep the token alive past the last confirmed expiry.
@@ -116,6 +116,7 @@ public sealed class LeaseHold<TKey> : IAsyncDisposable
 
     private async Task RenewLoopAsync(TimeSpan wait)
     {
+        var busyRetry = MinimumRetry;
         while (!stopRenewing.IsCancellationRequested)
         {
             try
@@ -134,6 +135,15 @@ public sealed class LeaseHold<TKey> : IAsyncDisposable
                 {
                     return;
                 }
+                if (result.Outcome == RenewOutcome.Busy)
+                {
+                    // Another transaction holds the record's lock, typically the holder's own guarded transaction,
+                    // whose commit extends the lease; the last confirmed expiry still stands.
+                    wait = TimeSpan.FromTicks(Math.Min(busyRetry.Ticks, NextRenewal(Remaining()).Ticks));
+                    busyRetry = TimeSpan.FromTicks(Math.Min(busyRetry.Ticks * 2, interval.Ticks));
+                    continue;
+                }
+                busyRetry = MinimumRetry;
                 if (!result.Valid)
                 {
                     // A lease that has not expired is taken away only by supersession; the local deadline is
