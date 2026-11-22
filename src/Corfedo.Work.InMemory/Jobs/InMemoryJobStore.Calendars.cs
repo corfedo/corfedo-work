@@ -98,14 +98,14 @@ internal sealed partial class InMemoryJobStore
         var rules = Rules(source);
         using var work = await database.BeginAsync(cancellationToken);
         var now = Now;
-        var unheld = rules.Scan(work).Select(r => r.Row).Where(r => r.Outstanding() && r.Time(LeaseFields.Default.LeaseExpiresAt) is null).ToList();
+        var unheld = rules.Scan(work).Select(r => r.Row).Where(CalendarUnheld).ToList();
         var instants = unheld
-            .Where(r => r.Time(JobColumns.CalendarAt) <= now && !r.Bool(JobColumns.CalendarUnavailable))
+            .Where(r => CalendarInstantCame(r, now))
             .OrderBy(r => r.Time(JobColumns.CalendarAt))
             .Take(limit)
             .ToList();
         var closed = unheld
-            .Where(r => r.Time(JobColumns.WindowEnd) <= now)
+            .Where(r => WindowClosed(r, now))
             .OrderBy(r => r.Time(JobColumns.WindowEnd))
             .Take(limit)
             .ToList();
@@ -171,18 +171,30 @@ internal sealed partial class InMemoryJobStore
             }
         }
         var after = Now;
-        var next = rules.Scan(work).Select(r => r.Row)
-            .Where(r => r.Outstanding() && r.Time(LeaseFields.Default.LeaseExpiresAt) is null)
-            .SelectMany(r => new[]
-            {
-                r.Bool(JobColumns.CalendarUnavailable) ? null : r.Time(JobColumns.CalendarAt),
-                r.Time(JobColumns.WindowEnd),
-            })
-            .Where(t => t > now)
-            .Min();
+        var next = NextCalendarInstant(rules.Scan(work).Select(r => r.Row), now);
         work.Commit();
         return new(instants.Count, closed.Count, next is { } at ? at - after : null);
     }
+
+    /// <summary>Whether the job is outstanding and not held, the jobs calendar planning considers.</summary>
+    private static bool CalendarUnheld(Record r) => r.Outstanding() && r.Time(LeaseFields.Default.LeaseExpiresAt) is null;
+
+    /// <summary>Whether the job's calendar instant has come; for <see cref="CalendarUnheld"/> jobs.</summary>
+    private static bool CalendarInstantCame(Record r, DateTimeOffset now) => r.Time(JobColumns.CalendarAt) <= now && !r.Bool(JobColumns.CalendarUnavailable);
+
+    /// <summary>Whether the job's allowed window closed before it started; for <see cref="CalendarUnheld"/> jobs.</summary>
+    private static bool WindowClosed(Record r, DateTimeOffset now) => r.Time(JobColumns.WindowEnd) <= now;
+
+    /// <summary>The earliest calendar instant or window end after <paramref name="now"/> of the unheld jobs among <paramref name="jobs"/>.</summary>
+    private static DateTimeOffset? NextCalendarInstant(IEnumerable<Record> jobs, DateTimeOffset now) => jobs
+        .Where(CalendarUnheld)
+        .SelectMany(r => new[]
+        {
+            r.Bool(JobColumns.CalendarUnavailable) ? null : r.Time(JobColumns.CalendarAt),
+            r.Time(JobColumns.WindowEnd),
+        })
+        .Where(t => t > now)
+        .Min();
 
     /// <summary>Plans a job at the allowed instant of <paramref name="slot"/>, not before <paramref name="from"/>, or as the slot decides.</summary>
     private static CalendarPlan Plan(Record r, CalendarSlot slot, DateTimeOffset from) => slot.Kind switch

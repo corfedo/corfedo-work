@@ -65,6 +65,12 @@ internal sealed partial class InMemoryJobStore
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>Whether the recurrence's copied pause flag disagrees with the stored subject pauses.</summary>
+    private bool PauseStale(InMemoryTransaction work, RecurrenceRow c) => c.Paused != SubjectPaused(work, c);
+
+    /// <summary>Whether the outstanding job's copied pause flag disagrees with the stored subject pauses.</summary>
+    private bool PauseStale(InMemoryTransaction work, Record r) => r.Outstanding() && r.Bool(JobColumns.Paused) != SubjectPaused(work, r);
+
     /// <summary>
     /// Sets the copied pause flags of recurrences and then outstanding jobs to the stored subject pauses, in both
     /// directions, up to <paramref name="limit"/> rows each, and queues the keys of repaired recurrences for the
@@ -79,7 +85,7 @@ internal sealed partial class InMemoryJobStore
         foreach (var (index, flag) in new[] { (0, false), (1, true) })
         {
             var stale = work.Scan(application.Recurrences).Select(c => c.Row)
-                .Where(c => c.Definition == definition && c.Paused != flag && SubjectPaused(work, c) == flag)
+                .Where(c => c.Definition == definition && c.Paused != flag && PauseStale(work, c))
                 .Take(limit)
                 .ToList();
             foreach (var recurrence in stale)
@@ -92,7 +98,7 @@ internal sealed partial class InMemoryJobStore
         foreach (var (index, flag) in new[] { (2, false), (3, true) })
         {
             var stale = Jobs(work, definition)
-                .Where(r => r.Outstanding() && r.Bool(JobColumns.Paused) != flag && SubjectPaused(work, r) == flag)
+                .Where(r => r.Bool(JobColumns.Paused) != flag && PauseStale(work, r))
                 .Take(limit)
                 .ToList();
             foreach (var r in stale)

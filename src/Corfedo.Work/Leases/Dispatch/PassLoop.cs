@@ -5,7 +5,7 @@ namespace Corfedo.Work;
 /// <summary>
 /// One loop that runs the passes of many sources, pools or definitions of one kind on a fixed number of workers. Each
 /// pass keeps its own schedule: it is due when it is woken or when the wait it returned from its last pass has passed,
-/// and a wait of zero makes it due again at once. A free worker takes the next due pass after the one taken last, so
+/// a wait of zero makes it due again at once, and <see cref="UntilWoken"/> makes it due only when it is woken. A free worker takes the next due pass after the one taken last, so
 /// due passes take turns and a pass that keeps returning zero cannot keep the others waiting for more than one turn of
 /// each. A pass never runs on two workers at once, and a wake during a pass runs it again after it ends. The process
 /// therefore holds at most <see cref="DefaultWorkers"/> connections per kind for these passes, however many sources it
@@ -17,6 +17,9 @@ internal sealed partial class PassLoop
 {
     /// <summary>The workers of a loop: the connections a kind of pass holds at most, and the passes that may wait at once without stopping the others.</summary>
     public const int DefaultWorkers = 4;
+
+    /// <summary>The wait a pass returns to run again only when it is woken.</summary>
+    public static readonly TimeSpan UntilWoken = Timeout.InfiniteTimeSpan;
 
     private readonly string kind;
     private readonly LeaseDispatchContext context;
@@ -100,7 +103,7 @@ internal sealed partial class PassLoop
             }
             lock (gate)
             {
-                entry.Next = time.GetTimestamp() + Ticks(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, time);
+                entry.Next = delay == UntilWoken ? long.MaxValue : time.GetTimestamp() + Ticks(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, time);
                 entry.Running = false;
             }
             // The pass may be due again, or woken while it ran; another worker may be waiting for it.
@@ -127,6 +130,10 @@ internal sealed partial class PassLoop
                     entry.Running = true;
                     cursor = (index + 1) % entries.Count;
                     return (entry, TimeSpan.Zero);
+                }
+                if (entry.Next == long.MaxValue)
+                {
+                    continue;
                 }
                 var until = context.Time.GetElapsedTime(now, entry.Next);
                 if (until < wait)

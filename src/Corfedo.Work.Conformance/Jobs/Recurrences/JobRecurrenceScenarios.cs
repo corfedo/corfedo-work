@@ -341,5 +341,55 @@ public abstract class JobRecurrenceScenarios(IJobConformanceProvider provider) :
         Assert.True(observed[1].Started - observed[0].Returned >= TimeSpan.FromSeconds(3) - Jitter, "the new interval applies from the next occurrence");
     }
 
+    [Fact]
+    public async Task J48_TheMaintenanceProbeReportsPlanningWorkAndTheNextInstantOfEachDefinition()
+    {
+        var idle = Definition();
+        var later = Definition(subject: "feed");
+        var due = Definition(subject: "feed");
+        var paused = Definition(subject: "feed");
+        // A client runs no maintenance, so only the calls below plan.
+        var client = await ClientAsync(null, idle, later, due, paused);
+        var subject = Subject.Of("feed", "a");
+        var now = await Provider.NowAsync(Cancel);
+        await ScheduleAsync(client, later, "later", Schedule.Every(TimeSpan.FromHours(1), Interval.FixedRate, now + TimeSpan.FromMinutes(30)), Recurring(subject));
+        var soon = now + TimeSpan.FromSeconds(1);
+        await ScheduleAsync(client, due, "due", Schedule.Every(TimeSpan.FromHours(1), Interval.FixedRate, soon), Recurring(subject));
+        await ScheduleAsync(client, paused, "paused", Schedule.Every(TimeSpan.FromHours(1), Interval.FixedRate, soon), Recurring(subject));
+        await InTransactionAsync(t => Jobs(client).PauseAsync(t, paused, Cancel));
+        var sources = new Dictionary<string, LeaseSource<JobId>>(StringComparer.Ordinal);
+        IWorkStore store = null!;
+        foreach (var definition in new JobDefinition[] { idle, later, due, paused })
+        {
+            (store, sources[definition.Key]) = await JobSourceAsync(client, definition, TimeSpan.FromSeconds(30));
+        }
+
+        IReadOnlyDictionary<string, JobMaintenanceDue> probed = null!;
+        await EventuallyAsync(
+            async () => (probed = await store.Jobs.MaintenanceDueAsync(sources.Values, Cancel))[due.Key].Planning,
+            TimeSpan.FromSeconds(10),
+            "the first instant comes");
+
+        Assert.Equal(sources.Keys.Order(StringComparer.Ordinal), probed.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(new JobMaintenanceDue(1, false, false, false, false, false, null), probed[idle.Key]);
+        Assert.False(probed[later.Key].Any);
+        Assert.InRange(probed[later.Key].NextIn!.Value, TimeSpan.FromMinutes(20), TimeSpan.FromMinutes(91));
+        Assert.True(probed[due.Key] is { Calendar: false, Skipped: false, Retired: false, Pauses: false });
+        // A paused definition plans nothing, so neither its due recurrence nor its next instant counts.
+        Assert.Equal(new JobMaintenanceDue(1, false, false, false, false, false, null), probed[paused.Key]);
+        Assert.Empty(await store.Jobs.MaintenanceDueAsync([], Cancel));
+
+        // A worker's maintenance plans the due instant and consumes the ended occurrence; then only the next instant is left.
+        var runs = new ConcurrentQueue<ObservedOccurrence>();
+        await WorkerAsync(due, Occurrences(runs), pollingInterval: Polling);
+        await RunsAsync(runs, 1, TimeSpan.FromSeconds(10));
+        JobMaintenanceDue after = default;
+        await EventuallyAsync(
+            async () => (after = (await store.Jobs.MaintenanceDueAsync([sources[due.Key]], Cancel))[due.Key]) is { Any: false, NextIn: not null },
+            TimeSpan.FromSeconds(10),
+            "maintenance consumes the ended occurrence");
+        Assert.InRange(after.NextIn!.Value, TimeSpan.FromMinutes(50), TimeSpan.FromMinutes(61));
+    }
+
     protected static string Occurrence(DateTimeOffset instant) => instant.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", System.Globalization.CultureInfo.InvariantCulture);
 }

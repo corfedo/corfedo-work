@@ -164,6 +164,15 @@ public interface IJobStore
     ValueTask<IReadOnlyDictionary<string, TimeSpan>> NextExpiriesAsync(IReadOnlyCollection<string> definitions, CancellationToken cancellationToken);
 
     /// <summary>
+    /// For each of <paramref name="sources"/>, keyed by definition, from committed records in one statement that locks
+    /// nothing: which of <see cref="PlanAsync"/>, <see cref="PlanCalendarAsync"/>, <see cref="FinalizeSkippedAsync"/>,
+    /// <see cref="RetireAsync"/> and <see cref="RepairPausesAsync"/> have work, with the conditions those calls select
+    /// rows by, the stored revision and the time until the next future instant those calls return. A process polls this
+    /// instead of running every call for every definition.
+    /// </summary>
+    ValueTask<IReadOnlyDictionary<string, JobMaintenanceDue>> MaintenanceDueAsync(IReadOnlyCollection<LeaseSource<JobId>> sources, CancellationToken cancellationToken);
+
+    /// <summary>
     /// One planning pass of the definition in the store's own transaction: locks up to <paramref name="limit"/> due
     /// recurrences without waiting, consumes their ended occurrences, applies the missed rule and the overlap policy
     /// with the store's clock and creates occurrences idempotently. It runs no outcome hook: occurrences the overlap

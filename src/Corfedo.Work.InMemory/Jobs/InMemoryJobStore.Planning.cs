@@ -20,6 +20,18 @@ internal sealed partial class InMemoryJobStore
     /// </summary>
     private bool DueCanPlan(InMemoryTransaction work, RecurrenceRow recurrence) => !AfterCompletion(recurrence) || !OccurrenceOutstanding(work, recurrence);
 
+    /// <summary>Whether the recurrence's instant has come and it can plan it; only while its definition is not paused.</summary>
+    private bool DueToPlan(InMemoryTransaction work, RecurrenceRow c, DateTimeOffset now) => c.NextAt <= now && !c.Paused && !SubjectPaused(work, c) && DueCanPlan(work, c);
+
+    /// <summary>Whether the recurrence can create its waiting occurrence; only while its definition is not paused.</summary>
+    private bool WaitingToPlan(InMemoryTransaction work, RecurrenceRow c) => c.WaitingAt is not null && !c.Paused && !SubjectPaused(work, c) && !OccurrenceOutstanding(work, c);
+
+    /// <summary>Whether the recurrence's next instant counts for the next planning pass; only while its definition is not paused.</summary>
+    private bool NextCounts(InMemoryTransaction work, RecurrenceRow c) => c.NextAt is not null && !c.Paused && !SubjectPaused(work, c) && DueCanPlan(work, c);
+
+    /// <summary>Whether the job is to be ended by <see cref="FinalizeSkippedAsync"/>.</summary>
+    private static bool Skipping(Record r) => r.Outstanding() && (r.Bool(JobColumns.SkipPending) || r[JobColumns.ChainOutcome] is not null);
+
     /// <summary>
     /// One planning pass in its own transaction. It takes up to <paramref name="limit"/> recurrences of each kind of
     /// work: due by their next instant, with a waiting occurrence and no outstanding occurrence, or with unconsumed ended
@@ -52,12 +64,12 @@ internal sealed partial class InMemoryJobStore
         if (!definitionPaused)
         {
             ids.UnionWith(recurrences
-                .Where(c => c.NextAt <= now && !c.Paused && !SubjectPaused(work, c) && DueCanPlan(work, c))
+                .Where(c => DueToPlan(work, c, now))
                 .OrderBy(c => c.NextAt)
                 .Take(limit)
                 .Select(c => c.Id));
             ids.UnionWith(recurrences
-                .Where(c => c.WaitingAt is not null && !c.Paused && !SubjectPaused(work, c) && !OccurrenceOutstanding(work, c))
+                .Where(c => WaitingToPlan(work, c))
                 .Take(limit)
                 .Select(c => c.Id));
         }
@@ -84,7 +96,7 @@ internal sealed partial class InMemoryJobStore
         if (!definitionPaused)
         {
             var next = work.Scan(application.Recurrences).Select(c => c.Row)
-                .Where(c => c.Definition == definition && c.NextAt is not null && !c.Paused && !SubjectPaused(work, c) && DueCanPlan(work, c))
+                .Where(c => c.Definition == definition && NextCounts(work, c))
                 .Min(c => c.NextAt);
             nextIn = Until(next, Now);
         }
@@ -207,7 +219,6 @@ internal sealed partial class InMemoryJobStore
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var rules = Rules(source);
-        static bool Skipping(Record r) => r.Outstanding() && (r.Bool(JobColumns.SkipPending) || r[JobColumns.ChainOutcome] is not null);
         var failed = new HashSet<Guid>();
         var count = 0;
         while (count < limit)

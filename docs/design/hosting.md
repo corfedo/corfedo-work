@@ -73,8 +73,8 @@ At startup the host:
 
 A process runs one loop per kind of background pass, however many sources and definitions it registers: the dispatch
 loop runs the claim passes of every [pool](#pools), the expiry loop the [settlement](leases.md#expiry-settlement)
-passes of every settling source, with one pass for all the job definitions it runs, and the maintenance loop the [planner](#job-planners) passes of every job definition
-whose handler it runs. Each pass keeps its own wake-ups and its own next run, as described for its kind; a pass that
+passes of every settling source, with one pass for all the job definitions it runs, and the maintenance loop one
+probe pass and the [planner](#job-planners) passes of every job definition whose handler it runs. Each pass keeps its own wake-ups and its own next run, as described for its kind; a pass that
 is due runs when one of the loop's four workers is free. A pass never runs on two workers at once, and a wake that
 arrives while it runs makes it due again when it ends. Due passes take turns, so a pass that has more to do at once
 cannot keep the others of its kind waiting for more than one turn of each. Due times are measured on the time
@@ -181,10 +181,15 @@ Every process that runs a job definition's handler also runs its planner and mai
 capacity: it plans due occurrences of the definition's recurrences and consumes ended occurrences, plans jobs whose
 [calendar](calendars.md#applying-a-calendar) instant has come and jobs whose allowed window closed before they
 started, ends jobs the overlap policy or a calendar skipped through the outcome hook, ends jobs whose argument version
-is below the stored `MinimumArgsVersion`, and repairs copied pause flags. It wakes on the definition's planning
-signals, which ended occurrences, schedule changes, resumes, requests with a calendar, retries and operator actions
-on jobs with a calendar and published date sets send, at the next planned instant, calendar instant or window end, and
-at the polling interval. A process that registers a calendar also reads the date-set coverage report at the polling
+is below the stored `MinimumArgsVersion`, and repairs copied pause flags. One probe pass of the process finds which of
+these calls have work for which definitions, with the conditions the calls select rows by, in one statement that locks
+nothing (`IJobStore.MaintenanceDueAsync`); it also reads each definition's stored revision, so a newer one rebuilds
+the definition's source. A definition's pass runs only when the probe wakes it, runs only the calls with work, and runs
+again at once while a call fills its batch. The probe runs on a definition's planning signal, which ended
+occurrences, schedule changes, resumes, requests with a calendar, retries and operator actions on jobs with a calendar
+and published date sets send, after a definition's pass changed records, at the earliest next planned instant,
+calendar instant or window end it read, and at the polling interval. An idle process therefore sends one maintenance
+statement per polling interval, however many definitions it runs. A process that registers a calendar also reads the date-set coverage report at the polling
 interval and logs changes of its states. See [recurring jobs](jobs.md#recurring-jobs-and-occurrences).
 
 ## Scopes and context

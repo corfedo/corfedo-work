@@ -196,6 +196,10 @@ internal sealed partial class PostgreSqlJobStore
         }
     }
 
+    /// <summary>Whether job <c>r</c> of the source is unheld, outstanding and below the stored minimum argument version.</summary>
+    private string Retired(LeaseSql sql) => sql.Scope + " AND r.state = 0 AND " + NotHeld
+        + $" AND r.args_version < (SELECT d.minimum_args_version FROM {definitions} AS d WHERE d.key = r.definition)";
+
     /// <summary>
     /// Ends unheld outstanding jobs whose argument version is below the stored minimum, one per transaction: each is
     /// locked without waiting, re-evaluated against the stored definition after the lock is held and ended failed with
@@ -206,8 +210,7 @@ internal sealed partial class PostgreSqlJobStore
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var sql = Sql(source);
-        var retired = sql.Scope + " AND r.state = 0 AND " + NotHeld
-            + $" AND r.args_version < (SELECT d.minimum_args_version FROM {definitions} AS d WHERE d.key = r.definition)";
+        var retired = Retired(sql);
         var failed = new List<Guid>();
         var count = 0;
         while (count < limit)

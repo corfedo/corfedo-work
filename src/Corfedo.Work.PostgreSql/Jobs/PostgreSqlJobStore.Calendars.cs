@@ -1,3 +1,4 @@
+using Corfedo.Work.PostgreSql.Leases;
 using Npgsql;
 using NpgsqlTypes;
 using static Corfedo.Work.PostgreSql.Leases.PostgreSqlLeaseStore;
@@ -57,14 +58,12 @@ internal sealed partial class PostgreSqlJobStore
         {
             batch.BatchCommands.Add(Command(
                 $"SELECT r.id, r.calendar, r.calendar_at, r.calendar_blocked, r.calendar_closed FROM {sql.Table} AS r "
-                + "WHERE r.definition = $1 AND r.calendar_at <= now() AND r.state = 0 AND NOT r.calendar_unavailable AND r.lease_expires_at IS NULL "
-                + "ORDER BY r.calendar_at LIMIT $2 FOR UPDATE OF r SKIP LOCKED",
+                + $"WHERE {CalendarInstantCame("$1")} ORDER BY r.calendar_at LIMIT $2 FOR UPDATE OF r SKIP LOCKED",
                 Text(definition),
                 Int32(limit)));
             batch.BatchCommands.Add(Command(
                 $"SELECT r.id, r.calendar, r.calendar_closed FROM {sql.Table} AS r "
-                + "WHERE r.definition = $1 AND r.window_end <= now() AND r.lease_expires_at IS NULL AND r.state = 0 "
-                + "ORDER BY r.window_end LIMIT $2 FOR UPDATE OF r SKIP LOCKED",
+                + $"WHERE {WindowClosed("$1")} ORDER BY r.window_end LIMIT $2 FOR UPDATE OF r SKIP LOCKED",
                 Text(definition),
                 Int32(limit)));
             batch.BatchCommands.Add(Command("SELECT clock_timestamp()"));
@@ -151,11 +150,7 @@ internal sealed partial class PostgreSqlJobStore
         }
         TimeSpan? nextIn;
         await using (var next = new NpgsqlCommand(
-            "SELECT extract(epoch FROM min(t) - clock_timestamp())::float8 FROM ("
-            + $"(SELECT r.calendar_at AS t FROM {sql.Table} AS r WHERE r.definition = $1 AND r.calendar_at > now() AND r.state = 0 AND NOT r.calendar_unavailable "
-            + "AND r.lease_expires_at IS NULL ORDER BY r.calendar_at LIMIT 1) UNION ALL "
-            + $"(SELECT r.window_end FROM {sql.Table} AS r WHERE r.definition = $1 AND r.window_end > now() AND r.lease_expires_at IS NULL AND r.state = 0 "
-            + "ORDER BY r.window_end LIMIT 1)) AS next",
+            $"SELECT extract(epoch FROM min(t) - clock_timestamp())::float8 FROM ({NextCalendarInstants(sql, "$1")}) AS next",
             connection,
             transaction))
         {
@@ -165,6 +160,21 @@ internal sealed partial class PostgreSqlJobStore
         await transaction.CommitAsync(cancellationToken);
         return new(instants.Count, closed.Count, nextIn);
     }
+
+    /// <summary>Whether unheld outstanding job <c>r</c> of <paramref name="definition"/> has a calendar instant that came.</summary>
+    private static string CalendarInstantCame(string definition) =>
+        $"r.definition = {definition} AND r.calendar_at <= now() AND r.state = 0 AND NOT r.calendar_unavailable AND r.lease_expires_at IS NULL";
+
+    /// <summary>Whether unheld outstanding job <c>r</c> of <paramref name="definition"/> has an allowed window that closed.</summary>
+    private static string WindowClosed(string definition) =>
+        $"r.definition = {definition} AND r.window_end <= now() AND r.lease_expires_at IS NULL AND r.state = 0";
+
+    /// <summary>The earliest future calendar instant and window end of the unheld jobs of <paramref name="definition"/>, as rows of <c>t</c>.</summary>
+    private static string NextCalendarInstants(LeaseSql sql, string definition) =>
+        $"(SELECT r.calendar_at AS t FROM {sql.Table} AS r WHERE r.definition = {definition} AND r.calendar_at > now() AND r.state = 0 AND NOT r.calendar_unavailable "
+        + "AND r.lease_expires_at IS NULL ORDER BY r.calendar_at LIMIT 1) UNION ALL "
+        + $"(SELECT r.window_end FROM {sql.Table} AS r WHERE r.definition = {definition} AND r.window_end > now() AND r.lease_expires_at IS NULL AND r.state = 0 "
+        + "ORDER BY r.window_end LIMIT 1)";
 
     /// <summary>Plans a job at the allowed instant of <paramref name="slot"/>, not before <paramref name="from"/>, or as the slot decides.</summary>
     private static CalendarPlan Plan(Guid id, CalendarSlot slot, DateTimeOffset from) => slot.Kind switch

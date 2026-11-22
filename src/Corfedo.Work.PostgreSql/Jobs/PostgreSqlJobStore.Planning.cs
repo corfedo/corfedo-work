@@ -30,6 +30,21 @@ internal sealed partial class PostgreSqlJobStore
     private static string DueCanPlan(LeaseSql sql) =>
         $"(c.interval_kind IS DISTINCT FROM {(short)Interval.AfterCompletion} OR NOT {OccurrenceOutstanding(sql)})";
 
+    /// <summary>Whether recurrence <c>c</c> of <paramref name="definition"/> is due and can plan; only while the definition is not paused.</summary>
+    private string DueToPlan(LeaseSql sql, string definition) =>
+        $"c.definition = {definition} AND c.next_at <= now() AND NOT c.paused AND NOT {SubjectPaused} AND {DueCanPlan(sql)}";
+
+    /// <summary>Whether recurrence <c>c</c> of <paramref name="definition"/> can create its waiting occurrence; only while the definition is not paused.</summary>
+    private string WaitingToPlan(LeaseSql sql, string definition) =>
+        $"c.definition = {definition} AND c.waiting_at IS NOT NULL AND NOT c.paused AND NOT {SubjectPaused} AND NOT {OccurrenceOutstanding(sql)}";
+
+    /// <summary>Whether the next instant of recurrence <c>c</c> of <paramref name="definition"/> counts; only while the definition is not paused.</summary>
+    private string NextCounts(LeaseSql sql, string definition) =>
+        $"c.definition = {definition} AND c.next_at IS NOT NULL AND NOT c.paused AND NOT {SubjectPaused} AND {DueCanPlan(sql)}";
+
+    /// <summary>Whether job <c>r</c> is to be ended by <see cref="FinalizeSkippedAsync"/>; with the source's scope.</summary>
+    private const string Skipping = "r.state = 0 AND (r.skip_pending OR r.chain_outcome IS NOT NULL)";
+
     private sealed record PlannedRecurrence(
         Guid Id,
         Schedule Schedule,
@@ -105,13 +120,11 @@ internal sealed partial class PostgreSqlJobStore
             if (!definitionPaused)
             {
                 batch.BatchCommands.Add(Command(
-                    $"SELECT c.id FROM {recurrences} AS c WHERE c.definition = $1 AND c.next_at <= now() AND NOT c.paused AND NOT {SubjectPaused} AND {DueCanPlan(sql)} "
-                    + "ORDER BY c.next_at LIMIT $2 FOR UPDATE OF c SKIP LOCKED",
+                    $"SELECT c.id FROM {recurrences} AS c WHERE {DueToPlan(sql, "$1")} ORDER BY c.next_at LIMIT $2 FOR UPDATE OF c SKIP LOCKED",
                     Text(definition),
                     Int32(limit)));
                 batch.BatchCommands.Add(Command(
-                    $"SELECT c.id FROM {recurrences} AS c WHERE c.definition = $1 AND c.waiting_at IS NOT NULL AND NOT c.paused AND NOT {SubjectPaused} "
-                    + $"AND NOT {OccurrenceOutstanding(sql)} LIMIT $2 FOR UPDATE OF c SKIP LOCKED",
+                    $"SELECT c.id FROM {recurrences} AS c WHERE {WaitingToPlan(sql, "$1")} LIMIT $2 FOR UPDATE OF c SKIP LOCKED",
                     Text(definition),
                     Int32(limit)));
             }
@@ -209,8 +222,7 @@ internal sealed partial class PostgreSqlJobStore
         if (!definitionPaused)
         {
             await using var next = new NpgsqlCommand(
-                $"SELECT extract(epoch FROM c.next_at - clock_timestamp())::float8 FROM {recurrences} AS c WHERE c.definition = $1 AND c.next_at IS NOT NULL AND NOT c.paused AND NOT {SubjectPaused} "
-                + $"AND {DueCanPlan(sql)} ORDER BY c.next_at LIMIT 1",
+                $"SELECT extract(epoch FROM c.next_at - clock_timestamp())::float8 FROM {recurrences} AS c WHERE {NextCounts(sql, "$1")} ORDER BY c.next_at LIMIT 1",
                 connection,
                 transaction);
             next.Parameters.Add(Text(definition));
@@ -345,7 +357,6 @@ internal sealed partial class PostgreSqlJobStore
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var sql = Sql(source);
-        const string skipping = "r.state = 0 AND (r.skip_pending OR r.chain_outcome IS NOT NULL)";
         var failed = new List<Guid>();
         var count = 0;
         while (count < limit)
@@ -357,7 +368,7 @@ internal sealed partial class PostgreSqlJobStore
             string? reason;
             var outcome = JobOutcome.Skipped;
             await using (var select = new NpgsqlCommand(
-                $"SELECT r.id, COALESCE(r.skip_reason, $2), r.skip_pending, r.chain_outcome FROM {sql.Table} AS r WHERE {sql.Scope} AND {skipping} AND r.id <> ALL($1) ORDER BY r.id LIMIT 1 FOR UPDATE OF r SKIP LOCKED",
+                $"SELECT r.id, COALESCE(r.skip_reason, $2), r.skip_pending, r.chain_outcome FROM {sql.Table} AS r WHERE {sql.Scope} AND {Skipping} AND r.id <> ALL($1) ORDER BY r.id LIMIT 1 FOR UPDATE OF r SKIP LOCKED",
                 connection,
                 transaction))
             {
@@ -380,7 +391,7 @@ internal sealed partial class PostgreSqlJobStore
             try
             {
                 // A standalone job skipped by its calendar starts a pending follow-up; occurrences have none.
-                if (await EndJobAsync(work, source, new JobId(job), outcome, reason, discardPending: false, skipping, [], ended, cancellationToken))
+                if (await EndJobAsync(work, source, new JobId(job), outcome, reason, discardPending: false, Skipping, [], ended, cancellationToken))
                 {
                     await transaction.CommitAsync(cancellationToken);
                     count++;

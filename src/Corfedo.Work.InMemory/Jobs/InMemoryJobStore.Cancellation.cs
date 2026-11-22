@@ -152,6 +152,10 @@ internal sealed partial class InMemoryJobStore
         }
     }
 
+    /// <summary>Whether the job is unheld, outstanding and below the stored minimum argument version of its definition.</summary>
+    private bool IsRetired(InMemoryTransaction transaction, string definition, Record r, DateTimeOffset now) =>
+        r.Outstanding() && NotHeld(r, now) && Stored(transaction, definition) is { } stored && r.Int32(JobColumns.ArgsVersion) < stored.Policy.MinimumArgsVersion;
+
     /// <summary>
     /// Ends unheld outstanding jobs whose argument version is below the stored minimum, one per transaction, failed with
     /// <c>args_version</c> through the terminal path, which then starts a pending follow-up. A job whose transition
@@ -167,8 +171,7 @@ internal sealed partial class InMemoryJobStore
         while (count < limit)
         {
             using var transaction = await database.BeginAsync(cancellationToken);
-            bool Retired(Record r) =>
-                r.Outstanding() && NotHeld(r, Now) && Stored(transaction, definition) is { } stored && r.Int32(JobColumns.ArgsVersion) < stored.Policy.MinimumArgsVersion;
+            bool Retired(Record r) => IsRetired(transaction, definition, r, Now);
             if (rules.Scan(transaction).Select(r => r.Row).Where(r => Retired(r) && !failed.Contains(r.Uuid(JobColumns.Id)!.Value)).MinBy(r => r.Uuid(JobColumns.Id)) is not { } found)
             {
                 return count;

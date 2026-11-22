@@ -212,6 +212,10 @@ internal sealed partial class SqlServerJobStore
         }
     }
 
+    /// <summary>Whether job <c>r</c> of the source is unheld, outstanding and below the stored minimum argument version.</summary>
+    private string Retired(LeaseSql sql) =>
+        $"{sql.Scope} AND r.state = 0 AND {NotHeld} AND r.args_version < (SELECT d.minimum_args_version FROM {definitions} AS d WHERE d.[key] = r.[definition])";
+
     /// <summary>
     /// Ends unheld outstanding jobs whose argument version is below the stored minimum, one per transaction: each is
     /// found through the outstanding-version index without a lock, locked through its key without waiting,
@@ -223,7 +227,7 @@ internal sealed partial class SqlServerJobStore
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var sql = await SqlAsync(source, cancellationToken);
-        var retired = $"{sql.Scope} AND r.state = 0 AND {NotHeld} AND r.args_version < (SELECT d.minimum_args_version FROM {definitions} AS d WHERE d.[key] = r.[definition])";
+        var retired = Retired(sql);
         var failed = new List<Guid>();
         var count = 0;
         while (count < limit)

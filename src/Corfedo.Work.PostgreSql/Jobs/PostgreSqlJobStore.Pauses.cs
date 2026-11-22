@@ -74,6 +74,22 @@ internal sealed partial class PostgreSqlJobStore
         }
     }
 
+    /// <summary>Whether recurrence <c>c</c> of <paramref name="definition"/> is flagged paused without a stored pause.</summary>
+    private string RecurrencePauseCleared(string definition) => $"c.definition = {definition} AND c.paused AND NOT {SubjectPaused}";
+
+    /// <summary>The recurrences <c>c</c> of <paramref name="definition"/> with a stored pause and no flag, as a FROM clause.</summary>
+    private string RecurrencePauseSet(string definition) =>
+        $"{pauses} AS p JOIN {recurrences} AS c ON c.definition = p.definition AND c.subject_kind = p.subject_kind AND c.subject_id = p.subject_id "
+        + $"WHERE p.definition = {definition} AND NOT c.paused";
+
+    /// <summary>Whether outstanding job <c>r</c> of <paramref name="definition"/> is flagged paused without a stored pause.</summary>
+    private static string JobPauseCleared(LeaseSql sql, string definition) => $"r.definition = {definition} AND r.paused AND r.state = 0 AND NOT {sql.SubjectPaused}";
+
+    /// <summary>The outstanding jobs <c>r</c> of <paramref name="definition"/> with a stored pause and no flag, as a FROM clause.</summary>
+    private string JobPauseSet(LeaseSql sql, string definition) =>
+        $"{pauses} AS p JOIN {sql.Table} AS r ON r.definition = p.definition AND r.subject_kind = p.subject_kind AND r.subject_id = p.subject_id AND r.state = 0 "
+        + $"WHERE p.definition = {definition} AND NOT r.paused";
+
     /// <summary>
     /// Sets the copied pause flags of recurrences and then outstanding jobs to the stored subject pauses, in both
     /// directions, locking each row without waiting, and queues the keys of repaired recurrences for the monitoring
@@ -95,26 +111,24 @@ internal sealed partial class PostgreSqlJobStore
             // five times faster at 100 000 flagged jobs.
             batch.BatchCommands.Add(Command(
                 $"WITH flagged AS (UPDATE {recurrences} SET paused = false WHERE id IN (WITH stale AS MATERIALIZED (SELECT c.id FROM {recurrences} AS c "
-                + $"WHERE c.definition = $1 AND c.paused AND NOT {SubjectPaused}) "
+                + $"WHERE {RecurrencePauseCleared("$1")}) "
                 + $"SELECT c.id FROM {recurrences} AS c JOIN stale AS s ON s.id = c.id WHERE c.paused LIMIT $2 FOR UPDATE OF c SKIP LOCKED) "
                 + $"RETURNING definition, subject_kind, subject_id) INSERT INTO {changes} (definition, subject_kind, subject_id) SELECT * FROM flagged",
                 Text(definition),
                 Int32(limit)));
             batch.BatchCommands.Add(Command(
-                $"WITH flagged AS (UPDATE {recurrences} SET paused = true WHERE id IN (SELECT c.id FROM {pauses} AS p JOIN {recurrences} AS c ON c.definition = p.definition "
-                + "AND c.subject_kind = p.subject_kind AND c.subject_id = p.subject_id WHERE p.definition = $1 AND NOT c.paused LIMIT $2 FOR UPDATE OF c SKIP LOCKED) "
+                $"WITH flagged AS (UPDATE {recurrences} SET paused = true WHERE id IN (SELECT c.id FROM {RecurrencePauseSet("$1")} LIMIT $2 FOR UPDATE OF c SKIP LOCKED) "
                 + $"RETURNING definition, subject_kind, subject_id) INSERT INTO {changes} (definition, subject_kind, subject_id) SELECT * FROM flagged",
                 Text(definition),
                 Int32(limit)));
             batch.BatchCommands.Add(Command(
                 $"UPDATE {sql.Table} SET paused = false WHERE id IN (WITH stale AS MATERIALIZED (SELECT r.id FROM {sql.Table} AS r "
-                + $"WHERE r.definition = $1 AND r.paused AND r.state = 0 AND NOT {sql.SubjectPaused}) "
+                + $"WHERE {JobPauseCleared(sql, "$1")}) "
                 + $"SELECT r.id FROM {sql.Table} AS r JOIN stale AS s ON s.id = r.id WHERE r.paused AND r.state = 0 LIMIT $2 FOR UPDATE OF r SKIP LOCKED)",
                 Text(definition),
                 Int32(limit)));
             batch.BatchCommands.Add(Command(
-                $"UPDATE {sql.Table} SET paused = true WHERE id IN (SELECT r.id FROM {pauses} AS p JOIN {sql.Table} AS r ON r.definition = p.definition "
-                + "AND r.subject_kind = p.subject_kind AND r.subject_id = p.subject_id AND r.state = 0 WHERE p.definition = $1 AND NOT r.paused LIMIT $2 FOR UPDATE OF r SKIP LOCKED)",
+                $"UPDATE {sql.Table} SET paused = true WHERE id IN (SELECT r.id FROM {JobPauseSet(sql, "$1")} LIMIT $2 FOR UPDATE OF r SKIP LOCKED)",
                 Text(definition),
                 Int32(limit)));
             await batch.ExecuteNonQueryAsync(cancellationToken);
