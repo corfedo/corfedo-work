@@ -21,6 +21,9 @@ internal sealed partial class JobMaintenance(JobDefinitionRegistration registrat
     private JobEndedCallback? ended;
     private JobMaintenanceDue pending;
 
+    // Records changed by passes since the probe was last woken; only passes read and write it, and they never overlap.
+    private bool unreported;
+
     /// <summary>The source name of the definition, the key of its planning signals.</summary>
     public string Source => registration.Definition.SourceName;
 
@@ -118,25 +121,45 @@ internal sealed partial class JobMaintenance(JobDefinitionRegistration registrat
         }
         catch (Exception exception) when (!token.IsCancellationRequested)
         {
-            // The probe finds the work again at its next pass.
-            var telemetry = WorkTelemetryOptions.From(context.Services);
-            LogMaintenanceFailed(context.Logging.CreateLogger("Corfedo.Work.Jobs"), telemetry.Logged(exception), registration.Definition.Key, telemetry.Describe(exception));
+            // The probe finds the work of this pass again; it reads at once what the calls before the failure changed.
+            Failed(context, exception);
+            Report(touched, PassLoop.UntilWoken, changed);
             return PassLoop.UntilWoken;
         }
-        if (touched)
+        if (again.Any)
         {
-            changed();
-        }
-        if (!again.Any)
-        {
-            return PassLoop.UntilWoken;
-        }
-        lock (gate)
-        {
-            pending = Merge(pending, again);
+            lock (gate)
+            {
+                pending = Merge(pending, again);
+            }
         }
         // A call that filled its batch runs again at once.
-        return again with { Planning = again.Planning && retry is null } is { Any: true } ? TimeSpan.Zero : retry!.Value;
+        var next = !again.Any ? PassLoop.UntilWoken
+            : again with { Planning = again.Planning && retry is null } is { Any: true } ? TimeSpan.Zero
+            : retry!.Value;
+        Report(touched, next, changed);
+        return next;
+    }
+
+    /// <summary>Logs a failure of this definition's maintenance or of reading its source for the probe.</summary>
+    public void Failed(LeaseDispatchContext context, Exception exception)
+    {
+        var telemetry = WorkTelemetryOptions.From(context.Services);
+        LogMaintenanceFailed(context.Logging.CreateLogger("Corfedo.Work.Jobs"), telemetry.Logged(exception), registration.Definition.Key, telemetry.Describe(exception));
+    }
+
+    /// <summary>
+    /// Wakes the probe for the records passes changed once the pass does not run again at once, so draining a backlog in
+    /// batches probes once, at its end.
+    /// </summary>
+    private void Report(bool touched, TimeSpan next, Action changed)
+    {
+        unreported |= touched;
+        if (unreported && next != TimeSpan.Zero)
+        {
+            unreported = false;
+            changed();
+        }
     }
 
     private static JobMaintenanceDue Merge(JobMaintenanceDue a, JobMaintenanceDue b) => new(
@@ -165,6 +188,7 @@ internal sealed partial class JobMaintenanceLoop(IEnumerable<JobMaintenance> def
     public const string ProbeName = "job maintenance";
 
     private readonly JobMaintenance[] definitions = [.. definitions];
+    private readonly HashSet<string> sources = new(definitions.Select(d => d.Source), StringComparer.Ordinal);
     private readonly Dictionary<string, PassLoop.Entry> entries = new(StringComparer.Ordinal);
     private PassLoop? loop;
     private PassLoop.Entry? probe;
@@ -190,39 +214,67 @@ internal sealed partial class JobMaintenanceLoop(IEnumerable<JobMaintenance> def
     private async Task<TimeSpan> ProbeAsync(LeaseDispatchContext context, CancellationToken token)
     {
         var delay = context.PollingInterval;
+        // A definition whose source cannot be read or rebuilt is left out of this pass; the others are maintained.
+        var probed = new List<(JobMaintenance Definition, LeaseSource<JobId> Source)>(definitions.Length);
+        foreach (var definition in definitions)
+        {
+            try
+            {
+                probed.Add((definition, await definition.SourceAsync(context.Store, token)));
+            }
+            catch (Exception exception) when (!token.IsCancellationRequested)
+            {
+                definition.Failed(context, exception);
+            }
+        }
+        if (probed.Count == 0)
+        {
+            return delay;
+        }
+        IReadOnlyDictionary<string, JobMaintenanceDue> due;
         try
         {
-            var sources = new List<LeaseSource<JobId>>(definitions.Length);
-            foreach (var definition in definitions)
-            {
-                sources.Add(await definition.SourceAsync(context.Store, token));
-            }
-            var due = await context.Store.Jobs.MaintenanceDueAsync(sources, token);
-            foreach (var definition in definitions)
-            {
-                if (!due.TryGetValue(definition.Key, out var found))
-                {
-                    continue;
-                }
-                if (await definition.ObserveAsync(found, context.Store, token))
-                {
-                    entries[definition.Key].Wake();
-                }
-                if (found.NextIn is { } next && next < delay)
-                {
-                    delay = next;
-                }
-            }
+            due = await context.Store.Jobs.MaintenanceDueAsync([.. probed.Select(p => p.Source)], token);
         }
         catch (Exception exception) when (!token.IsCancellationRequested)
         {
             var telemetry = WorkTelemetryOptions.From(context.Services);
             LogProbeFailed(context.Logging.CreateLogger("Corfedo.Work.Jobs"), telemetry.Logged(exception), telemetry.Describe(exception));
+            return delay;
+        }
+        foreach (var (definition, _) in probed)
+        {
+            if (!due.TryGetValue(definition.Key, out var found))
+            {
+                continue;
+            }
+            try
+            {
+                if (await definition.ObserveAsync(found, context.Store, token))
+                {
+                    entries[definition.Key].Wake();
+                }
+            }
+            catch (Exception exception) when (!token.IsCancellationRequested)
+            {
+                definition.Failed(context, exception);
+            }
+            if (found.NextIn is { } next && next < delay)
+            {
+                delay = next;
+            }
         }
         return delay;
     }
 
-    public void Received(string key) => Probe();
+    /// <summary>A planning signal of a definition the process runs wakes the probe; others are ignored.</summary>
+    public void Received(string key)
+    {
+        if (sources.Contains(key))
+        {
+            Probe();
+        }
+    }
 
     public void Resync() => Probe();
 

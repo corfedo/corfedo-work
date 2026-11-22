@@ -28,6 +28,22 @@ internal sealed partial class SqlServerJobStore
     /// </summary>
     private readonly record struct CalendarPlan(Guid Id, CalendarDecision Decision, DateTimeOffset? Due, DateTimeOffset? WindowEnd, DateTimeOffset? Instant, string? Reason, bool MovesForward = false);
 
+    /// <summary>Whether unheld outstanding job <paramref name="alias"/> of <paramref name="definition"/> has a calendar instant that came.</summary>
+    private static string CalendarInstantCame(string alias, string definition) =>
+        $"{alias}.[definition] = {definition} AND {alias}.calendar_at IS NOT NULL AND {alias}.calendar_at <= @now AND {alias}.state = 0 AND {alias}.calendar_unavailable = 0 AND {alias}.lease_expires_at IS NULL";
+
+    /// <summary>Whether the window of unheld outstanding job <paramref name="alias"/> of <paramref name="definition"/> closed.</summary>
+    private static string WindowClosed(string alias, string definition) =>
+        $"{alias}.[definition] = {definition} AND {alias}.window_end IS NOT NULL AND {alias}.window_end <= @now AND {alias}.lease_expires_at IS NULL AND {alias}.state = 0";
+
+    /// <summary>Whether unheld outstanding job <paramref name="alias"/> of <paramref name="definition"/> has a calendar instant still to come.</summary>
+    private static string CalendarInstantNext(string alias, string definition) =>
+        $"{alias}.[definition] = {definition} AND {alias}.calendar_at IS NOT NULL AND {alias}.calendar_at > @now AND {alias}.state = 0 AND {alias}.calendar_unavailable = 0 AND {alias}.lease_expires_at IS NULL";
+
+    /// <summary>Whether the window of unheld outstanding job <paramref name="alias"/> of <paramref name="definition"/> ends still to come.</summary>
+    private static string WindowNext(string alias, string definition) =>
+        $"{alias}.[definition] = {definition} AND {alias}.window_end IS NOT NULL AND {alias}.window_end > @now AND {alias}.lease_expires_at IS NULL AND {alias}.state = 0";
+
     /// <summary>
     /// Locks through their key, skipping locked rows, the definition's unheld outstanding jobs whose calendar instant has
     /// come (found through <c>jobs_calendar_due</c>) and those whose window closed before they started
@@ -58,14 +74,11 @@ internal sealed partial class SqlServerJobStore
         var instants = new List<(Guid Id, string Calendar, DateTimeOffset Instant, Blocked Blocked, Closed Closed)>();
         var closed = new List<(Guid Id, string Calendar, Closed Closed)>();
         DateTimeOffset now;
-        const string instantDue = "[definition] = @definition AND calendar_at IS NOT NULL AND calendar_at <= @now AND state = 0 AND calendar_unavailable = 0 AND lease_expires_at IS NULL";
-        const string windowClosed = "[definition] = @definition AND window_end IS NOT NULL AND window_end <= @now AND lease_expires_at IS NULL AND state = 0";
-        static string On(string alias, string condition) => alias + "." + condition.Replace(" AND ", $" AND {alias}.", StringComparison.Ordinal);
         await using (var locks = Tsql.Command(work, $"""
             DECLARE @now datetime2(7) = SYSUTCDATETIME();
             {sql.ScanVariables("@instants", "@closed")}
-            {sql.LockScan("instant_scan", "@limit", "jobs_calendar_due", On("x", instantDue), On("r", instantDue), "x.calendar_at", "@instants")}
-            {sql.LockScan("window_scan", "@limit", "jobs_window", On("x", windowClosed), On("r", windowClosed), "x.window_end", "@closed")}
+            {sql.LockScan("instant_scan", "@limit", "jobs_calendar_due", CalendarInstantCame("x", "@definition"), CalendarInstantCame("r", "@definition"), "x.calendar_at", "@instants")}
+            {sql.LockScan("window_scan", "@limit", "jobs_window", WindowClosed("x", "@definition"), WindowClosed("r", "@definition"), "x.window_end", "@closed")}
             SELECT r.id, r.calendar, r.calendar_at, r.calendar_blocked, r.calendar_closed FROM {sql.KeyedRows(keys: LeaseSql.ListJson("@instants"))} ORDER BY r.calendar_at;
             SELECT r.id, r.calendar, r.calendar_closed FROM {sql.KeyedRows(keys: LeaseSql.ListJson("@closed"))};
             SELECT SYSUTCDATETIME();
@@ -154,10 +167,10 @@ internal sealed partial class SqlServerJobStore
             DECLARE @now datetime2(7) = SYSUTCDATETIME();
             SELECT {Tsql.Micros("SYSUTCDATETIME()", "MIN(n.t)")} FROM (
                 SELECT MIN(r.calendar_at) FROM {sql.Table} AS r WITH (INDEX(jobs_calendar_due))
-                WHERE r.[definition] = @definition AND r.calendar_at IS NOT NULL AND r.calendar_at > @now AND r.state = 0 AND r.calendar_unavailable = 0 AND r.lease_expires_at IS NULL
+                WHERE {CalendarInstantNext("r", "@definition")}
                 UNION ALL
                 SELECT MIN(r.window_end) FROM {sql.Table} AS r WITH (INDEX(jobs_window))
-                WHERE r.[definition] = @definition AND r.window_end IS NOT NULL AND r.window_end > @now AND r.lease_expires_at IS NULL AND r.state = 0) AS n (t);
+                WHERE {WindowNext("r", "@definition")}) AS n (t);
             """,
             Tsql.Text("@definition", definition, 200)))
         {

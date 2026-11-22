@@ -30,6 +30,24 @@ internal sealed partial class SqlServerJobStore
     private string DueCanPlan(string alias) =>
         $"({alias}.interval_kind IS NULL OR {alias}.interval_kind <> {(short)Interval.AfterCompletion} OR NOT {OccurrenceOutstanding(alias)})";
 
+    /// <summary>Whether job <paramref name="alias"/> of <paramref name="definition"/> is an ended occurrence not yet consumed.</summary>
+    private static string Unconsumed(string alias, string definition) => $"{alias}.[definition] = {definition} AND {alias}.unconsumed = 1";
+
+    /// <summary>Whether recurrence <paramref name="alias"/> of <paramref name="definition"/> is due and can plan; only while the definition is not paused.</summary>
+    private string DueToPlan(string alias, string definition) =>
+        $"{alias}.[definition] = {definition} AND {alias}.next_at IS NOT NULL AND {alias}.next_at <= @now AND {alias}.paused = 0 AND {SubjectUnpaused(alias)} AND {DueCanPlan(alias)}";
+
+    /// <summary>Whether recurrence <paramref name="alias"/> of <paramref name="definition"/> can create its waiting occurrence; only while the definition is not paused.</summary>
+    private string WaitingToPlan(string alias, string definition) =>
+        $"{alias}.[definition] = {definition} AND {alias}.waiting_at IS NOT NULL AND {alias}.paused = 0 AND {SubjectUnpaused(alias)} AND NOT {OccurrenceOutstanding(alias)}";
+
+    /// <summary>Whether the next instant of recurrence <paramref name="alias"/> of <paramref name="definition"/> counts; only while the definition is not paused.</summary>
+    private string NextCounts(string alias, string definition) =>
+        $"{alias}.[definition] = {definition} AND {alias}.next_at IS NOT NULL AND {alias}.paused = 0 AND {SubjectUnpaused(alias)} AND {DueCanPlan(alias)}";
+
+    /// <summary>Whether job <c>r</c> is to be ended by <see cref="FinalizeSkippedAsync"/>; with the source's scope.</summary>
+    private const string Skipping = "r.state = 0 AND (r.skip_pending = 1 OR r.chain_outcome IS NOT NULL)";
+
     private sealed record PlannedRecurrence(
         Guid Id,
         Schedule Schedule,
@@ -97,7 +115,7 @@ internal sealed partial class SqlServerJobStore
             revision = reader.IsDBNull(2) ? null : reader.GetInt64(2);
         }
 
-        var unconsumed = $"j.[definition] = @definition AND j.unconsumed = 1 AND NOT EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.id = j.recurrence_id)";
+        var unconsumed = $"{Unconsumed("j", "@definition")} AND NOT EXISTS (SELECT 1 FROM {recurrences} AS c WHERE c.id = j.recurrence_id)";
         var planned = new List<PlannedRecurrence>();
         var ended = new List<EndedOccurrence>();
         var outstanding = new HashSet<Guid>();
@@ -114,18 +132,16 @@ internal sealed partial class SqlServerJobStore
             IF @definition_paused = 0
             BEGIN
                 {Tsql.LockEach("due_scan", "@limit",
-                    $"SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_next)) WHERE c.[definition] = @definition AND c.next_at IS NOT NULL "
-                    + $"AND c.next_at <= @now AND c.paused = 0 AND {SubjectUnpaused("c")} AND {DueCanPlan("c")} ORDER BY c.next_at",
+                    $"SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_next)) WHERE {DueToPlan("c", "@definition")} ORDER BY c.next_at",
                     recurrences, Tsql.IdKey,
                     $"r.next_at <= @now AND r.paused = 0 AND {SubjectUnpaused("r")} AND {DueCanPlan("r")}", "@ids", distinct: true)}
                 {Tsql.LockEach("waiting_scan", "@limit",
-                    $"SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_waiting)) WHERE c.[definition] = @definition AND c.waiting_at IS NOT NULL "
-                    + $"AND c.paused = 0 AND {SubjectUnpaused("c")} AND NOT {OccurrenceOutstanding("c")}",
+                    $"SELECT c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_waiting)) WHERE {WaitingToPlan("c", "@definition")}",
                     recurrences, Tsql.IdKey,
                     $"r.waiting_at IS NOT NULL AND r.paused = 0 AND {SubjectUnpaused("r")} AND NOT {OccurrenceOutstanding("r")}", "@ids", distinct: true)}
             END
             {Tsql.LockEach("unconsumed_scan", "@limit",
-                $"SELECT DISTINCT j.recurrence_id FROM {Jobs} AS j WITH (INDEX(jobs_unconsumed)) WHERE j.[definition] = @definition AND j.unconsumed = 1 AND j.recurrence_id IS NOT NULL",
+                $"SELECT DISTINCT j.recurrence_id FROM {Jobs} AS j WITH (INDEX(jobs_unconsumed)) WHERE {Unconsumed("j", "@definition")} AND j.recurrence_id IS NOT NULL",
                 recurrences, Tsql.IdKey, "1 = 1", "@ids", distinct: true)}
             SELECT c.id, c.{ScheduleColumns.Replace(", ", ", c.", StringComparison.Ordinal)},
                 c.missed, c.overlap, c.awaited_job, c.next_at, c.waiting_at, {PausedCopy("c.[definition]", "c.subject_kind", "c.subject_id")}
@@ -190,7 +206,7 @@ internal sealed partial class SqlServerJobStore
         {
             await using var next = Tsql.Command(work, $"""
                 SELECT TOP (1) {Tsql.Micros("SYSUTCDATETIME()", "c.next_at")} FROM {recurrences} AS c WITH (INDEX(job_recurrences_next))
-                WHERE c.[definition] = @definition AND c.next_at IS NOT NULL AND c.paused = 0 AND {SubjectUnpaused("c")} AND {DueCanPlan("c")}
+                WHERE {NextCounts("c", "@definition")}
                 ORDER BY c.next_at;
                 """,
                 Tsql.Text("@definition", definition, 200));
@@ -351,9 +367,8 @@ internal sealed partial class SqlServerJobStore
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var sql = await SqlAsync(source, cancellationToken);
-        const string skipping = "r.state = 0 AND (r.skip_pending = 1 OR r.chain_outcome IS NOT NULL)";
         const string notFailed = "x.id NOT IN (SELECT value FROM OPENJSON(@failed) WITH (value uniqueidentifier '$'))";
-        var locked = $"{sql.Scope} AND {skipping}";
+        var locked = $"{sql.Scope} AND {Skipping}";
         var failed = new List<Guid>();
         var count = 0;
         while (count < limit)
@@ -396,7 +411,7 @@ internal sealed partial class SqlServerJobStore
                 try
                 {
                     // A standalone job skipped by its calendar starts a pending follow-up; occurrences have none.
-                    if (await EndJobAsync(work, source, new JobId(job), ending, reason, discardPending: false, skipping, [], ended, cancellationToken))
+                    if (await EndJobAsync(work, source, new JobId(job), ending, reason, discardPending: false, Skipping, [], ended, cancellationToken))
                     {
                         await transaction.CommitAsync(cancellationToken);
                         return (Done: false, Ended: true);

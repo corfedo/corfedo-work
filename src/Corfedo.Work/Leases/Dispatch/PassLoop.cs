@@ -18,8 +18,8 @@ internal sealed partial class PassLoop
     /// <summary>The workers of a loop: the connections a kind of pass holds at most, and the passes that may wait at once without stopping the others.</summary>
     public const int DefaultWorkers = 4;
 
-    /// <summary>The wait a pass returns to run again only when it is woken.</summary>
-    public static readonly TimeSpan UntilWoken = Timeout.InfiniteTimeSpan;
+    /// <summary>The wait a pass returns to run again only when it is woken; no pass computes it as a wait.</summary>
+    public static readonly TimeSpan UntilWoken = TimeSpan.MaxValue;
 
     private readonly string kind;
     private readonly LeaseDispatchContext context;

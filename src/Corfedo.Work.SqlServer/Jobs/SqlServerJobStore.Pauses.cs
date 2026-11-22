@@ -75,6 +75,28 @@ internal sealed partial class SqlServerJobStore
         }
     }
 
+    /// <summary>Whether a stored pause holds the subject of recurrence or job <paramref name="alias"/>.</summary>
+    private string StoredPause(string alias) =>
+        $"EXISTS (SELECT 1 FROM {pauses} AS p WHERE p.[definition] = {alias}.[definition] AND p.subject_kind = {alias}.subject_kind AND p.subject_id = {alias}.subject_id)";
+
+    /// <summary>Whether recurrence <c>c</c> of <paramref name="definition"/> has a copied pause flag no stored pause holds.</summary>
+    private string RecurrencePauseCleared(string definition) => $"c.[definition] = {definition} AND c.paused = 1 AND NOT {StoredPause("c")}";
+
+    /// <summary>Joins recurrence <c>c</c> to the stored pause <c>p</c> of its subject.</summary>
+    private const string RecurrenceOfPause = "c.[definition] = p.[definition] AND c.subject_kind = p.subject_kind AND c.subject_id = p.subject_id";
+
+    /// <summary>Whether stored pause <c>p</c> of <paramref name="definition"/> holds recurrence <c>c</c>, joined by <see cref="RecurrenceOfPause"/>, whose copied flag is clear.</summary>
+    private static string RecurrencePauseSet(string definition) => $"p.[definition] = {definition} AND c.subject_kind IS NOT NULL AND c.paused = 0";
+
+    /// <summary>Whether outstanding job <c>r</c> of <paramref name="definition"/> has a copied pause flag no stored pause holds.</summary>
+    private string JobPauseCleared(string definition) => $"r.[definition] = {definition} AND r.paused = 1 AND r.state = 0 AND NOT {StoredPause("r")}";
+
+    /// <summary>Joins job <c>r</c> to the stored pause <c>p</c> of its subject.</summary>
+    private const string JobOfPause = "r.subject_kind = p.subject_kind AND r.subject_id = p.subject_id AND r.[definition] = p.[definition]";
+
+    /// <summary>Whether stored pause <c>p</c> of <paramref name="definition"/> holds outstanding job <c>r</c>, joined by <see cref="JobOfPause"/>, whose copied flag is clear.</summary>
+    private static string JobPauseSet(string definition) => $"p.[definition] = {definition} AND r.state = 0 AND r.paused = 0";
+
     /// <summary>
     /// Sets the copied pause flags of recurrences and then outstanding jobs to the stored subject pauses, in both
     /// directions, up to <paramref name="limit"/> rows each: rows are found without locks, locked through their key in
@@ -88,8 +110,6 @@ internal sealed partial class SqlServerJobStore
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         var sql = await SqlAsync(source, cancellationToken);
         var definition = sql.Job!.Definition;
-        string Stored(string alias) =>
-            $"EXISTS (SELECT 1 FROM {pauses} AS p WHERE p.[definition] = {alias}.[definition] AND p.subject_kind = {alias}.subject_kind AND p.subject_id = {alias}.subject_id)";
         string Repair(int step, string table, string alias, string candidates, string still, string set, string output) => $"""
             SET @candidates = (SELECT x.id FROM ({candidates}) AS x ORDER BY x.id FOR JSON PATH);
             UPDATE {alias} SET paused = {set} {output}
@@ -101,16 +121,16 @@ internal sealed partial class SqlServerJobStore
         var text = $"""
             DECLARE @candidates nvarchar(max), @repaired_1 int, @repaired_2 int, @repaired_3 int, @repaired_4 int;
             {Repair(1, recurrences, "c",
-                $"SELECT TOP (@limit) c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_paused)) WHERE c.[definition] = @definition AND c.paused = 1 AND NOT {Stored("c")}",
-                $"c.paused = 1 AND NOT {Stored("c")}", "0", queue)}{Repair(2, recurrences, "c",
-                $"SELECT TOP (@limit) c.id FROM {pauses} AS p INNER LOOP JOIN {recurrences} AS c WITH (INDEX(job_recurrences_subject)) ON c.[definition] = p.[definition] "
-                + "AND c.subject_kind = p.subject_kind AND c.subject_id = p.subject_id WHERE p.[definition] = @definition AND c.subject_kind IS NOT NULL AND c.paused = 0",
-                $"c.paused = 0 AND {Stored("c")}", "1", queue)}{Repair(3, sql.Table, "r",
-                $"SELECT TOP (@limit) r.id FROM {sql.Table} AS r WITH (INDEX(jobs_paused)) WHERE r.[definition] = @definition AND r.paused = 1 AND r.state = 0 AND NOT {Stored("r")}",
-                $"r.paused = 1 AND r.state = 0 AND NOT {Stored("r")}", "0", "")}{Repair(4, sql.Table, "r",
-                $"SELECT TOP (@limit) r.id FROM {pauses} AS p INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_subject)) ON r.subject_kind = p.subject_kind "
-                + "AND r.subject_id = p.subject_id AND r.[definition] = p.[definition] WHERE p.[definition] = @definition AND r.state = 0 AND r.paused = 0",
-                $"r.paused = 0 AND r.state = 0 AND {Stored("r")}", "1", "")}{NotifyMonitor("@repaired_1 + @repaired_2 > 0")}{signals.InsertIf(WorkTopics.Plan, "@source", "@repaired_1 > 0")}{signals.InsertIf(WorkTopics.Due, "@source", "@repaired_3 > 0")}SELECT GREATEST(@repaired_1, @repaired_2, @repaired_3, @repaired_4);
+                $"SELECT TOP (@limit) c.id FROM {recurrences} AS c WITH (INDEX(job_recurrences_paused)) WHERE {RecurrencePauseCleared("@definition")}",
+                $"c.paused = 1 AND NOT {StoredPause("c")}", "0", queue)}{Repair(2, recurrences, "c",
+                $"SELECT TOP (@limit) c.id FROM {pauses} AS p INNER LOOP JOIN {recurrences} AS c WITH (INDEX(job_recurrences_subject)) ON {RecurrenceOfPause} "
+                + $"WHERE {RecurrencePauseSet("@definition")}",
+                $"c.paused = 0 AND {StoredPause("c")}", "1", queue)}{Repair(3, sql.Table, "r",
+                $"SELECT TOP (@limit) r.id FROM {sql.Table} AS r WITH (INDEX(jobs_paused)) WHERE {JobPauseCleared("@definition")}",
+                $"r.paused = 1 AND r.state = 0 AND NOT {StoredPause("r")}", "0", "")}{Repair(4, sql.Table, "r",
+                $"SELECT TOP (@limit) r.id FROM {pauses} AS p INNER LOOP JOIN {sql.Table} AS r WITH (INDEX(jobs_subject)) ON {JobOfPause} "
+                + $"WHERE {JobPauseSet("@definition")}",
+                $"r.paused = 0 AND r.state = 0 AND {StoredPause("r")}", "1", "")}{NotifyMonitor("@repaired_1 + @repaired_2 > 0")}{signals.InsertIf(WorkTopics.Plan, "@source", "@repaired_1 > 0")}{signals.InsertIf(WorkTopics.Due, "@source", "@repaired_3 > 0")}SELECT GREATEST(@repaired_1, @repaired_2, @repaired_3, @repaired_4);
             """;
         return await InTransactionAsync(async work =>
         {
