@@ -62,14 +62,14 @@ internal sealed partial class PostgreSqlJobStore
     /// definition is being stored or paused. It locks up to <paramref name="limit"/> recurrences of each kind of work,
     /// skipping locked ones: due by their next instant, with a waiting occurrence and no outstanding occurrence, or with
     /// unconsumed ended occurrences. Due and waiting ones count only while neither the definition nor their subject is
-    /// paused, a due after-completion one only while none of its occurrences is outstanding, and so does the next
-    /// instant it returns. Then, with the store's clock read after the locks, each recurrence in a savepoint of its own:
+    /// paused, and a due after-completion one only while none of its occurrences is outstanding. Then, with the store's clock read after the locks, each recurrence in a savepoint of its own:
     /// ended occurrences are consumed (the one an after-completion schedule awaits sets its next instant); unless the
     /// definition or the subject is paused, a waiting occurrence is created once none is outstanding, and due instants
     /// pass the missed rule and then the overlap policy. Only the recurrence's own occurrences count. Writes wait for
     /// other transactions at most <see cref="PlannerLockTimeout"/>; a recurrence that would wait longer is rolled back
-    /// to its savepoint and left for the next pass. Ended occurrences of removed recurrences are cleared. No outcome
-    /// hook runs here.
+    /// to its savepoint and left for the next pass. Only recurrences whose state changed count in the result, so a locked
+    /// ended occurrence that could not be consumed does not. Ended occurrences of removed recurrences are cleared. No
+    /// outcome hook runs here.
     /// </summary>
     public async ValueTask<PlanningPass> PlanAsync(LeaseSource<JobId> source, IRecurrenceCalculator calculator, int limit, CancellationToken cancellationToken)
     {
@@ -91,7 +91,7 @@ internal sealed partial class PostgreSqlJobStore
             await reader.ReadAsync(cancellationToken);
             if (!reader.GetBoolean(0))
             {
-                return new(0, 0, TimeSpan.FromMilliseconds(100));
+                return new(0, 0, DefinitionBusy: true);
             }
             await reader.NextResultAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken))
@@ -193,13 +193,14 @@ internal sealed partial class PostgreSqlJobStore
         }
 
         var occurrences = 0;
+        var changed = 0;
         foreach (var recurrence in planned)
         {
             var savepoint = work.NextSavepoint();
             await transaction.SaveAsync(savepoint, cancellationToken);
             try
             {
-                occurrences += await PlanRecurrenceAsync(
+                var (created, moved) = await PlanRecurrenceAsync(
                     work,
                     sql,
                     calculator,
@@ -210,34 +211,24 @@ internal sealed partial class PostgreSqlJobStore
                     now,
                     cancellationToken);
                 await transaction.ReleaseAsync(savepoint, cancellationToken);
+                occurrences += created;
+                changed += moved ? 1 : 0;
             }
             catch (PostgresException exception) when (exception.SqlState == LockNotAvailable)
             {
                 await transaction.RollbackAsync(savepoint, cancellationToken);
             }
         }
-        // Resuming a definition or subject and ending an occurrence signal planning, so the next instant
-        // counts only recurrences that can progress.
-        TimeSpan? nextIn = null;
-        if (!definitionPaused)
-        {
-            await using var next = new NpgsqlCommand(
-                $"SELECT extract(epoch FROM c.next_at - clock_timestamp())::float8 FROM {recurrences} AS c WHERE {NextCounts(sql, "$1")} ORDER BY c.next_at LIMIT 1",
-                connection,
-                transaction);
-            next.Parameters.Add(Text(definition));
-            nextIn = await next.ExecuteScalarAsync(cancellationToken) is double seconds ? Seconds(seconds) : null;
-        }
         if (occurrences > 0)
         {
             await NotifyDueAsync(work, source, cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
-        return new(locked.Length, occurrences, nextIn, revision);
+        return new(changed, occurrences, Revision: revision);
     }
 
-    /// <summary>Plans one locked recurrence; returns how many occurrences it created.</summary>
-    private async Task<int> PlanRecurrenceAsync(
+    /// <summary>Plans one locked recurrence; returns how many occurrences it created and whether its state changed.</summary>
+    private async Task<(int Created, bool Changed)> PlanRecurrenceAsync(
         PostgreSqlTransaction work,
         LeaseSql sql,
         IRecurrenceCalculator calculator,
@@ -267,6 +258,7 @@ internal sealed partial class PostgreSqlJobStore
             }
         }
         var created = 0;
+        var inserted = false;
         var commands = new List<NpgsqlBatchCommand>();
         if (ended.Count > 0)
         {
@@ -289,6 +281,7 @@ internal sealed partial class PostgreSqlJobStore
                 }
             }
             commands.Add(command);
+            inserted = true;
         }
         if (!definitionPaused && !recurrence.SubjectPaused)
         {
@@ -342,7 +335,7 @@ internal sealed partial class PostgreSqlJobStore
             batch.BatchCommands.Add(command);
         }
         await batch.ExecuteNonQueryAsync(cancellationToken);
-        return created;
+        return (created, ended.Count > 0 || inserted || next != recurrence.NextAt || waiting != recurrence.WaitingAt);
     }
 
     /// <summary>

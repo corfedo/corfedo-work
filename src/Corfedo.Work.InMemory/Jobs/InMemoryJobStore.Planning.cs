@@ -36,7 +36,7 @@ internal sealed partial class InMemoryJobStore
     /// One planning pass in its own transaction. It takes up to <paramref name="limit"/> recurrences of each kind of
     /// work: due by their next instant, with a waiting occurrence and no outstanding occurrence, or with unconsumed ended
     /// occurrences. Due and waiting ones count only while neither the definition nor their subject is paused, a due
-    /// after-completion one only while none of its occurrences is outstanding, and so does the next instant it returns.
+    /// after-completion one only while none of its occurrences is outstanding.
     /// Then, with one clock reading, each recurrence: ended occurrences are consumed (the one an after-completion
     /// schedule awaits sets its next instant); unless the definition or the subject is paused, a waiting occurrence is
     /// created once none is outstanding, and due instants pass the missed rule and then the overlap policy. Only the
@@ -79,9 +79,10 @@ internal sealed partial class InMemoryJobStore
         var ended = Jobs(work, definition).Where(r => r.Bool(JobColumns.Unconsumed) && ids.Contains(r.Uuid(JobColumns.RecurrenceId)!.Value)).ToList();
         var outstanding = planned.Where(c => OccurrenceOutstanding(work, c)).Select(c => c.Id).ToHashSet();
         var occurrences = 0;
+        var changed = 0;
         foreach (var recurrence in planned)
         {
-            occurrences += PlanRecurrence(
+            var (created, moved) = PlanRecurrence(
                 work,
                 calculator,
                 recurrence,
@@ -89,27 +90,19 @@ internal sealed partial class InMemoryJobStore
                 outstanding.Contains(recurrence.Id),
                 definitionPaused,
                 now);
-        }
-        // Resuming a definition or subject and ending an occurrence signal planning, so the next instant counts only
-        // recurrences that can progress.
-        TimeSpan? nextIn = null;
-        if (!definitionPaused)
-        {
-            var next = work.Scan(application.Recurrences).Select(c => c.Row)
-                .Where(c => c.Definition == definition && NextCounts(work, c))
-                .Min(c => c.NextAt);
-            nextIn = Until(next, Now);
+            occurrences += created;
+            changed += moved ? 1 : 0;
         }
         if (occurrences > 0)
         {
             NotifyDue(work, source);
         }
         work.Commit();
-        return new(planned.Count, occurrences, nextIn, stored?.Revision);
+        return new(changed, occurrences, Revision: stored?.Revision);
     }
 
-    /// <summary>Plans one recurrence; returns how many occurrences it created.</summary>
-    private int PlanRecurrence(
+    /// <summary>Plans one recurrence; returns how many occurrences it created and whether its state changed.</summary>
+    private (int Created, bool Changed) PlanRecurrence(
         InMemoryTransaction work,
         IRecurrenceCalculator calculator,
         RecurrenceRow recurrence,
@@ -141,6 +134,7 @@ internal sealed partial class InMemoryJobStore
             Write(work, occurrence, [Set(JobColumns.Unconsumed, false)]);
         }
         var created = 0;
+        var inserted = false;
         // An after-completion schedule awaits only an instant it planned; its waiting occurrence comes from a trigger.
         // A released waiting occurrence is planned at the next allowed instant of its calendar, a scheduled instant only
         // when the calendar allows it.
@@ -148,6 +142,7 @@ internal sealed partial class InMemoryJobStore
         {
             var occurrence = OccurrenceOf(instant);
             InsertOccurrence(work, recurrence, JobId.New().Value, occurrence, instant.ToUniversalTime(), skip, released ? CalendarStart.MoveForward : CalendarStart.Instant);
+            inserted = true;
             if (!skip)
             {
                 created++;
@@ -206,7 +201,7 @@ internal sealed partial class InMemoryJobStore
             LastEndedAt = lastEnded,
             UpdatedAt = Now,
         });
-        return created;
+        return (created, ended.Count > 0 || inserted || next != recurrence.NextAt || waiting != recurrence.WaitingAt);
     }
 
     /// <summary>

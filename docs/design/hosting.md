@@ -78,9 +78,10 @@ probe pass and the [planner](#job-planners) passes of every job definition whose
 is due runs when one of the loop's four workers is free. A pass never runs on two workers at once, and a wake that
 arrives while it runs makes it due again when it ends. Due passes take turns, so a pass that has more to do at once
 cannot keep the others of its kind waiting for more than one turn of each. The first due times of a loop's passes
-are spread evenly over one second (at most the polling interval), and each wait a pass returns is shortened by a
-random part of up to a tenth, so idle passes of one kind run one after another instead of needing a connection each
-at the same moment; a pass never runs later than its wait, and a wake runs it at once. Due times are measured on the
+are spread evenly over one second (at most the polling interval), and so are the dispatch passes a resync wakes, for
+example when the signal listener connects; a poll wait, which looks for work nothing announced, is shortened by a
+random part of up to a tenth. So idle passes of one kind run one after another instead of needing a connection each
+at the same moment. A wait to a known instant is kept exactly, and a wake of one pass runs it at once. Due times are measured on the
 time provider's monotonic timestamp, so a change of the wall clock does not move them.
 
 These loops hold at most four connections each, so a process's connections grow with the work it runs (holds,
@@ -189,7 +190,10 @@ is below the stored `MinimumArgsVersion`, and repairs copied pause flags. One pr
 these calls have work for which definitions, with the conditions the calls select rows by, in one statement that locks
 nothing (`IJobStore.MaintenanceDueAsync`); it also reads each definition's stored revision, so a newer one rebuilds
 the definition's source. A definition's pass runs only when the probe wakes it, runs only the calls with work, and runs
-again at once while a call fills its batch. The probe runs on a definition's planning signal, which ended
+again at once while a call fills its batch. A call that changed nothing, because the rows it found were locked, failed
+in an outcome hook or were taken by another process, is not run again for the probe's readings until the polling
+interval passes or the definition's next instant comes; the definition's planning signal and a resync release it, so
+failing work is retried at the polling interval however often the probe runs for other definitions. The probe runs on a definition's planning signal, which ended
 occurrences, schedule changes, resumes, requests with a calendar, retries and operator actions on jobs with a calendar
 and published date sets send, after a definition's pass changed records, at the earliest next planned instant,
 calendar instant or window end it read, and at the polling interval. An idle process therefore sends one maintenance

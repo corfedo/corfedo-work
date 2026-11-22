@@ -40,8 +40,7 @@ internal sealed partial class PostgreSqlJobStore
     /// <item>A job that needs dates a date set does not cover waits, out of both indexes, until a covering revision is
     /// published; one with no allowed instant within the lookahead is recorded to be skipped.</item>
     /// </list>
-    /// One statement writes every decision. The next instant to wake for is the earliest calendar instant or window end
-    /// still to come.
+    /// One statement writes every decision.
     /// </summary>
     public async ValueTask<CalendarPass> PlanCalendarAsync(LeaseSource<JobId> source, int limit, CancellationToken cancellationToken)
     {
@@ -148,17 +147,8 @@ internal sealed partial class PostgreSqlJobStore
                 await NotifyDueAsync(work, source, cancellationToken);
             }
         }
-        TimeSpan? nextIn;
-        await using (var next = new NpgsqlCommand(
-            $"SELECT extract(epoch FROM min(t) - clock_timestamp())::float8 FROM ({NextCalendarInstants(sql, "$1")}) AS next",
-            connection,
-            transaction))
-        {
-            next.Parameters.Add(Text(definition));
-            nextIn = await next.ExecuteScalarAsync(cancellationToken) is double seconds ? Seconds(seconds) : null;
-        }
         await transaction.CommitAsync(cancellationToken);
-        return new(instants.Count, closed.Count, nextIn);
+        return new(instants.Count, closed.Count);
     }
 
     /// <summary>Whether unheld outstanding job <c>r</c> of <paramref name="definition"/> has a calendar instant that came.</summary>

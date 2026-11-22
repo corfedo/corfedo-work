@@ -8,21 +8,48 @@ namespace Corfedo.Work;
 /// the definition's recurrences and consumes ended ones, plans the calendar instants of jobs and the jobs whose window
 /// closed, records jobs the overlap policy or a calendar skipped through the outcome hook, ends jobs whose argument
 /// version is below the stored minimum, and repairs copied pause flags. It runs only the calls the loop's probe found
-/// work for (<see cref="JobMaintenanceDue"/>), and runs again at once while a call fills its batch. A newer stored
-/// revision, read by the probe or the planning call, rebuilds the definition's source, so attempts this process holds
-/// take up its running limit even while it claims nothing. It ignores eligibility, so it also reaches jobs no live
-/// process may claim.
+/// work for (<see cref="JobMaintenanceDue"/>), runs again at once while a call fills its batch, and shortly after
+/// planning found the definition being stored. A call that changed nothing, because the rows it found were locked,
+/// failed or taken by another process, is held back from the probe's readings until the polling interval passes or the
+/// definition's next instant comes, whichever is first; the definition's planning signal and a resync release it. So
+/// work that keeps failing is retried at the polling interval, however often the probe runs for other definitions. A
+/// newer stored revision, read by the probe or the planning call, rebuilds the definition's source, so attempts this
+/// process holds take up its running limit even while it claims nothing. It ignores eligibility, so it also reaches
+/// jobs no live process may claim.
 /// </summary>
 internal sealed partial class JobMaintenance(JobDefinitionRegistration registration, JobRegistry registry)
 {
     private const int BatchSize = 100;
 
+    /// <summary>How soon planning runs again after it found the definition being stored.</summary>
+    private static readonly TimeSpan BusyRetry = TimeSpan.FromMilliseconds(100);
+
+    private static readonly Call[] Calls = [Call.Planning, Call.Calendar, Call.Skipped, Call.Retired, Call.Pauses];
+
     private readonly Lock gate = new();
+
+    // Under the gate: the calls the next pass runs, per call the timestamp before which a probe reading does not add it,
+    // and the timestamp of the definition's next instant the probe last read.
+    private readonly long[] heldUntil = new long[Calls.Length];
+    private Call pending;
+    private long nextInstant = long.MaxValue;
+
     private JobEndedCallback? ended;
-    private JobMaintenanceDue pending;
 
     // Records changed by passes since the probe was last woken; only passes read and write it, and they never overlap.
     private bool unreported;
+
+    /// <summary>The maintenance calls of a pass.</summary>
+    [Flags]
+    private enum Call
+    {
+        None = 0,
+        Planning = 1,
+        Calendar = 2,
+        Skipped = 4,
+        Retired = 8,
+        Pauses = 16,
+    }
 
     /// <summary>The source name of the definition, the key of its planning signals.</summary>
     public string Source => registration.Definition.SourceName;
@@ -34,109 +61,141 @@ internal sealed partial class JobMaintenance(JobDefinitionRegistration registrat
     public ValueTask<LeaseSource<JobId>> SourceAsync(IWorkStore store, CancellationToken cancellationToken) => registration.SourceAsync(store, cancellationToken);
 
     /// <summary>
-    /// Takes the probe's reading: rebuilds the source when the stored revision is newer and adds the calls with work to
-    /// those the next pass runs. True when that pass has a call to run.
+    /// Takes the probe's reading: rebuilds the source when the stored revision is newer and adds the calls with work that
+    /// are not held back to those the next pass runs. True when that pass has a call to run.
     /// </summary>
-    public async ValueTask<bool> ObserveAsync(JobMaintenanceDue due, IWorkStore store, CancellationToken cancellationToken)
+    public async ValueTask<bool> ObserveAsync(JobMaintenanceDue due, LeaseDispatchContext context, CancellationToken cancellationToken)
     {
-        if (due.Revision is { } revision && revision != (await registration.SourceAsync(store, cancellationToken)).Job!.Revision)
+        if (due.Revision is { } revision && revision != (await registration.SourceAsync(context.Store, cancellationToken)).Job!.Revision)
         {
-            await registration.RefreshAsync(store, cancellationToken);
+            await registration.RefreshAsync(context.Store, cancellationToken);
         }
+        var now = context.Time.GetTimestamp();
+        var found = (due.Planning ? Call.Planning : Call.None) | (due.Calendar ? Call.Calendar : Call.None)
+            | (due.Skipped ? Call.Skipped : Call.None) | (due.Retired ? Call.Retired : Call.None) | (due.Pauses ? Call.Pauses : Call.None);
         lock (gate)
         {
-            pending = Merge(pending, due);
-            return pending.Any;
+            nextInstant = due.NextIn is { } next ? now + Ticks(next, context.Time) : long.MaxValue;
+            for (var i = 0; i < Calls.Length; i++)
+            {
+                if ((found & Calls[i]) != 0 && heldUntil[i] <= now)
+                {
+                    pending |= Calls[i];
+                }
+            }
+            return pending != Call.None;
+        }
+    }
+
+    /// <summary>Releases the calls held back, on the definition's planning signal or a resync.</summary>
+    public void Release()
+    {
+        lock (gate)
+        {
+            Array.Clear(heldUntil);
         }
     }
 
     /// <summary>
-    /// One maintenance pass of the calls the probe found work for. Returns zero while a call filled its batch,
-    /// <see cref="PassLoop.UntilWoken"/> otherwise; <paramref name="changed"/> runs when a call changed records, so the
-    /// probe reads the definition's new state and next instant.
+    /// One maintenance pass of the calls the probe found work for. Returns zero while a call filled its batch, a short
+    /// wait while the definition is being stored, <see cref="PassLoop.UntilWoken"/> otherwise; <paramref name="changed"/>
+    /// runs when calls changed records or one failed, so the probe reads the definition's new state and next instant.
     /// </summary>
     public async Task<TimeSpan> RunAsync(LeaseDispatchContext context, Action changed, CancellationToken token)
     {
-        JobMaintenanceDue work;
+        Call work;
         lock (gate)
         {
             work = pending;
-            pending = default;
+            pending = Call.None;
         }
-        if (!work.Any)
+        if (work == Call.None)
         {
             return PassLoop.UntilWoken;
         }
-        var again = default(JobMaintenanceDue);
-        TimeSpan? retry = null;
+        // The calls that ran, those of them that changed nothing, and those that filled their batch.
+        var ran = Call.None;
+        var quiet = Call.None;
+        var again = Call.None;
+        var busy = false;
         var touched = false;
+        void Done(Call call, int count, bool full)
+        {
+            touched |= count > 0;
+            quiet |= count > 0 ? Call.None : call;
+            again |= full ? call : Call.None;
+        }
         try
         {
             ended ??= registry.Ended(registration);
             var jobs = context.Store.Jobs;
             var source = await registration.SourceAsync(context.Store, token);
-            if (work.Planning)
+            if ((work & Call.Planning) != 0)
             {
                 var planned = await jobs.PlanAsync(source, RecurrenceCalculator.Instance, BatchSize, token);
-                if (planned.Revision is { } revision)
+                if (planned.DefinitionBusy)
                 {
-                    if (revision != source.Job!.Revision)
+                    busy = true;
+                }
+                else
+                {
+                    ran |= Call.Planning;
+                    if (planned.Revision is { } revision && revision != source.Job!.Revision)
                     {
                         await registration.RefreshAsync(context.Store, token);
                     }
-                    again = again with { Planning = planned.Recurrences >= BatchSize };
-                    touched |= planned.Recurrences > 0;
-                }
-                else if (planned.NextIn is { } wait)
-                {
-                    // The definition is being stored: planning runs again after the wait the call returned.
-                    again = again with { Planning = true };
-                    retry = wait;
+                    Done(Call.Planning, planned.Recurrences, planned.Recurrences >= BatchSize);
                 }
             }
-            if (work.Calendar)
+            if ((work & Call.Calendar) != 0)
             {
+                ran |= Call.Calendar;
                 var calendar = await jobs.PlanCalendarAsync(source, BatchSize, token);
-                again = again with { Calendar = calendar.Instants == BatchSize || calendar.Closed == BatchSize };
-                touched |= calendar.Instants + calendar.Closed > 0;
+                Done(Call.Calendar, calendar.Instants + calendar.Closed, calendar.Instants == BatchSize || calendar.Closed == BatchSize);
             }
-            if (work.Skipped)
+            if ((work & Call.Skipped) != 0)
             {
+                ran |= Call.Skipped;
                 var finalized = await jobs.FinalizeSkippedAsync(source, ended, BatchSize, token);
-                again = again with { Skipped = finalized == BatchSize };
-                touched |= finalized > 0;
+                Done(Call.Skipped, finalized, finalized == BatchSize);
             }
-            if (work.Retired)
+            if ((work & Call.Retired) != 0)
             {
+                ran |= Call.Retired;
                 var retired = await jobs.RetireAsync(source, ended, BatchSize, token);
-                again = again with { Retired = retired == BatchSize };
-                touched |= retired > 0;
+                Done(Call.Retired, retired, retired == BatchSize);
             }
-            if (work.Pauses)
+            if ((work & Call.Pauses) != 0)
             {
+                ran |= Call.Pauses;
                 var repaired = await jobs.RepairPausesAsync(source, BatchSize, token);
-                again = again with { Pauses = repaired == BatchSize };
-                touched |= repaired > 0;
+                Done(Call.Pauses, repaired, repaired == BatchSize);
             }
         }
         catch (Exception exception) when (!token.IsCancellationRequested)
         {
-            // The probe finds the work of this pass again; it reads at once what the calls before the failure changed.
+            // The failed call is held back with those that changed nothing; the probe reads at once what the calls
+            // before it changed and finds the calls after it again.
             Failed(context, exception);
-            Report(touched, PassLoop.UntilWoken, changed);
+            Hold(context, ran, quiet | LastOf(ran));
+            Report(true, PassLoop.UntilWoken, changed);
             return PassLoop.UntilWoken;
         }
-        if (again.Any)
+        Hold(context, ran, quiet);
+        if (busy)
+        {
+            again |= Call.Planning;
+        }
+        if (again != Call.None)
         {
             lock (gate)
             {
-                pending = Merge(pending, again);
+                pending |= again;
             }
         }
-        // A call that filled its batch runs again at once.
-        var next = !again.Any ? PassLoop.UntilWoken
-            : again with { Planning = again.Planning && retry is null } is { Any: true } ? TimeSpan.Zero
-            : retry!.Value;
+        var next = (again & ~(busy ? Call.Planning : Call.None)) != Call.None ? TimeSpan.Zero
+            : busy ? BusyRetry
+            : PassLoop.UntilWoken;
         Report(touched, next, changed);
         return next;
     }
@@ -146,6 +205,39 @@ internal sealed partial class JobMaintenance(JobDefinitionRegistration registrat
     {
         var telemetry = WorkTelemetryOptions.From(context.Services);
         LogMaintenanceFailed(context.Logging.CreateLogger("Corfedo.Work.Jobs"), telemetry.Logged(exception), registration.Definition.Key, telemetry.Describe(exception));
+    }
+
+    /// <summary>The call a pass ran last, the one that was running when it failed.</summary>
+    private static Call LastOf(Call ran)
+    {
+        for (var i = Calls.Length - 1; i >= 0; i--)
+        {
+            if ((ran & Calls[i]) != 0)
+            {
+                return Calls[i];
+            }
+        }
+        return Call.None;
+    }
+
+    /// <summary>
+    /// Holds back the calls of <paramref name="ran"/> in <paramref name="quiet"/> until the polling interval passes or the
+    /// definition's next instant comes, and releases the others of <paramref name="ran"/>.
+    /// </summary>
+    private void Hold(LeaseDispatchContext context, Call ran, Call quiet)
+    {
+        var now = context.Time.GetTimestamp();
+        lock (gate)
+        {
+            var until = Math.Min(now + Ticks(context.PollingInterval, context.Time), nextInstant);
+            for (var i = 0; i < Calls.Length; i++)
+            {
+                if ((ran & Calls[i]) != 0)
+                {
+                    heldUntil[i] = (quiet & Calls[i]) != 0 ? until : 0;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -162,14 +254,7 @@ internal sealed partial class JobMaintenance(JobDefinitionRegistration registrat
         }
     }
 
-    private static JobMaintenanceDue Merge(JobMaintenanceDue a, JobMaintenanceDue b) => new(
-        b.Revision ?? a.Revision,
-        a.Planning || b.Planning,
-        a.Calendar || b.Calendar,
-        a.Skipped || b.Skipped,
-        a.Retired || b.Retired,
-        a.Pauses || b.Pauses,
-        null);
+    private static long Ticks(TimeSpan wait, TimeProvider time) => (long)(wait.TotalSeconds * time.TimestampFrequency);
 
     [LoggerMessage(EventId = 34, EventName = "job.maintenance_failed", Level = LogLevel.Error, Message = "Maintenance of job definition {Definition} failed: {Error}")]
     private static partial void LogMaintenanceFailed(ILogger logger, Exception? exception, string definition, string error);
@@ -179,8 +264,8 @@ internal sealed partial class JobMaintenance(JobDefinitionRegistration registrat
 /// The process's maintenance loop. One probe pass reads, for every definition whose handler the process runs, which
 /// maintenance calls have work (<see cref="IJobStore.MaintenanceDueAsync"/>), in one statement, and wakes the
 /// <see cref="JobMaintenance"/> pass of each definition that has some; those passes run only when woken. The probe runs
-/// at the polling interval, at the earliest next instant it read, on a definition's planning signal, on a resync and
-/// after a definition's pass changed records.
+/// at the polling interval (<see cref="PassLoop.Poll"/>), at the earliest next instant it read, on a definition's
+/// planning signal, on a resync and after a definition's pass changed records or failed.
 /// </summary>
 internal sealed partial class JobMaintenanceLoop(IEnumerable<JobMaintenance> definitions) : IWorkBackground, ISignalSubscriber
 {
@@ -188,7 +273,7 @@ internal sealed partial class JobMaintenanceLoop(IEnumerable<JobMaintenance> def
     public const string ProbeName = "job maintenance";
 
     private readonly JobMaintenance[] definitions = [.. definitions];
-    private readonly HashSet<string> sources = new(definitions.Select(d => d.Source), StringComparer.Ordinal);
+    private readonly Dictionary<string, JobMaintenance> bySource = definitions.ToDictionary(d => d.Source, StringComparer.Ordinal);
     private readonly Dictionary<string, PassLoop.Entry> entries = new(StringComparer.Ordinal);
     private PassLoop? loop;
     private PassLoop.Entry? probe;
@@ -213,7 +298,7 @@ internal sealed partial class JobMaintenanceLoop(IEnumerable<JobMaintenance> def
 
     private async Task<TimeSpan> ProbeAsync(LeaseDispatchContext context, CancellationToken token)
     {
-        var delay = context.PollingInterval;
+        var delay = PassLoop.Poll(context.PollingInterval);
         // A definition whose source cannot be read or rebuilt is left out of this pass; the others are maintained.
         var probed = new List<(JobMaintenance Definition, LeaseSource<JobId> Source)>(definitions.Length);
         foreach (var definition in definitions)
@@ -250,7 +335,7 @@ internal sealed partial class JobMaintenanceLoop(IEnumerable<JobMaintenance> def
             }
             try
             {
-                if (await definition.ObserveAsync(found, context.Store, token))
+                if (await definition.ObserveAsync(found, context, token))
                 {
                     entries[definition.Key].Wake();
                 }
@@ -267,16 +352,27 @@ internal sealed partial class JobMaintenanceLoop(IEnumerable<JobMaintenance> def
         return delay;
     }
 
-    /// <summary>A planning signal of a definition the process runs wakes the probe; others are ignored.</summary>
+    /// <summary>
+    /// A planning signal of a definition the process runs releases its held calls and wakes the probe; others are
+    /// ignored.
+    /// </summary>
     public void Received(string key)
     {
-        if (sources.Contains(key))
+        if (bySource.TryGetValue(key, out var definition))
         {
+            definition.Release();
             Probe();
         }
     }
 
-    public void Resync() => Probe();
+    public void Resync()
+    {
+        foreach (var definition in definitions)
+        {
+            definition.Release();
+        }
+        Probe();
+    }
 
     public async Task StopAsync()
     {

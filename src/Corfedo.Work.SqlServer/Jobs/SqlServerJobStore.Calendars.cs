@@ -58,8 +58,7 @@ internal sealed partial class SqlServerJobStore
     /// <item>A job that needs dates a date set does not cover waits, out of both indexes, until a covering revision is
     /// published; one with no allowed instant within the lookahead is recorded to be skipped.</item>
     /// </list>
-    /// One statement writes every decision, in primary-key order. The next instant to wake for is the earliest calendar
-    /// instant or window end still to come.
+    /// One statement writes every decision, in primary-key order.
     /// </summary>
     public async ValueTask<CalendarPass> PlanCalendarAsync(LeaseSource<JobId> source, int limit, CancellationToken cancellationToken)
     {
@@ -162,21 +161,7 @@ internal sealed partial class SqlServerJobStore
                 await NotifyDueAsync(work, source, cancellationToken);
             }
         }
-        TimeSpan? nextIn;
-        await using (var next = Tsql.Command(work, $"""
-            DECLARE @now datetime2(7) = SYSUTCDATETIME();
-            SELECT {Tsql.Micros("SYSUTCDATETIME()", "MIN(n.t)")} FROM (
-                SELECT MIN(r.calendar_at) FROM {sql.Table} AS r WITH (INDEX(jobs_calendar_due))
-                WHERE {CalendarInstantNext("r", "@definition")}
-                UNION ALL
-                SELECT MIN(r.window_end) FROM {sql.Table} AS r WITH (INDEX(jobs_window))
-                WHERE {WindowNext("r", "@definition")}) AS n (t);
-            """,
-            Tsql.Text("@definition", definition, 200)))
-        {
-            nextIn = Tsql.Wait(await next.ScalarAsync(cancellationToken));
-        }
-        return new(instants.Count, closed.Count, nextIn);
+        return new(instants.Count, closed.Count);
     }
 
     /// <summary>Plans a job at the allowed instant of <paramref name="slot"/>, not before <paramref name="from"/>, or as the slot decides.</summary>

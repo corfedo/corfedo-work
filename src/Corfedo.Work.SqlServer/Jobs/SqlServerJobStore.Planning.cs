@@ -65,8 +65,8 @@ internal sealed partial class SqlServerJobStore
     /// definition is being stored or paused. It locks up to <paramref name="limit"/> recurrences of each kind of work
     /// through their key, skipping locked ones: due by their next instant, with a waiting occurrence and no outstanding
     /// occurrence, or with unconsumed ended occurrences. Due and waiting ones count only while neither the definition
-    /// nor their subject is paused, a due after-completion one only while none of its occurrences is outstanding, and so
-    /// does the next instant it returns. Then, with the store's clock read after the locks, each recurrence in a
+    /// nor their subject is paused, and a due after-completion one only while none of its occurrences is outstanding.
+    /// Then, with the store's clock read after the locks, each recurrence in a
     /// savepoint of its own: ended occurrences are consumed (the one an after-completion schedule awaits sets its next
     /// instant); unless the definition or the subject is paused, a waiting occurrence is created once none is
     /// outstanding, and due instants pass the missed rule and then the overlap policy. Only the recurrence's own
@@ -109,7 +109,7 @@ internal sealed partial class SqlServerJobStore
             await reader.NextRowAsync(cancellationToken);
             if (!reader.GetBoolean(0))
             {
-                return new(0, 0, TimeSpan.FromMilliseconds(100));
+                return new(0, 0, DefinitionBusy: true);
             }
             definitionPaused = reader.GetBoolean(1);
             revision = reader.IsDBNull(2) ? null : reader.GetInt64(2);
@@ -186,9 +186,10 @@ internal sealed partial class SqlServerJobStore
         }
 
         var occurrences = 0;
+        var changed = 0;
         foreach (var recurrence in planned)
         {
-            occurrences += await PlanRecurrenceAsync(
+            var (created, moved) = await PlanRecurrenceAsync(
                 work,
                 sql,
                 calculator,
@@ -198,33 +199,22 @@ internal sealed partial class SqlServerJobStore
                 definitionPaused,
                 now,
                 cancellationToken);
-        }
-        // Resuming a definition or subject and ending an occurrence signal planning, so the next instant counts only
-        // recurrences that can progress.
-        TimeSpan? nextIn = null;
-        if (!definitionPaused)
-        {
-            await using var next = Tsql.Command(work, $"""
-                SELECT TOP (1) {Tsql.Micros("SYSUTCDATETIME()", "c.next_at")} FROM {recurrences} AS c WITH (INDEX(job_recurrences_next))
-                WHERE {NextCounts("c", "@definition")}
-                ORDER BY c.next_at;
-                """,
-                Tsql.Text("@definition", definition, 200));
-            nextIn = Tsql.Wait(await next.ScalarAsync(cancellationToken));
+            occurrences += created;
+            changed += moved ? 1 : 0;
         }
         if (occurrences > 0)
         {
             await NotifyDueAsync(work, source, cancellationToken);
         }
-        return new(planned.Count, occurrences, nextIn, revision);
+        return new(changed, occurrences, Revision: revision);
     }
 
     /// <summary>
     /// Plans one locked recurrence in one batch within a savepoint, with lock waits bounded by
-    /// <see cref="PlannerLockTimeout"/>; returns how many occurrences it created, none when it rolled back to the
-    /// savepoint after a lock timeout.
+    /// <see cref="PlannerLockTimeout"/>; returns how many occurrences it created and whether its state changed, neither
+    /// when it rolled back to the savepoint after a lock timeout.
     /// </summary>
-    private async Task<int> PlanRecurrenceAsync(
+    private async Task<(int Created, bool Changed)> PlanRecurrenceAsync(
         SqlServerTransaction work,
         LeaseSql sql,
         IRecurrenceCalculator calculator,
@@ -254,6 +244,7 @@ internal sealed partial class SqlServerJobStore
             }
         }
         var created = 0;
+        var inserted = false;
         var text = new StringBuilder();
         var parameters = new List<SqlParameter> { Tsql.Guid("@rid", recurrence.Id) };
         if (ended.Count > 0)
@@ -277,6 +268,7 @@ internal sealed partial class SqlServerJobStore
             parameters.Add(Tsql.Guid($"@job_{n}", JobId.New().Value));
             parameters.Add(Tsql.Text($"@occurrence_{n}", occurrence, 200));
             parameters.Add(Tsql.Time($"@due_{n}", skip ? (DateTimeOffset?)null : instant));
+            inserted = true;
             if (!skip)
             {
                 created++;
@@ -352,7 +344,9 @@ internal sealed partial class SqlServerJobStore
             END CATCH
             SELECT @planned;
             """, [.. parameters]);
-        return Convert.ToBoolean(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture) ? created : 0;
+        return Convert.ToBoolean(await command.ScalarAsync(cancellationToken), CultureInfo.InvariantCulture)
+            ? (created, ended.Count > 0 || inserted || next != recurrence.NextAt || waiting != recurrence.WaitingAt)
+            : (0, false);
     }
 
     /// <summary>

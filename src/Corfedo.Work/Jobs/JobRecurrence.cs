@@ -77,13 +77,15 @@ public interface IRecurrenceCalculator
 }
 
 /// <summary>
-/// What one planning pass of a definition did, and the definition's stored revision it read; null when the pass found
-/// the definition being stored and planned nothing.
+/// What one planning pass of a definition did: the recurrences it changed, by consuming ended occurrences, planning,
+/// skipping or holding an instant or moving the next instant, so a pass that changed its limit may have more; the
+/// occurrences it created; whether it found the definition being stored and planned nothing, to run again shortly; and
+/// the definition's stored revision, null while none is stored or when the definition was being stored.
 /// </summary>
-public readonly record struct PlanningPass(int Recurrences, int Occurrences, TimeSpan? NextIn, long? Revision = null);
+public readonly record struct PlanningPass(int Recurrences, int Occurrences, bool DefinitionBusy = false, long? Revision = null);
 
 /// <summary>
 /// What one calendar planning pass of a definition did: the jobs it planned of each kind, so a kind that filled its
-/// limit may have more, and when the next calendar instant or window end comes.
+/// limit may have more.
 /// </summary>
-public readonly record struct CalendarPass(int Instants, int Closed, TimeSpan? NextIn);
+public readonly record struct CalendarPass(int Instants, int Closed);

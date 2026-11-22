@@ -90,7 +90,6 @@ internal sealed partial class InMemoryJobStore
     /// <item>A job that needs dates a date set does not cover waits until a covering revision is published; one with no
     /// allowed instant within the lookahead is recorded to be skipped.</item>
     /// </list>
-    /// The next instant to wake for is the earliest calendar instant or window end still to come.
     /// </summary>
     public async ValueTask<CalendarPass> PlanCalendarAsync(LeaseSource<JobId> source, int limit, CancellationToken cancellationToken)
     {
@@ -170,10 +169,8 @@ internal sealed partial class InMemoryJobStore
                 NotifyDue(work, source);
             }
         }
-        var after = Now;
-        var next = NextCalendarInstant(rules.Scan(work).Select(r => r.Row), now);
         work.Commit();
-        return new(instants.Count, closed.Count, next is { } at ? at - after : null);
+        return new(instants.Count, closed.Count);
     }
 
     /// <summary>Whether the job is outstanding and not held, the jobs calendar planning considers.</summary>
