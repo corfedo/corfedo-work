@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
 namespace Corfedo.Work.Leases.Tests;
@@ -109,7 +110,7 @@ public sealed class PassLoopTests
     {
         var failures = 0;
         var others = 0;
-        await using var loop = Loop(out var logs, polling: TimeSpan.FromMilliseconds(300));
+        await using var loop = Loop(out var logs, polling: TimeSpan.FromMilliseconds(600));
         loop.Add("failing", _ =>
         {
             Interlocked.Increment(ref failures);
@@ -125,6 +126,30 @@ public sealed class PassLoopTests
         await WaitForAsync(() => Volatile.Read(ref failures) == 2);
         Assert.True(Volatile.Read(ref others) >= 5, $"other ran {others} times while the failing pass waited");
         Assert.Contains(logs, l => l.Level == LogLevel.Error && l.Message.Contains("failing", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TheFirstPassesAreSpreadOverTheStartWindowAndAWakeRunsOneAtOnce()
+    {
+        var first = new ConcurrentDictionary<string, TimeSpan>();
+        await using var loop = Loop(out _, workers: 4);
+        var start = Stopwatch.GetTimestamp();
+        var entries = Enumerable.Range(0, 5).Select(i => loop.Add($"spread-{i}", _ =>
+        {
+            first.TryAdd($"spread-{i}", Stopwatch.GetElapsedTime(start));
+            return Task.FromResult(Polling);
+        })).ToArray();
+        loop.Start();
+        entries[4].Wake();
+
+        await WaitForAsync(() => first.Count == 5);
+        // Five passes over one second: due at 0, 200, 400 and 600 ms; the woken one runs at once.
+        for (var i = 1; i < 4; i++)
+        {
+            Assert.True(first[$"spread-{i}"] >= TimeSpan.FromMilliseconds(200 * i), $"spread-{i} ran at {first[$"spread-{i}"]}");
+        }
+        Assert.True(first["spread-4"] < TimeSpan.FromMilliseconds(500), $"the woken pass ran at {first["spread-4"]}");
+        Assert.True(first["spread-3"] < TimeSpan.FromSeconds(2), $"the last pass ran at {first["spread-3"]}");
     }
 
     [Fact]

@@ -77,8 +77,11 @@ passes of every settling source, with one pass for all the job definitions it ru
 probe pass and the [planner](#job-planners) passes of every job definition whose handler it runs. Each pass keeps its own wake-ups and its own next run, as described for its kind; a pass that
 is due runs when one of the loop's four workers is free. A pass never runs on two workers at once, and a wake that
 arrives while it runs makes it due again when it ends. Due passes take turns, so a pass that has more to do at once
-cannot keep the others of its kind waiting for more than one turn of each. Due times are measured on the time
-provider's monotonic timestamp, so a change of the wall clock does not move them.
+cannot keep the others of its kind waiting for more than one turn of each. The first due times of a loop's passes
+are spread evenly over one second (at most the polling interval), and each wait a pass returns is shortened by a
+random part of up to a tenth, so idle passes of one kind run one after another instead of needing a connection each
+at the same moment; a pass never runs later than its wait, and a wake runs it at once. Due times are measured on the
+time provider's monotonic timestamp, so a change of the wall clock does not move them.
 
 These loops hold at most four connections each, so a process's connections grow with the work it runs (holds,
 renewals, releases and handlers), not with the number of sources. The passes of one kind share the workers: a slow

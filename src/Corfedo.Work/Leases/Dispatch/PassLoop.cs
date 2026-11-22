@@ -9,7 +9,9 @@ namespace Corfedo.Work;
 /// due passes take turns and a pass that keeps returning zero cannot keep the others waiting for more than one turn of
 /// each. A pass never runs on two workers at once, and a wake during a pass runs it again after it ends. The process
 /// therefore holds at most <see cref="DefaultWorkers"/> connections per kind for these passes, however many sources it
-/// registers, and one pass that waits slows the others of its kind without stopping them. Due times are measured on the
+/// registers, and one pass that waits slows the others of its kind without stopping them. The first due times of the
+/// passes are spread over <see cref="StartSpread"/>, and each wait is shortened by a random part of up to a tenth, so
+/// idle passes of one kind do not run at the same moment and need a connection each. Due times are measured on the
 /// time provider's monotonic timestamp, so changes of the wall clock do not move them. Passes handle their own failures;
 /// one that throws anyway is logged and runs again after the polling interval.
 /// </summary>
@@ -20,6 +22,19 @@ internal sealed partial class PassLoop
 
     /// <summary>The wait a pass returns to run again only when it is woken; no pass computes it as a wait.</summary>
     public static readonly TimeSpan UntilWoken = TimeSpan.MaxValue;
+
+    /// <summary>
+    /// The window the first due times of a loop's passes are spread over evenly, at most the polling interval. Idle passes
+    /// take milliseconds, so passes started this far apart run one after another; work waiting at startup is claimed
+    /// within it, and a wake runs a pass at once.
+    /// </summary>
+    public static readonly TimeSpan StartSpread = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// The largest part of a wait a pass may run early, chosen at random each time, so passes that return the same waits,
+    /// for example after a wake of them all, do not stay in step. Running early is harmless; a pass never runs late.
+    /// </summary>
+    private const double Jitter = 0.1;
 
     private readonly string kind;
     private readonly LeaseDispatchContext context;
@@ -44,7 +59,7 @@ internal sealed partial class PassLoop
         telemetry = WorkTelemetryOptions.From(context.Services);
     }
 
-    /// <summary>Adds a pass, due at once when the loop starts; passes are added before the loop starts.</summary>
+    /// <summary>Adds a pass, due within <see cref="StartSpread"/> of the loop's start; passes are added before the loop starts.</summary>
     public Entry Add(string name, Func<CancellationToken, Task<TimeSpan>> pass)
     {
         lock (gate)
@@ -64,6 +79,12 @@ internal sealed partial class PassLoop
         lock (gate)
         {
             started = true;
+            var now = context.Time.GetTimestamp();
+            var spread = Ticks(StartSpread < context.PollingInterval ? StartSpread : context.PollingInterval, context.Time);
+            for (var i = 0; i < entries.Count; i++)
+            {
+                entries[i].Next = now + (spread * i / entries.Count);
+            }
         }
         workers = [.. Enumerable.Range(0, workerCount).Select(_ => Task.Run(WorkAsync))];
     }
@@ -103,7 +124,9 @@ internal sealed partial class PassLoop
             }
             lock (gate)
             {
-                entry.Next = delay == UntilWoken ? long.MaxValue : time.GetTimestamp() + Ticks(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, time);
+                entry.Next = delay == UntilWoken ? long.MaxValue
+                    : delay <= TimeSpan.Zero ? time.GetTimestamp()
+                    : time.GetTimestamp() + Ticks(delay * (1 - (Jitter * Random.Shared.NextDouble())), time);
                 entry.Running = false;
             }
             // The pass may be due again, or woken while it ran; another worker may be waiting for it.
@@ -157,14 +180,14 @@ internal sealed partial class PassLoop
     /// <summary>A pass's schedule in the loop; its fields other than the wake belong to the loop's lock.</summary>
     internal sealed class Entry(PassLoop owner, string name, Func<CancellationToken, Task<TimeSpan>> pass)
     {
-        private int woken = 1;
+        private int woken;
 
         public string Name { get; } = name;
 
         public Func<CancellationToken, Task<TimeSpan>> Pass { get; } = pass;
 
-        /// <summary>The timestamp from which the pass is due without a wake.</summary>
-        public long Next { get; set; } = long.MinValue;
+        /// <summary>The timestamp from which the pass is due without a wake; set when the loop starts.</summary>
+        public long Next { get; set; }
 
         public bool Running { get; set; }
 
