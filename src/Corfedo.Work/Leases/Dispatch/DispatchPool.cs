@@ -76,14 +76,14 @@ public sealed class DispatchPool : ILeaseDispatcher
         if (free <= 0)
         {
             // Nothing can be claimed until a run finishes, which wakes the pool.
-            return context.PollingInterval;
+            return PassLoop.Poll(context.PollingInterval);
         }
         (var claimed, var failed) = await ClaimAsync(free, token);
         if (claimed > 0)
         {
             return TimeSpan.Zero;
         }
-        var delay = context.PollingInterval;
+        var delay = PassLoop.Poll(context.PollingInterval);
         foreach (var lane in lanes)
         {
             try

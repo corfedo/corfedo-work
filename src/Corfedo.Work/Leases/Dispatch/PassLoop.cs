@@ -10,8 +10,9 @@ namespace Corfedo.Work;
 /// each. A pass never runs on two workers at once, and a wake during a pass runs it again after it ends. The process
 /// therefore holds at most <see cref="DefaultWorkers"/> connections per kind for these passes, however many sources it
 /// registers, and one pass that waits slows the others of its kind without stopping them. The first due times of the
-/// passes are spread over <see cref="StartSpread"/>, and each wait is shortened by a random part of up to a tenth, so
-/// idle passes of one kind do not run at the same moment and need a connection each. Due times are measured on the
+/// passes are spread over <see cref="StartSpread"/>, and so are the passes <see cref="WakeAll"/> wakes; passes shorten
+/// their poll waits with <see cref="Poll"/>, so idle passes of one kind do not run at the same moment and need a
+/// connection each. A wait to a known instant is kept exactly. Due times are measured on the
 /// time provider's monotonic timestamp, so changes of the wall clock do not move them. Passes handle their own failures;
 /// one that throws anyway is logged and runs again after the polling interval.
 /// </summary>
@@ -24,17 +25,20 @@ internal sealed partial class PassLoop
     public static readonly TimeSpan UntilWoken = TimeSpan.MaxValue;
 
     /// <summary>
-    /// The window the first due times of a loop's passes are spread over evenly, at most the polling interval. Idle passes
-    /// take milliseconds, so passes started this far apart run one after another; work waiting at startup is claimed
-    /// within it, and a wake runs a pass at once.
+    /// The window the first due times of a loop's passes, and the passes of a <see cref="WakeAll"/>, are spread over
+    /// evenly, at most the polling interval. Idle passes take milliseconds, so passes started this far apart run one
+    /// after another; work waiting at startup is claimed within it, and a wake of one pass runs it at once.
     /// </summary>
     public static readonly TimeSpan StartSpread = TimeSpan.FromSeconds(1);
 
-    /// <summary>
-    /// The largest part of a wait a pass may run early, chosen at random each time, so passes that return the same waits,
-    /// for example after a wake of them all, do not stay in step. Running early is harmless; a pass never runs late.
-    /// </summary>
+    /// <summary>The largest part of a poll wait <see cref="Poll"/> takes off, chosen at random each time.</summary>
     private const double Jitter = 0.1;
+
+    /// <summary>
+    /// A poll wait, which looks for work nothing announced, shortened by a random part of up to a tenth, so passes of one
+    /// kind that poll at the same interval do not stay in step. A wait to a known instant is returned as it is instead.
+    /// </summary>
+    public static TimeSpan Poll(TimeSpan wait) => wait * (1 - (Jitter * Random.Shared.NextDouble()));
 
     private readonly string kind;
     private readonly LeaseDispatchContext context;
@@ -78,13 +82,8 @@ internal sealed partial class PassLoop
     {
         lock (gate)
         {
+            Spread(entries);
             started = true;
-            var now = context.Time.GetTimestamp();
-            var spread = Ticks(StartSpread < context.PollingInterval ? StartSpread : context.PollingInterval, context.Time);
-            for (var i = 0; i < entries.Count; i++)
-            {
-                entries[i].Next = now + (spread * i / entries.Count);
-            }
         }
         workers = [.. Enumerable.Range(0, workerCount).Select(_ => Task.Run(WorkAsync))];
     }
@@ -120,13 +119,11 @@ internal sealed partial class PassLoop
             catch (Exception exception)
             {
                 LogPassFailed(logger, telemetry.Logged(exception), kind, entry.Name, telemetry.Describe(exception));
-                delay = context.PollingInterval;
+                delay = Poll(context.PollingInterval);
             }
             lock (gate)
             {
-                entry.Next = delay == UntilWoken ? long.MaxValue
-                    : delay <= TimeSpan.Zero ? time.GetTimestamp()
-                    : time.GetTimestamp() + Ticks(delay * (1 - (Jitter * Random.Shared.NextDouble())), time);
+                entry.Next = delay == UntilWoken ? long.MaxValue : time.GetTimestamp() + Ticks(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, time);
                 entry.Running = false;
             }
             // The pass may be due again, or woken while it ran; another worker may be waiting for it.
@@ -165,6 +162,39 @@ internal sealed partial class PassLoop
                 }
             }
             return (null, wait);
+        }
+    }
+
+    /// <summary>
+    /// Makes every pass due within <see cref="StartSpread"/>, one after another in the loop's order, for work that may
+    /// have been missed, such as signals lost while the listener was disconnected. A pass that is running runs again
+    /// after it ends.
+    /// </summary>
+    public void WakeAll()
+    {
+        lock (gate)
+        {
+            foreach (var entry in entries.Where(e => e.Running))
+            {
+                entry.Wake();
+            }
+            Spread([.. entries.Where(e => !e.Running)]);
+        }
+        wake.Set();
+    }
+
+    /// <summary>Makes <paramref name="spread"/> due evenly over <see cref="StartSpread"/> from now, never later than they already are; under the loop's lock.</summary>
+    private void Spread(List<Entry> spread)
+    {
+        var now = context.Time.GetTimestamp();
+        var window = Ticks(StartSpread < context.PollingInterval ? StartSpread : context.PollingInterval, context.Time);
+        for (var i = 0; i < spread.Count; i++)
+        {
+            var due = now + (window * i / spread.Count);
+            if (!started || due < spread[i].Next)
+            {
+                spread[i].Next = due;
+            }
         }
     }
 

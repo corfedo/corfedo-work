@@ -153,6 +153,89 @@ public sealed class PassLoopTests
     }
 
     [Fact]
+    public async Task APassThatReturnsUntilWokenRunsOnlyWhenWoken()
+    {
+        var runs = 0;
+        await using var loop = Loop(out _, polling: TimeSpan.FromMilliseconds(100));
+        var entry = loop.Add("parked", _ =>
+        {
+            Interlocked.Increment(ref runs);
+            return Task.FromResult(PassLoop.UntilWoken);
+        });
+        loop.Start();
+
+        await WaitForAsync(() => Volatile.Read(ref runs) == 1);
+        await Task.Delay(400, Cancel);
+        Assert.Equal(1, Volatile.Read(ref runs));
+        entry.Wake();
+        await WaitForAsync(() => Volatile.Read(ref runs) == 2);
+    }
+
+    [Fact]
+    public async Task WakingAllPassesSpreadsThemOverTheStartWindow()
+    {
+        var runs = new ConcurrentDictionary<string, List<TimeSpan>>();
+        await using var loop = Loop(out _, workers: 4);
+        var start = Stopwatch.GetTimestamp();
+        for (var i = 0; i < 5; i++)
+        {
+            var name = $"spread-{i}";
+            loop.Add(name, _ =>
+            {
+                var list = runs.GetOrAdd(name, _ => []);
+                lock (list)
+                {
+                    list.Add(Stopwatch.GetElapsedTime(start));
+                }
+                return Task.FromResult(Polling);
+            });
+        }
+        loop.Start();
+        await WaitForAsync(() => runs.Count == 5);
+        await Task.Delay(1100, Cancel);
+
+        var woken = Stopwatch.GetElapsedTime(start);
+        loop.WakeAll();
+        await WaitForAsync(() => runs.Values.All(l => { lock (l) { return l.Count == 2; } }));
+        // Five passes over one second: due 0, 200, 400, 600 and 800 ms after the wake, in the loop's order.
+        for (var i = 1; i < 5; i++)
+        {
+            var second = runs[$"spread-{i}"][1] - woken;
+            Assert.True(second >= TimeSpan.FromMilliseconds(200 * i), $"spread-{i} ran {second} after the wake");
+        }
+    }
+
+    [Fact]
+    public void APollWaitIsShortenedByAtMostATenth()
+    {
+        var waits = Enumerable.Range(0, 1000).Select(_ => PassLoop.Poll(Polling)).ToArray();
+
+        Assert.All(waits, wait => Assert.InRange(wait, Polling * 0.9, Polling));
+        Assert.True(waits.Distinct().Count() > 1);
+    }
+
+    [Fact]
+    public async Task AWaitToAKnownInstantIsKeptExactly()
+    {
+        var runs = new ConcurrentQueue<TimeSpan>();
+        var start = Stopwatch.GetTimestamp();
+        await using var loop = Loop(out _);
+        loop.Add("exact", _ =>
+        {
+            runs.Enqueue(Stopwatch.GetElapsedTime(start));
+            return Task.FromResult(TimeSpan.FromMilliseconds(150));
+        });
+        loop.Start();
+
+        await WaitForAsync(() => runs.Count >= 5);
+        var times = runs.ToArray();
+        for (var i = 1; i < times.Length; i++)
+        {
+            Assert.True(times[i] - times[i - 1] >= TimeSpan.FromMilliseconds(150), $"run {i} came {times[i] - times[i - 1]} after the one before");
+        }
+    }
+
+    [Fact]
     public async Task DueTimesFollowTheMonotonicClockAndNotTheWallClock()
     {
         var runs = 0;
@@ -244,6 +327,8 @@ public sealed class PassLoopTests
         public PassLoop.Entry Add(string name, Func<CancellationToken, Task<TimeSpan>> pass) => loop.Add(name, pass);
 
         public void Start() => loop.Start();
+
+        public void WakeAll() => loop.WakeAll();
 
         public Task StopAsync() => loop.StopAsync();
 

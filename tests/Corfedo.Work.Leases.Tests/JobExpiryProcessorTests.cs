@@ -17,7 +17,7 @@ public sealed class JobExpiryProcessorTests
 
         var wait = await processor.SettleAsync(Cancel);
 
-        Assert.Equal(ExpiryProcessor<JobId>.MaximumWait, wait);
+        Assert.InRange(wait, ExpiryProcessor<JobId>.MaximumWait * 0.9, ExpiryProcessor<JobId>.MaximumWait);
         var read = Assert.Single(store.Reads);
         Assert.Equal(Enumerable.Range(0, 30).Select(i => $"d{i}"), read);
         Assert.Empty(store.Settlements);
@@ -57,11 +57,11 @@ public sealed class JobExpiryProcessorTests
         };
         var processor = Processor(store, time, "a", "b");
 
-        Assert.Equal(ExpiryProcessor<JobId>.MaximumWait, await processor.SettleAsync(Cancel));
+        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.MaximumWait * 0.9, ExpiryProcessor<JobId>.MaximumWait);
         Assert.Equal(["job:a", "job:b"], store.Settlements);
 
         time.Advance(Polling - TimeSpan.FromSeconds(1));
-        Assert.Equal(ExpiryProcessor<JobId>.MaximumWait, await processor.SettleAsync(Cancel));
+        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.MaximumWait * 0.9, ExpiryProcessor<JobId>.MaximumWait);
         Assert.Equal(["job:a", "job:b", "job:b"], store.Settlements);
 
         time.Advance(TimeSpan.FromSeconds(1));

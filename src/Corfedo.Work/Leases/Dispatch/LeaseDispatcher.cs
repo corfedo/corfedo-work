@@ -349,7 +349,8 @@ internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
             }
             var next = await store.NextExpiryAsync(registration.Source, cancellationToken);
             // A result at or before now is an expired lease left unsettled, for example because its record is locked.
-            return next is { } due && due > TimeSpan.Zero && due < MaximumWait ? due : MaximumWait;
+            var poll = PassLoop.Poll(MaximumWait);
+            return next is { } due && due > TimeSpan.Zero && due < poll ? due : poll;
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {

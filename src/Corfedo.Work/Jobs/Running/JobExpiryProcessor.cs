@@ -50,7 +50,7 @@ internal sealed partial class JobExpiryProcessor
             return context.PollingInterval;
         }
         var time = context.Time;
-        var wait = ExpiryProcessor<JobId>.MaximumWait;
+        var wait = PassLoop.Poll(ExpiryProcessor<JobId>.MaximumWait);
         for (var i = 0; i < registrations.Length; i++)
         {
             if (!expiries.TryGetValue(definitions[i], out var until))

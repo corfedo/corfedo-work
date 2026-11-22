@@ -251,14 +251,8 @@ internal sealed class WorkHost : IHostedService, IWorkHost
         }
     }
 
-    /// <summary>Signals may have been missed: every dispatcher claims again.</summary>
-    private void WakeAll()
-    {
-        foreach (var dispatcher in started)
-        {
-            dispatcher.Wake();
-        }
-    }
+    /// <summary>Signals may have been missed: every dispatcher claims again, spread over the loop's start window.</summary>
+    private void WakeAll() => dispatchLoop?.WakeAll();
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
