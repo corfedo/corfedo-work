@@ -217,10 +217,13 @@ treats its expired leases alike, and the processes that can release the resource
   handler failed in the same pass, so neither keeps later records from being settled; a handler that is busy (see
   [operations](#operations)) rolls the settlement back without counting in `SettleFailures`, and the record is
   passed in that pass and settled by a later one;
-- the expiry processor's pass for a source is due at the earliest known expiry and at most 750 ms after its last pass,
-  also when it knows of no expiry: a claim can commit after its lease expired and a record can stay locked past expiry,
-  and neither is signalled. The wait bounds how long such a lease waits once it is committed, expired and unlocked. The
-  pass runs on the process's [expiry loop](hosting.md#loops) when one of its workers is free. The job definitions a
+- the expiry processor's pass for a source is due at the earliest known expiry and at most the polling interval, or
+  the source's lease duration when it is shorter, after its last pass, also when it knows of no expiry. A lease
+  claimed after a pass's read therefore expires no earlier than the next read, unless its claim committed later than
+  its clock reading; such a lease, whose holder then crashed, is settled at most that wait after it expired. While the
+  read reports an expired lease left unsettled, for example because its record stays locked past expiry, the pass
+  runs every 750 ms instead, which bounds how long such a lease waits once it is unlocked; neither case is
+  signalled. The pass runs on the process's [expiry loop](hosting.md#loops) when one of its workers is free. The job definitions a
   process runs share one such pass, which settles them one after another
   ([jobs](jobs.md#scope-of-a-definitions-statements));
 - a settlement wakes claimers, since it frees a slot of the source's limits and makes the record claimable for

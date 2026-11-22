@@ -17,10 +17,49 @@ public sealed class JobExpiryProcessorTests
 
         var wait = await processor.SettleAsync(Cancel);
 
-        Assert.InRange(wait, ExpiryProcessor<JobId>.MaximumWait * 0.9, ExpiryProcessor<JobId>.MaximumWait);
+        Assert.InRange(wait, Polling * 0.9, Polling);
         var read = Assert.Single(store.Reads);
         Assert.Equal(Enumerable.Range(0, 30).Select(i => $"d{i}"), read);
         Assert.Empty(store.Settlements);
+    }
+
+    [Fact]
+    public async Task AnIdlePassWaitsNoLongerThanTheShortestLeaseDuration()
+    {
+        var processor = Processor(new ExpiryStore(), new ManualTime(), TimeSpan.FromSeconds(4), "a");
+
+        Assert.InRange(await processor.SettleAsync(Cancel), TimeSpan.FromSeconds(4) * 0.9, TimeSpan.FromSeconds(4));
+    }
+
+    [Fact]
+    public async Task AnExpiredLeaseLeftUnsettledIsRetriedSoon()
+    {
+        var store = new ExpiryStore { Expiries = { ["a"] = TimeSpan.Zero, ["b"] = TimeSpan.FromSeconds(10) } };
+        var processor = Processor(store, new ManualTime(), "a", "b");
+
+        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.ExpiredRetry * 0.9, ExpiryProcessor<JobId>.ExpiredRetry);
+        Assert.Equal(["job:a"], store.Settlements);
+    }
+
+    [Theory]
+    [InlineData(4, 4)]
+    [InlineData(60, 15)]
+    public async Task ASourcesIdlePassWaitsForThePollingIntervalOrTheLeaseDurationWhenShorter(int durationSeconds, int capSeconds)
+    {
+        var processor = SourceProcessor(new ExpiryStore(), TimeSpan.FromSeconds(durationSeconds));
+
+        Assert.InRange(await processor.SettleAsync(Cancel), TimeSpan.FromSeconds(capSeconds) * 0.9, TimeSpan.FromSeconds(capSeconds));
+    }
+
+    [Fact]
+    public async Task ASourcesPassWaitsForAKnownExpiryAndRetriesSoonWhileAnExpiredLeaseIsLeftUnsettled()
+    {
+        var store = new ExpiryStore { NextExpiry = TimeSpan.FromSeconds(2) };
+        var processor = SourceProcessor(store, TimeSpan.FromSeconds(30));
+
+        Assert.Equal(TimeSpan.FromSeconds(2), await processor.SettleAsync(Cancel));
+        store.NextExpiry = TimeSpan.Zero;
+        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.ExpiredRetry * 0.9, ExpiryProcessor<JobId>.ExpiredRetry);
     }
 
     [Fact]
@@ -57,11 +96,11 @@ public sealed class JobExpiryProcessorTests
         };
         var processor = Processor(store, time, "a", "b");
 
-        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.MaximumWait * 0.9, ExpiryProcessor<JobId>.MaximumWait);
+        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.ExpiredRetry * 0.9, ExpiryProcessor<JobId>.ExpiredRetry);
         Assert.Equal(["job:a", "job:b"], store.Settlements);
 
         time.Advance(Polling - TimeSpan.FromSeconds(1));
-        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.MaximumWait * 0.9, ExpiryProcessor<JobId>.MaximumWait);
+        Assert.InRange(await processor.SettleAsync(Cancel), ExpiryProcessor<JobId>.ExpiredRetry * 0.9, ExpiryProcessor<JobId>.ExpiredRetry);
         Assert.Equal(["job:a", "job:b", "job:b"], store.Settlements);
 
         time.Advance(TimeSpan.FromSeconds(1));
@@ -100,18 +139,28 @@ public sealed class JobExpiryProcessorTests
         Assert.Equal(["job:a", "job:a"], store.Settlements);
     }
 
-    private static JobExpiryProcessor Processor(ExpiryStore store, TimeProvider time, params string[] definitions)
+    private static ExpiryProcessor<JobId> SourceProcessor(ExpiryStore store, TimeSpan duration)
     {
-        var registrations = definitions.Select(d => new LeaseSourceRegistration<JobId>(
-            JobSource.Define(StoreLocation.Table("work", "jobs"), new StoredJobDefinition(d, 1, null, new JobPolicy(), [], Paused: false), [1], TimeSpan.FromSeconds(30)),
-            claimHook: null,
-            expiryHandler: null,
-            handler: null,
-            capacity: 1,
-            timeout: null)).ToArray();
-        var context = new LeaseDispatchContext(new NoServices(), store.Work, null!, time, NullLoggerFactory.Instance, Polling, TimeSpan.FromMilliseconds(10));
-        return new JobExpiryProcessor(registrations, context);
+        var registration = Registration("a", duration);
+        return new ExpiryProcessor<JobId>(registration, registration.Callbacks(new NoServices()), Context(store, new ManualTime()));
     }
+
+    private static JobExpiryProcessor Processor(ExpiryStore store, TimeProvider time, params string[] definitions) =>
+        Processor(store, time, TimeSpan.FromSeconds(30), definitions);
+
+    private static JobExpiryProcessor Processor(ExpiryStore store, TimeProvider time, TimeSpan duration, params string[] definitions)
+        => new(definitions.Select(d => Registration(d, duration)).ToArray(), Context(store, time));
+
+    private static LeaseSourceRegistration<JobId> Registration(string definition, TimeSpan duration) => new(
+        JobSource.Define(StoreLocation.Table("work", "jobs"), new StoredJobDefinition(definition, 1, null, new JobPolicy(), [], Paused: false), [1], duration),
+        claimHook: null,
+        expiryHandler: null,
+        handler: null,
+        capacity: 1,
+        timeout: null);
+
+    private static LeaseDispatchContext Context(ExpiryStore store, TimeProvider time) =>
+        new(new NoServices(), store.Work, null!, time, NullLoggerFactory.Instance, Polling, TimeSpan.FromMilliseconds(10));
 
     /// <summary>A monotonic clock that moves only when the test advances it.</summary>
     private sealed class ManualTime : TimeProvider
@@ -143,9 +192,12 @@ public sealed class JobExpiryProcessorTests
                 ? Read((IReadOnlyCollection<string>)args![0]!)
                 : throw new NotSupportedException(method.Name);
             var leases = DispatchProxy.Create<ILeaseStore, StoreProxy>();
-            ((StoreProxy)(object)leases).Handler = (method, args) => method.Name == nameof(ILeaseStore.SettleExpiredAsync)
-                ? Settle(((LeaseSource<JobId>)args![0]!).Name)
-                : throw new NotSupportedException(method.Name);
+            ((StoreProxy)(object)leases).Handler = (method, args) => method.Name switch
+            {
+                nameof(ILeaseStore.SettleExpiredAsync) => Settle(((LeaseSource<JobId>)args![0]!).Name),
+                nameof(ILeaseStore.NextExpiryAsync) => ValueTask.FromResult(NextExpiry),
+                _ => throw new NotSupportedException(method.Name),
+            };
             var work = DispatchProxy.Create<IWorkStore, StoreProxy>();
             ((StoreProxy)(object)work).Handler = (method, _) => method.Name switch
             {
@@ -159,6 +211,9 @@ public sealed class JobExpiryProcessorTests
         public IWorkStore Work { get; }
 
         public Dictionary<string, TimeSpan> Expiries { get; } = [];
+
+        /// <summary>What a source's next-expiry read returns.</summary>
+        public TimeSpan? NextExpiry { get; set; }
 
         public Func<string, int> Settled { get; set; } = _ => 0;
 

@@ -309,16 +309,18 @@ internal sealed partial class LeaseDispatcher<TKey> : IDispatchLane
 }
 
 /// <summary>
-/// Settles expired leases of one source at the earliest known expiry and at least every <see cref="MaximumWait"/>, as
-/// a pass of the process's expiry loop. A lease can become settleable without a signal or a known deadline: its claim
-/// may commit after the lease expired, or its record may stay locked past expiry. The short wait bounds how long such a
-/// lease waits once it is committed, expired and unlocked.
+/// Settles expired leases of one source as a pass of the process's expiry loop, at the earliest known expiry and at
+/// least every <see cref="Cap"/>: the polling interval, or the lease duration when it is shorter. A lease claimed after
+/// a pass's read therefore expires no earlier than the next read, unless its claim committed late, and is settled at
+/// most one cap after it expired. While the read reports an expired lease left unsettled, for example because its
+/// record is locked, the pass retries every <see cref="ExpiredRetry"/> instead, which bounds how long such a lease
+/// waits once it is unlocked.
 /// </summary>
 internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
     where TKey : notnull
 {
     internal const int BatchSize = 100;
-    internal static readonly TimeSpan MaximumWait = TimeSpan.FromMilliseconds(750);
+    internal static readonly TimeSpan ExpiredRetry = TimeSpan.FromMilliseconds(750);
 
     private readonly LeaseSourceRegistration<TKey> registration;
     private readonly LeaseCallbacks<TKey> callbacks;
@@ -333,9 +335,13 @@ internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
         this.context = context;
         logger = context.Logging.CreateLogger("Corfedo.Work.Leases");
         telemetry = WorkTelemetryOptions.From(context.Services);
+        Cap = context.PollingInterval < registration.Source.Policy.Duration ? context.PollingInterval : registration.Source.Policy.Duration;
     }
 
     public string Source => registration.Name;
+
+    /// <summary>The longest wait between passes.</summary>
+    internal TimeSpan Cap { get; }
 
     public async Task<TimeSpan> SettleAsync(CancellationToken cancellationToken)
     {
@@ -348,9 +354,13 @@ internal sealed partial class ExpiryProcessor<TKey> : IExpiryProcessor
                 return TimeSpan.Zero;
             }
             var next = await store.NextExpiryAsync(registration.Source, cancellationToken);
-            // A result at or before now is an expired lease left unsettled, for example because its record is locked.
-            var poll = PassLoop.Poll(MaximumWait);
-            return next is { } due && due > TimeSpan.Zero && due < poll ? due : poll;
+            if (next <= TimeSpan.Zero)
+            {
+                // An expired lease left unsettled, for example because its record is locked.
+                return PassLoop.Poll(ExpiredRetry);
+            }
+            var poll = PassLoop.Poll(Cap);
+            return next is { } due && due < poll ? due : poll;
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {

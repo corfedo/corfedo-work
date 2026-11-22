@@ -6,9 +6,10 @@ namespace Corfedo.Work;
 /// Settles expired leases of every job definition the process runs, as one pass of the process's expiry loop. The
 /// definitions share the store's job table, so one statement tells which of them hold an expired, unsettled lease and
 /// when the next lease expires; only those definitions run a settlement. Like a source's own expiry processor, the pass
-/// is due at the earliest known expiry and at most <see cref="ExpiryProcessor{TKey}.MaximumWait"/> after its last pass,
-/// so a lease whose claim committed after its expiry, or whose record stayed locked past it, waits no longer. A
-/// definition whose settlement failed is passed over until the polling interval has passed, as a source's own processor
+/// is due at the earliest known expiry and at most the polling interval, or the shortest lease duration of the
+/// definitions when it is shorter, after its last pass, and every <see cref="ExpiryProcessor{TKey}.ExpiredRetry"/> while
+/// a definition's expired lease could not be settled, for example because its record is locked. A definition whose
+/// settlement failed is passed over until the polling interval has passed, as a source's own processor
 /// waits after a failed pass. Passes of the loop never overlap, so the pass needs no lock.
 /// </summary>
 internal sealed partial class JobExpiryProcessor
@@ -24,6 +25,7 @@ internal sealed partial class JobExpiryProcessor
     private readonly ILogger logger;
     private readonly WorkTelemetryOptions telemetry;
     private readonly Dictionary<string, long> failedUntil = new(StringComparer.Ordinal);
+    private readonly TimeSpan cap;
 
     public JobExpiryProcessor(IReadOnlyList<LeaseSourceRegistration<JobId>> registrations, LeaseDispatchContext context)
     {
@@ -32,6 +34,7 @@ internal sealed partial class JobExpiryProcessor
         this.context = context;
         logger = context.Logging.CreateLogger("Corfedo.Work.Leases");
         telemetry = WorkTelemetryOptions.From(context.Services);
+        cap = this.registrations.Aggregate(context.PollingInterval, (wait, registration) => Min(wait, registration.Source.Policy.Duration));
     }
 
     private static string Definition(LeaseSourceRegistration<JobId> registration) =>
@@ -50,7 +53,7 @@ internal sealed partial class JobExpiryProcessor
             return context.PollingInterval;
         }
         var time = context.Time;
-        var wait = PassLoop.Poll(ExpiryProcessor<JobId>.MaximumWait);
+        var wait = PassLoop.Poll(cap);
         for (var i = 0; i < registrations.Length; i++)
         {
             if (!expiries.TryGetValue(definitions[i], out var until))
@@ -80,6 +83,11 @@ internal sealed partial class JobExpiryProcessor
                 if (await context.Store.Leases.SettleExpiredAsync(registration.Source, registration.Callbacks(context.Services), BatchSize, cancellationToken) > 0)
                 {
                     wait = TimeSpan.Zero;
+                }
+                else
+                {
+                    // The expired lease stays unsettled, for example because its record is locked.
+                    wait = Min(wait, PassLoop.Poll(ExpiryProcessor<JobId>.ExpiredRetry));
                 }
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
