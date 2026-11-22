@@ -21,14 +21,16 @@ public sealed class PostgreSqlWorkStore : IWorkStore
 
     /// <summary>
     /// A store with its framework tables in <paramref name="schema"/>; <paramref name="schemaMode"/> says whether a
-    /// starting process applies the schema or only verifies it.
+    /// starting process applies the schema or only verifies it. The signal listener holds one session-level connection
+    /// of <paramref name="listenerDataSource"/>, or of <paramref name="dataSource"/> when it is null; behind a
+    /// transaction-mode pooler it is a direct data source, and every other statement uses <paramref name="dataSource"/>.
     /// </summary>
-    public PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
-        : this(dataSource, schema, loggerFactory, time, WorkTelemetryOptions.Default, schemaMode)
+    public PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkSchemaMode schemaMode = WorkSchemaMode.Migrate, NpgsqlDataSource? listenerDataSource = null)
+        : this(dataSource, schema, loggerFactory, time, WorkTelemetryOptions.Default, schemaMode, listenerDataSource)
     {
     }
 
-    internal PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkTelemetryOptions telemetry, WorkSchemaMode schemaMode)
+    internal PostgreSqlWorkStore(NpgsqlDataSource dataSource, string schema, ILoggerFactory loggerFactory, TimeProvider time, WorkTelemetryOptions telemetry, WorkSchemaMode schemaMode, NpgsqlDataSource? listenerDataSource = null)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
         ArgumentException.ThrowIfNullOrWhiteSpace(schema);
@@ -48,7 +50,7 @@ public sealed class PostgreSqlWorkStore : IWorkStore
         Jobs = jobs;
         Chains = jobs;
         Processes = new PostgreSqlProcessStore(dataSource, schema);
-        Signals = new PostgreSqlSignalTransport(dataSource, signals, time, logger, telemetry);
+        Signals = new PostgreSqlSignalTransport(dataSource, listenerDataSource ?? dataSource, signals, time, logger, telemetry);
     }
 
     public ILeaseStore Leases { get; }

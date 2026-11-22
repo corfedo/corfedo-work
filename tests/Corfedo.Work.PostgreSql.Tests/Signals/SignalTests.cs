@@ -33,6 +33,34 @@ public sealed class SignalTests(PostgreSqlDatabase database) : IClassFixture<Pos
         Assert.Empty(invoices.Keys);
     }
 
+    /// <summary>
+    /// With a listener data source the listening session is that data source's, and the store's data source holds no
+    /// session that listens.
+    /// </summary>
+    [Fact]
+    public async Task TheListenerUsesTheListenerDataSourceAndSignalsArrive()
+    {
+        await using var listener = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(database.ConnectionString) { ApplicationName = "work-listener" }.ConnectionString);
+        var store = new PostgreSqlWorkStore(database.DataSource, "signals_listener", NullLoggerFactory.Instance, TimeProvider.System, listenerDataSource: listener);
+        await using var signals = new WorkSignals(store.Signals);
+        var orders = new Recorder();
+        using var subscription = signals.Subscribe(Orders, orders);
+        await EventuallyAsync(() => orders.Resyncs == 1, "the listener connects");
+
+        await signals.SendAsync(Orders, "1", Cancel);
+
+        await EventuallyAsync(() => orders.Keys.Contains("1"), "the signal arrives");
+        await using var sessions = database.DataSource.CreateCommand(
+            "SELECT application_name FROM pg_stat_activity WHERE datname = current_database() AND query = 'LISTEN \"corfedo_work:signals_listener\"'");
+        await using var reader = await sessions.ExecuteReaderAsync(Cancel);
+        var names = new List<string>();
+        while (await reader.ReadAsync(Cancel))
+        {
+            names.Add(reader.GetString(0));
+        }
+        Assert.Equal(["work-listener"], names);
+    }
+
     /// <summary>A signal is sent once its transaction commits, however long after the send that is.</summary>
     [Fact]
     public async Task ASignalIsSentWhenItsLongTransactionCommitsAndNeverWhenItRollsBack()

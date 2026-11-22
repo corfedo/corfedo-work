@@ -17,31 +17,39 @@ public static class PostgreSqlServiceCollectionExtensions
     /// <summary>
     /// Stores work in PostgreSQL through the container's <see cref="NpgsqlDataSource"/>, or the one registered under
     /// <paramref name="dataSourceKey"/>, with the store's signals as the process's <see cref="IWorkSignals"/>. Framework
-    /// tables live in <paramref name="schema"/>, at most 50 bytes, which also names the application's signal channel;
-    /// listening for signals needs a session-level connection, so a transaction-mode pooler needs a direct data source.
+    /// tables live in <paramref name="schema"/>, at most 50 bytes, which also names the application's signal channel.
+    /// Listening for signals holds a session-level connection, of the data source registered under
+    /// <paramref name="listenerDataSourceKey"/> when one is given: behind a transaction-mode pooler, that is a direct data
+    /// source and the store's data source goes through the pooler.
     /// With <see cref="WorkSchemaMode.Migrate"/> a starting process applies the schema; with
     /// <see cref="WorkSchemaMode.Verify"/> it only checks the schema that the migrate step applied with
     /// <see cref="PostgreSqlWorkSchema"/>.
     /// </summary>
-    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, string schema = "work", WorkSchemaMode schemaMode = WorkSchemaMode.Migrate, object? dataSourceKey = null) =>
-        services.AddPostgreSqlWorkStore(provider => FromContainer(provider, dataSourceKey), schema, schemaMode);
+    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, string schema = "work", WorkSchemaMode schemaMode = WorkSchemaMode.Migrate, object? dataSourceKey = null, object? listenerDataSourceKey = null) =>
+        services.AddPostgreSqlWorkStore(
+            provider => FromContainer(provider, dataSourceKey),
+            schema,
+            schemaMode,
+            listenerDataSourceKey is null ? null : provider => FromContainer(provider, listenerDataSourceKey));
 
     /// <summary>
-    /// Stores work in PostgreSQL through <paramref name="dataSource"/>, which the caller owns; otherwise as
-    /// <see cref="AddPostgreSqlWorkStore(IServiceCollection, string, WorkSchemaMode, object?)"/>.
+    /// Stores work in PostgreSQL through <paramref name="dataSource"/>, and listens for signals through
+    /// <paramref name="listenerDataSource"/> when one is given, both owned by the caller; otherwise as
+    /// <see cref="AddPostgreSqlWorkStore(IServiceCollection, string, WorkSchemaMode, object?, object?)"/>.
     /// </summary>
-    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, NpgsqlDataSource dataSource, string schema = "work", WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
+    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, NpgsqlDataSource dataSource, string schema = "work", WorkSchemaMode schemaMode = WorkSchemaMode.Migrate, NpgsqlDataSource? listenerDataSource = null)
     {
         ArgumentNullException.ThrowIfNull(dataSource);
-        return services.AddPostgreSqlWorkStore(_ => dataSource, schema, schemaMode);
+        return services.AddPostgreSqlWorkStore(_ => dataSource, schema, schemaMode, listenerDataSource is null ? null : _ => listenerDataSource);
     }
 
     /// <summary>
-    /// Stores work in PostgreSQL through the data source that <paramref name="dataSource"/> returns, called once when the
+    /// Stores work in PostgreSQL through the data source that <paramref name="dataSource"/> returns, and listens for
+    /// signals through the one <paramref name="listenerDataSource"/> returns when it is given, each called once when the
     /// container creates the store; otherwise as
-    /// <see cref="AddPostgreSqlWorkStore(IServiceCollection, string, WorkSchemaMode, object?)"/>.
+    /// <see cref="AddPostgreSqlWorkStore(IServiceCollection, string, WorkSchemaMode, object?, object?)"/>.
     /// </summary>
-    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, Func<IServiceProvider, NpgsqlDataSource> dataSource, string schema = "work", WorkSchemaMode schemaMode = WorkSchemaMode.Migrate)
+    public static IServiceCollection AddPostgreSqlWorkStore(this IServiceCollection services, Func<IServiceProvider, NpgsqlDataSource> dataSource, string schema = "work", WorkSchemaMode schemaMode = WorkSchemaMode.Migrate, Func<IServiceProvider, NpgsqlDataSource>? listenerDataSource = null)
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(dataSource);
@@ -54,7 +62,8 @@ public static class PostgreSqlServiceCollectionExtensions
             provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance,
             provider.GetService<TimeProvider>() ?? TimeProvider.System,
             WorkTelemetryOptions.From(provider),
-            schemaMode));
+            schemaMode,
+            listenerDataSource is null ? null : Resolve(listenerDataSource, provider)));
         services.TryAddSingleton(provider => provider.GetRequiredService<IWorkStore>().Signals!);
         return services.AddWorkSignals();
     }
@@ -96,6 +105,7 @@ public static class PostgreSqlServiceCollectionExtensions
             var logger = (provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance).CreateLogger("Corfedo.Work.PostgreSql");
             var telemetry = WorkTelemetryOptions.From(provider);
             return new PostgreSqlSignalTransport(
+                source,
                 source,
                 new PostgreSqlSignalSender(source, sql, logger, telemetry),
                 provider.GetService<TimeProvider>() ?? TimeProvider.System,

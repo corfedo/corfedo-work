@@ -7,12 +7,12 @@ namespace Corfedo.Work.PostgreSql.Signals;
 /// <summary>
 /// Signals over <c>NOTIFY</c>. A signal sent in a transaction is recorded with it and sent by
 /// <see cref="PostgreSqlSignalSender"/> once the transaction has committed, so rolled-back changes wake nobody; one
-/// sent without a transaction is notified at once. The listener holds a dedicated session-level connection that never runs a transaction, since a listener
+/// sent without a transaction is notified at once. The listener holds a dedicated session-level connection of the listener data source that never runs a transaction, since a listener
 /// inside a long transaction holds back the notification queue and, once it is full, notifying commits fail. A
 /// connection quiet for <see cref="Probe"/> is checked with a query, so a silently broken connection is replaced
 /// instead of losing signals until the process restarts.
 /// </summary>
-internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSource, PostgreSqlSignalSender sender, TimeProvider time, ILogger logger, WorkTelemetryOptions telemetry) : ISignalTransport, IAsyncDisposable
+internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSource, NpgsqlDataSource listener, PostgreSqlSignalSender sender, TimeProvider time, ILogger logger, WorkTelemetryOptions telemetry) : ISignalTransport, IAsyncDisposable
 {
     private readonly PostgreSqlSignalSql sql = sender.Sql;
 
@@ -41,7 +41,7 @@ internal sealed partial class PostgreSqlSignalTransport(NpgsqlDataSource dataSou
         {
             try
             {
-                await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+                await using var connection = await listener.OpenConnectionAsync(cancellationToken);
                 connection.Notification += (_, e) =>
                 {
                     if (e.Channel == sql.Channel && PostgreSqlSignalSql.TryParse(e.Payload, out var topic, out var key))
